@@ -33,7 +33,7 @@ export type { ServerFunctionsFilter } from './server-functions/index.js';
 export type { SsrOptions };
 import path from 'path';
 import type { FilterPattern, Plugin, ViteDevServer } from 'vite';
-import { createFilter, version } from 'vite';
+import { createFilter, isRunnableDevEnvironment, version } from 'vite';
 import { crawlFrameworkPkgs } from 'vitefu';
 
 const require = createRequire(import.meta.url);
@@ -429,6 +429,8 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
   const filter = createFilter(options.include, options.exclude);
   const serverComponents =
     typeof options.serverFunctions === 'object' && !!options.serverFunctions.components;
+  const externalDevServer =
+    typeof options.ssr === 'object' && options.ssr !== null && !!options.ssr.external;
 
   let needHmr = false;
   let replaceDev = false;
@@ -717,8 +719,11 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
       // solid-refresh only injects HMR boundaries into client modules, so
       // non-client environments have no accept handlers. Without this, Vite
       // would see no boundaries and send full-reload messages that race with
-      // client-side HMR updates.
-      if (this.environment.name !== 'client') {
+      // client-side HMR updates. Provider-owned (non-runnable) environments
+      // fall through instead: their plugin needs the real module list to
+      // invalidate its remote runner, and its channel never reaches the
+      // browser websocket.
+      if (this.environment.name !== 'client' && isRunnableDevEnvironment(this.environment)) {
         // Returning [] also suppresses the signal environment-runner based
         // servers (e.g. nitro's dev worker) rely on to re-evaluate modules,
         // leaving SSR stale until a manual restart. Send the reload on this
@@ -1010,6 +1015,7 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
         boundaryModules(),
         ...serverFunctions(options.serverFunctions === true ? {} : options.serverFunctions, {
           devMiddleware: true,
+          externalDevServer,
         }),
         mainPlugin,
       ]

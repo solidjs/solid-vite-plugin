@@ -12,6 +12,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import path from 'path';
 import {
   createFilter,
+  isRunnableDevEnvironment,
   type EnvironmentModuleGraph,
   type FilterPattern,
   type Plugin,
@@ -290,7 +291,7 @@ function invalidateModules(
  */
 export function serverFunctions(
   options: ServerFunctionsOptions = {},
-  internal: { devMiddleware?: boolean } = {},
+  internal: { devMiddleware?: boolean; externalDevServer?: boolean } = {},
 ): Plugin[] {
   const filter = createFilter(
     options.filter?.include || DEFAULT_INCLUDE,
@@ -449,7 +450,10 @@ export function serverFunctions(
       },
       load(id, opts) {
         if (id === HANDLER_ID && opts?.ssr) {
-          return handlerModuleCode(isBuild);
+          const externalDev =
+            this.environment.mode === 'dev' &&
+            (internal.externalDevServer || !isRunnableDevEnvironment(this.environment));
+          return handlerModuleCode(isBuild || externalDev);
         }
         return null;
       },
@@ -461,6 +465,13 @@ export function serverFunctions(
       name: 'solid:server-functions/dev-middleware',
       apply: 'serve',
       configureServer(server) {
+        const ssrEnvironment = server.environments.ssr;
+        if (
+          internal.externalDevServer ||
+          (ssrEnvironment && !isRunnableDevEnvironment(ssrEnvironment))
+        ) {
+          return;
+        }
         server.middlewares.use((req, res, next) => {
           const url = new URL(req.url || '/', 'http://localhost');
           // Match with and without `base` — middleware-mode hosts may mount

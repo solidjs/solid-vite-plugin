@@ -2,13 +2,10 @@
 // of the existing `ssr` option) adds a serving layer on top of the SSR
 // transforms so no hand-rolled entries or dev server are needed.
 //
-// - Dev: a middleware on the Vite dev server streams the rendered app for
-//   HTML-accepting GET requests, loading the app through the SSR environment
-//   (`ssrLoadModule`) and injecting the Vite client + dev style patch + the
-//   entry graph's CSS (inlined `<style data-vite-dev-id>` tags collected
-//   from the SSR module graph, so server-painted content never flashes
-//   unstyled) into `<head>` on the way out. SSR errors flow to Vite's error
-//   middleware (stack-fixed) so the browser gets the error overlay page.
+// - Dev: runnable SSR environments are served by a Vite middleware. Provider-
+//   owned environments serve through `virtual:solid-ssr-handler` instead.
+//   Both paths inject the Vite client, dev style patch, and entry CSS as
+//   `<style data-vite-dev-id>` tags before the body can paint.
 // - Prod: the plugin configures a full-app build (client + server bundles
 //   via the Vite 6+ environments/builder API — a single `vite build` builds
 //   both) whose server entry is `virtual:solid-ssr-handler`: an
@@ -20,14 +17,23 @@
 //   absent, default entries are generated from a single root component
 //   (`ssr.app`, defaulting to `src/App.*`) wrapped in a document shell
 //   (`ssr.document`, defaulting to `src/Document.*`, else a built-in one).
-// - When `serverFunctions` is also enabled, the prod handler composes it:
-//   requests to the server-function endpoint dispatch to
-//   `virtual:solid-server-function-handler` before SSR (in dev, the
-//   server-function middleware is registered earlier and already wins).
+// - When `serverFunctions` is also enabled, the production handler and any
+//   provider-owned dev handler compose it. Runnable dev environments keep the
+//   earlier server-function middleware.
 import { existsSync } from 'fs';
 import path from 'path';
-import type { Plugin, ViteDevServer } from 'vite';
-import { collectDevStyles, devStylePatch, renderDevStyleTag } from '../dev-manifest.js';
+import {
+  isRunnableDevEnvironment,
+  type DevEnvironment,
+  type Plugin,
+  type ViteDevServer,
+} from 'vite';
+import {
+  collectDevStyles,
+  collectDevStyleSources,
+  devStylePatch,
+  renderDevStyleTag,
+} from '../dev-manifest.js';
 import { joinBase, sendWebResponse, webRequestFromNode } from '../http.js';
 
 export interface SsrOptions {
@@ -62,11 +68,22 @@ export interface SsrOptions {
    * @default "src/Document.{tsx,jsx}" when present, else a built-in shell
    */
   document?: string;
+  /**
+   * Let an integration own the server build and HTTP serving. Turnkey still
+   * provides its generated entries, request handler, and client manifest.
+   *
+   * Non-runnable development environments are detected automatically.
+   *
+   * @default false
+   */
+  external?: boolean;
 }
 
 // Server-only turnkey request handler; also the server bundle's entry so a
 // production server is one import away from `Request -> Response`.
 const HANDLER_ID = 'virtual:solid-ssr-handler';
+const DEV_STYLES_ID = 'virtual:solid-ssr-dev-styles';
+const RESOLVED_DEV_STYLES_ID = '\0' + DEV_STYLES_ID;
 // Generated default entries / document shell. The `.tsx` suffix routes them
 // through the plugin's normal JSX transform (per-environment SSR/DOM
 // compile), exactly like user-authored entry files.
@@ -175,6 +192,7 @@ export function ssrServe(
   // the server-function handler module either way). Everything is gated
   // codegen: with the option off, none of these imports exist anywhere.
   const serverComponents = !!internal.serverComponents;
+  const externalServer = !!options.external;
   let root = process.cwd();
   let base = '/';
   let isBuild = false;
@@ -203,6 +221,35 @@ export function ssrServe(
   function documentSpec(): string {
     const { document } = requireEntries();
     return document ?? DOCUMENT_ID;
+  }
+
+  function styleRoots(): string[] {
+    const { generated, app, document, entryServer } = requireEntries();
+    return generated ? [app!, ...(document ? [document] : [])] : [path.resolve(root, entryServer)];
+  }
+
+  async function devStylesModuleCode(
+    environment: DevEnvironment,
+    watchFile: (file: string) => void,
+  ): Promise<string> {
+    const styles = await collectDevStyleSources(environment, styleRoots(), watchFile);
+    if (!styles.length) return `export default '';`;
+
+    const imports = styles.map((style, index) => {
+      const specifier = style.url.includes('?') ? `${style.url}&inline` : `${style.url}?inline`;
+      return `import css${index} from ${JSON.stringify(specifier)};`;
+    });
+    return [
+      ...imports,
+      `const ids = ${JSON.stringify(styles.map((style) => style.id))};`,
+      `const css = [${styles.map((_, index) => `css${index}`).join(', ')}];`,
+      `const escapeAttr = value => value.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');`,
+      `export default css.map((content, index) => {`,
+      `  const id = escapeAttr(ids[index]);`,
+      `  return '<style data-asset="' + id + '" data-vite-dev-id="' + id + '">' +`,
+      `    content.replace(/<\\/(style)/gi, '<\\\\/$1') + '</style>';`,
+      `}).join('');`,
+    ].join('\n');
   }
 
   function generatedEntryServerCode(): string {
@@ -289,11 +336,11 @@ export function ssrServe(
   // The handler module: dev and prod share the render/response plumbing;
   // they differ in how the client entry URL is known (baked dev URL vs a
   // manifest scan), what gets injected into <head> (Vite client + style
-  // patch in dev), and server-function composition (build only — in dev the
-  // server-function middleware intercepts the endpoint before SSR runs).
-  function handlerModuleCode(): string {
+  // patch in dev), and server-function composition (production and external
+  // dev; runnable dev environments use the server-function middleware).
+  function handlerModuleCode(externalDev: boolean): string {
     const { generated, entryClient } = requireEntries();
-    const composeServerFunctions = isBuild && internal.serverFunctions;
+    const composeServerFunctions = (isBuild || externalDev) && internal.serverFunctions;
     // Generated entries own the whole document wiring, so the handler also
     // injects the server-component bootstrap (the per-function-id
     // placeholder registry the render plugin references; must be inline at
@@ -304,6 +351,12 @@ export function ssrServe(
     const lines = [
       `import { provideRequestEvent } from ${JSON.stringify(STORAGE_SOURCE)};`,
       `import * as entry from ${JSON.stringify(entryServerSpec())};`,
+      ...(externalDev ? [`import DEV_STYLES_HEAD from ${JSON.stringify(DEV_STYLES_ID)};`] : []),
+      ...(composeServerFunctions
+        ? [
+            `import { handleServerFunctionRequest, endpoint } from ${JSON.stringify(SERVER_FUNCTION_HANDLER_ID)};`,
+          ]
+        : []),
       ...(injectComponentBootstrap
         ? [`import { SERVER_COMPONENT_BOOTSTRAP } from '@solidjs/web/frames';`]
         : []),
@@ -311,11 +364,6 @@ export function ssrServe(
 
     if (isBuild) {
       lines.push(`import manifest from ${JSON.stringify(MANIFEST_ID)};`);
-      if (composeServerFunctions) {
-        lines.push(
-          `import { handleServerFunctionRequest, endpoint } from ${JSON.stringify(SERVER_FUNCTION_HANDLER_ID)};`,
-        );
-      }
       lines.push(
         ``,
         `function joinAssetPath(base, file) {`,
@@ -388,9 +436,16 @@ export function ssrServe(
     }
     lines.push(`    if (!injected && chunk.includes('</head>')) {`, `      injected = true;`);
     const headParts: string[] = [];
-    // Dev: the style patch + Vite client, then the SSR'd entry styles the
-    // middleware collected (per request, so HMR-edited CSS is current).
-    if (!isBuild) headParts.push(`DEV_HEAD`, `(extraHead || '')`);
+    // Dev: the style patch + Vite client, then either middleware-provided
+    // styles or the external environment's HMR-tracked virtual styles module.
+    if (!isBuild) {
+      headParts.push(
+        `DEV_HEAD`,
+        externalDev
+          ? `(extraHead === undefined ? DEV_STYLES_HEAD : extraHead)`
+          : `(extraHead || '')`,
+      );
+    }
     if (generated) {
       headParts.push(
         `(clientEntry ? '<script type="module" src="' + clientEntry + '" async></' + 'script>' : '')`,
@@ -478,28 +533,39 @@ export function ssrServe(
           // the dep scanner needs explicit entries instead.
           appType: 'custom',
           ...(build
-            ? {
-                environments: {
-                  client: {
-                    build: {
-                      manifest: true,
-                      outDir: 'dist/client',
-                      rollupOptions: { input: clientInput },
+            ? externalServer
+              ? {
+                  environments: {
+                    client: {
+                      build: {
+                        manifest: true,
+                        rollupOptions: { input: clientInput },
+                      },
                     },
                   },
-                  ssr: {
-                    build: {
-                      outDir: 'dist/server',
-                      rollupOptions: { input: { server: HANDLER_ID } },
+                }
+              : {
+                  environments: {
+                    client: {
+                      build: {
+                        manifest: true,
+                        outDir: 'dist/client',
+                        rollupOptions: { input: clientInput },
+                      },
+                    },
+                    ssr: {
+                      build: {
+                        outDir: 'dist/server',
+                        rollupOptions: { input: { server: HANDLER_ID } },
+                      },
                     },
                   },
-                },
-                // Presence of `builder` makes a plain `vite build` build the
-                // whole app (all environments: client then ssr) on Vite 6+.
-                // A classic `vite build --ssr` invocation must stay a
-                // single-environment build, so it doesn't get the flag.
-                ...(env.isSsrBuild ? {} : { builder: {} }),
-              }
+                  // Presence of `builder` makes a plain `vite build` build the
+                  // whole app (all environments: client then ssr) on Vite 6+.
+                  // A classic `vite build --ssr` invocation must stay a
+                  // single-environment build, so it doesn't get the flag.
+                  ...(env.isSsrBuild ? {} : { builder: {} }),
+                }
             : {
                 optimizeDeps: { entries: scanEntries },
               }),
@@ -514,17 +580,30 @@ export function ssrServe(
         if (source === HANDLER_ID) {
           return { id: HANDLER_ID, moduleSideEffects: true };
         }
+        if (source === DEV_STYLES_ID) {
+          return { id: RESOLVED_DEV_STYLES_ID, moduleSideEffects: true };
+        }
         if (source === ENTRY_SERVER_ID || source === ENTRY_CLIENT_ID || source === DOCUMENT_ID) {
           return { id: source, moduleSideEffects: source === ENTRY_CLIENT_ID };
         }
         return null;
       },
-      load(id, opts) {
+      async load(id, opts) {
         if (id === HANDLER_ID) {
           if (!opts?.ssr) {
             this.error(`${HANDLER_ID} is server-only; import it from server code (SSR build).`);
           }
-          return handlerModuleCode();
+          const externalDev =
+            !isBuild &&
+            this.environment.mode === 'dev' &&
+            (externalServer || !isRunnableDevEnvironment(this.environment));
+          return handlerModuleCode(externalDev);
+        }
+        if (id === RESOLVED_DEV_STYLES_ID) {
+          if (!opts?.ssr || this.environment.mode !== 'dev') {
+            this.error(`${DEV_STYLES_ID} is only available to the development server handler.`);
+          }
+          return devStylesModuleCode(this.environment, (file) => this.addWatchFile(file));
         }
         if (id === ENTRY_SERVER_ID) return generatedEntryServerCode();
         if (id === ENTRY_CLIENT_ID) return generatedEntryClientCode();
@@ -540,16 +619,14 @@ export function ssrServe(
         // this); the SSR'd tags carry data-asset + data-vite-dev-id so the
         // dev style patch drops them once Vite's own injection takes over —
         // exactly the lazy-asset dedup story, HMR included.
-        const styleRoots = () => {
-          const { generated, app, document, entryServer } = requireEntries();
-          return generated
-            ? [app!, ...(document ? [document] : [])]
-            : [path.resolve(root, entryServer)];
-        };
         // Post middleware: Vite's own middlewares (transforms, static, the
         // server-function endpoint) run first; whatever asks for HTML after
         // that gets the streamed SSR render.
         return () => {
+          const ssrEnvironment = server.environments.ssr;
+          if (externalServer || (ssrEnvironment && !isRunnableDevEnvironment(ssrEnvironment))) {
+            return;
+          }
           server.middlewares.use((req, res, next) => {
             if (req.method !== 'GET') return next();
             const accept = req.headers.accept || '';
