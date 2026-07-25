@@ -62,6 +62,7 @@ import { spawn, execSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { rmSync, existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { createServer } from 'vite';
 
 const exampleDir = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
@@ -1321,7 +1322,67 @@ async function runBabelHmrMode() {
   }
 }
 
-const ALL_MODES = ['dev', 'prod', 'document', 'entries', 'endpoint', 'frames', 'babel-hmr'];
+async function runExternalMode() {
+  const mode = 'external';
+  console.log(`\n=== ${mode.toUpperCase()} ===`);
+  process.env.SOLID_EXTERNAL = '1';
+  let server;
+
+  try {
+    server = await createServer({ root: exampleDir, server: { middlewareMode: true } });
+    const clientModule = await server.environments.client.transformRequest('/src/api.ts');
+    const functionId = extractFunctionId(clientModule?.code || '', 'getServerMessage');
+    const handler = await server.ssrLoadModule('virtual:solid-ssr-handler');
+    const response = await handler.handleRequest(new Request('http://localhost/'));
+    const html = await response.text();
+    record(
+      mode,
+      'ssr',
+      'external handler renders the app',
+      response.status === 200 && html.includes('Turnkey SSR'),
+    );
+    record(
+      mode,
+      'css',
+      'virtual styles module inlines entry CSS',
+      html.includes('data-vite-dev-id') && html.includes('rgb(20, 40, 60)'),
+    );
+
+    const functionResponse = functionId
+      ? await handler.handleRequest(
+          new Request(
+            `http://localhost/_server?id=${encodeURIComponent(functionId)}&args=${encodeURIComponent('["external"]')}`,
+            { method: 'POST' },
+          ),
+        )
+      : null;
+    record(
+      mode,
+      'sf',
+      'external handler composes server functions in dev',
+      functionResponse
+        ? (await functionResponse.text()) === 'hello external from the server'
+        : false,
+      functionId ? undefined : 'could not extract function id',
+    );
+  } catch (error) {
+    record(mode, 'run', 'mode completed', false, String(error));
+  } finally {
+    await server?.close();
+    delete process.env.SOLID_EXTERNAL;
+  }
+}
+
+const ALL_MODES = [
+  'dev',
+  'prod',
+  'document',
+  'entries',
+  'endpoint',
+  'frames',
+  'babel-hmr',
+  'external',
+];
 const arg = process.argv[2];
 const modes = ALL_MODES.includes(arg) ? [arg] : ALL_MODES;
 for (const mode of modes) {
@@ -1331,7 +1392,8 @@ for (const mode of modes) {
   else if (mode === 'entries') await runEntriesMode();
   else if (mode === 'endpoint') await runEndpointMode();
   else if (mode === 'frames') await runFramesMode();
-  else await runBabelHmrMode();
+  else if (mode === 'babel-hmr') await runBabelHmrMode();
+  else await runExternalMode();
 }
 
 const failed = results.filter((r) => !r.ok);

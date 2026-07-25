@@ -18,6 +18,7 @@ import type { DevEnvironment, EnvironmentModuleNode, ViteDevServer } from 'vite'
  */
 
 export type DevStyleDescriptor = { id: string; content: string; attrs?: Record<string, string> };
+export type DevStyleSource = { id: string; url: string };
 
 export type ResolvedAssets = {
   js: string[];
@@ -98,12 +99,14 @@ export const devStylePatch = `(function(){var P=${JSON.stringify(
 async function getModuleNode(
   env: DevEnvironment,
   file: string,
-  importer?: string,
 ): Promise<EnvironmentModuleNode | undefined> {
   try {
-    const resolved = await env.fetchModule(file, importer);
-    if (!('id' in resolved)) return;
-    return env.moduleGraph.getModuleById(resolved.id);
+    let node = env.moduleGraph.getModuleById(file) ?? (await env.moduleGraph.getModuleByUrl(file));
+    if (!node?.transformResult) {
+      await env.transformRequest(node?.url ?? file);
+      node = env.moduleGraph.getModuleById(file) ?? (await env.moduleGraph.getModuleByUrl(file));
+    }
+    return node;
   } catch {
     return;
   }
@@ -114,12 +117,13 @@ async function collectModuleDeps(
   file: string,
   deps: Set<EnvironmentModuleNode>,
   crawled: Set<string>,
-  importer?: string,
+  onFile?: (file: string) => void,
 ): Promise<void> {
   crawled.add(file);
-  const node = await getModuleNode(env, file, importer);
+  const node = await getModuleNode(env, file);
   if (!node?.id || deps.has(node)) return;
   deps.add(node);
+  if (node.file && !node.id.includes('node_modules')) onFile?.(node.file);
 
   if (cssFileRegExp.test(node.url.split('?')[0]) || node.id.includes('node_modules')) return;
 
@@ -133,12 +137,38 @@ async function collectModuleDeps(
   // from dynamicDeps — dynamic imports load their own styles when rendered.
   for (const dep of directDeps) {
     if (crawled.has(dep)) continue;
-    await collectModuleDeps(env, dep, deps, crawled, node.id);
+    await collectModuleDeps(env, dep, deps, crawled, onFile);
   }
 }
 
 function injectQuery(url: string, query: string): string {
   return url.includes('?') ? `${url}&${query}` : `${url}?${query}`;
+}
+
+/** Discovers ambient CSS in an entry graph without choosing how it is transported. */
+export async function collectDevStyleSources(
+  env: DevEnvironment,
+  files: string[],
+  onFile?: (file: string) => void,
+): Promise<DevStyleSource[]> {
+  const deps = new Set<EnvironmentModuleNode>();
+  const crawled = new Set<string>();
+  for (const file of files) {
+    await collectModuleDeps(env, file, deps, crawled, onFile);
+  }
+
+  const css: DevStyleSource[] = [];
+  const seen = new Set<string>();
+  for (const node of deps) {
+    if (!node.id) continue;
+    const cleanUrl = node.url.split('?')[0];
+    if (!cssFileRegExp.test(cleanUrl) || nonAmbientQueryRegExp.test(node.url)) continue;
+    const id = wrapId(node.id);
+    if (seen.has(id)) continue;
+    seen.add(id);
+    css.push({ id, url: node.url });
+  }
+  return css;
 }
 
 /**
@@ -157,32 +187,24 @@ export async function collectDevStyles(
   const clientEnv = server.environments?.client;
   if (!ssrEnv || !clientEnv) return [];
 
-  const deps = new Set<EnvironmentModuleNode>();
-  const crawled = new Set<string>();
-  for (const file of files) {
-    await collectModuleDeps(ssrEnv, path.resolve(server.config.root, file), deps, crawled);
-  }
+  const sources = await collectDevStyleSources(
+    ssrEnv,
+    files.map((file) => path.resolve(server.config.root, file)),
+  );
 
   const css: DevStyleDescriptor[] = [];
-  const seen = new Set<string>();
-  for (const node of deps) {
-    if (!node.id) continue;
-    const cleanUrl = node.url.split('?')[0];
-    if (!cssFileRegExp.test(cleanUrl) || nonAmbientQueryRegExp.test(node.url)) continue;
+  for (const source of sources) {
     // `?direct` yields the compiled stylesheet text (what Vite serves for
     // <link> requests) — through the client environment, whose css
     // pipeline matches what the browser will run for HMR updates.
     const result = await clientEnv
-      .transformRequest(injectQuery(node.url, 'direct'))
+      .transformRequest(injectQuery(source.url, 'direct'))
       .catch(() => null);
     if (result?.code == null) continue;
-    const id = wrapId(node.id);
-    if (seen.has(id)) continue;
-    seen.add(id);
     css.push({
-      id,
+      id: source.id,
       content: result.code,
-      attrs: { 'data-vite-dev-id': id },
+      attrs: { 'data-vite-dev-id': source.id },
     });
   }
   return css;

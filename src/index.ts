@@ -30,7 +30,7 @@ export type { ServerFunctionsFilter } from './server-functions/index.js';
 export type { SsrOptions };
 import path from 'path';
 import type { FilterPattern, Plugin } from 'vite';
-import { createFilter, version } from 'vite';
+import { createFilter, isRunnableDevEnvironment, version } from 'vite';
 import { crawlFrameworkPkgs } from 'vitefu';
 
 const require = createRequire(import.meta.url);
@@ -379,6 +379,8 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
   const filter = createFilter(options.include, options.exclude);
   const serverComponents =
     typeof options.serverFunctions === 'object' && !!options.serverFunctions.components;
+  const externalDevServer =
+    typeof options.ssr === 'object' && options.ssr !== null && !!options.ssr.external;
 
   let needHmr = false;
   let replaceDev = false;
@@ -658,10 +660,10 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
 
     hotUpdate() {
       // solid-refresh only injects HMR boundaries into client modules, so
-      // non-client environments have no accept handlers. Without this, Vite
-      // would see no boundaries and send full-reload messages that race with
-      // client-side HMR updates.
-      if (this.environment.name !== 'client') {
+      // the in-process SSR runner should not send full reloads that race with
+      // client HMR. Remote runners still need their update so provider-owned
+      // handlers and virtual dev styles are invalidated.
+      if (this.environment.name !== 'client' && isRunnableDevEnvironment(this.environment)) {
         return [];
       }
     },
@@ -940,6 +942,7 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
     ? [
         ...serverFunctions(options.serverFunctions === true ? {} : options.serverFunctions, {
           devMiddleware: true,
+          externalDevServer,
         }),
         mainPlugin,
       ]

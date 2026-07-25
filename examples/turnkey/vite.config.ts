@@ -35,7 +35,7 @@ export default defineConfig({
         ? { app: 'src/frames/FramesApp.tsx' }
         : process.env.SSR_DOCUMENT
           ? { document: process.env.SSR_DOCUMENT }
-          : {},
+          : { external: !!process.env.SOLID_EXTERNAL },
       serverFunctions: serverComponents
         ? { components: true }
         : process.env.SERVER_FN_ENDPOINT
