@@ -67,6 +67,9 @@ export interface SsrOptions {
 // Server-only turnkey request handler; also the server bundle's entry so a
 // production server is one import away from `Request -> Response`.
 const HANDLER_ID = 'virtual:solid-ssr-handler';
+// Dev-only endpoint serving the entry graph's compiled stylesheets, so a
+// handler running outside this process can still inline them (see below).
+const DEV_ENTRY_CSS_PATH = '/__solid_dev_entry_css';
 // Generated default entries / document shell. The `.tsx` suffix routes them
 // through the plugin's normal JSX transform (per-environment SSR/DOM
 // compile), exactly like user-authored entry files.
@@ -178,6 +181,7 @@ export function ssrServe(
   let root = process.cwd();
   let base = '/';
   let isBuild = false;
+  let externalServer = false;
   let entries: ResolvedEntries | undefined;
 
   function requireEntries(): ResolvedEntries {
@@ -344,7 +348,23 @@ export function ssrServe(
       const devHead =
         `<script>${devStylePatch}</script>` +
         `<script type="module" src="${joinBase(base, '/@vite/client')}"></script>`;
-      lines.push(``, `const DEV_HEAD = ${JSON.stringify(devHead)};`);
+      lines.push(
+        ``,
+        `const DEV_HEAD = ${JSON.stringify(devHead)};`,
+        ``,
+        // Fallback for callers that cannot collect the styles themselves:
+        // an external server's handler runs in its own runtime (a dev
+        // worker, workerd) with no access to this module graph, so it asks
+        // the dev server over HTTP. Per request, so HMR edits stay current.
+        `async function fetchDevEntryStyles(request) {`,
+        `  try {`,
+        `    const response = await fetch(new URL(${JSON.stringify(DEV_ENTRY_CSS_PATH)}, request.url));`,
+        `    return response.ok ? await response.text() : '';`,
+        `  } catch {`,
+        `    return '';`,
+        `  }`,
+        `}`,
+      );
     }
 
     lines.push(
@@ -421,6 +441,9 @@ export function ssrServe(
       isBuild
         ? `  const clientEntry = options.clientEntry || resolveClientEntry();`
         : `  const clientEntry = options.clientEntry || ${JSON.stringify(devClientEntryUrl())};`,
+      isBuild
+        ? `  const devHead = options.devHead;`
+        : `  const devHead = options.devHead !== undefined ? options.devHead : await fetchDevEntryStyles(request);`,
       `  return provideRequestEvent({ request, locals: {} }, async () => {`,
       `    let result = entry.render(request, { clientEntry, ...options.context });`,
       // renderToStream results are thenables whose then() waits for the
@@ -430,7 +453,7 @@ export function ssrServe(
       `      result = await result;`,
       `    }`,
       `    if (result instanceof Response) return result;`,
-      `    return htmlResponse(result, clientEntry, options.devHead, options.responseInit);`,
+      `    return htmlResponse(result, clientEntry, devHead, options.responseInit);`,
       `  });`,
       `}`,
     );
@@ -453,33 +476,51 @@ export function ssrServe(
         const scanEntries = entries.generated
           ? [entries.app!, ...(entries.document ? [entries.document] : [])]
           : [path.resolve(root, entries.entryClient)];
+        // A configured ssr input means an external server integration owns
+        // the server: it drives the build and serves requests, adapting
+        // `virtual:solid-ssr-handler` to its own entry contract. Turnkey then
+        // contributes only the entries, the handler and the client manifest —
+        // overriding the ssr input here would leave that integration without a
+        // server entry, and its own build/serving pipeline in conflict.
+        externalServer = userConfig.environments?.ssr?.build?.rollupOptions?.input != null;
         return {
           // No index.html: dev must not fall back to SPA-serving one, and
           // the dep scanner needs explicit entries instead.
           appType: 'custom',
           ...(build
-            ? {
-                environments: {
-                  client: {
-                    build: {
-                      manifest: true,
-                      outDir: 'dist/client',
-                      rollupOptions: { input: clientInput },
+            ? externalServer
+              ? {
+                  environments: {
+                    client: {
+                      build: {
+                        manifest: true,
+                        rollupOptions: { input: clientInput },
+                      },
                     },
                   },
-                  ssr: {
-                    build: {
-                      outDir: 'dist/server',
-                      rollupOptions: { input: { server: HANDLER_ID } },
+                }
+              : {
+                  environments: {
+                    client: {
+                      build: {
+                        manifest: true,
+                        outDir: 'dist/client',
+                        rollupOptions: { input: clientInput },
+                      },
+                    },
+                    ssr: {
+                      build: {
+                        outDir: 'dist/server',
+                        rollupOptions: { input: { server: HANDLER_ID } },
+                      },
                     },
                   },
-                },
-                // Presence of `builder` makes a plain `vite build` build the
-                // whole app (all environments: client then ssr) on Vite 6+.
-                // A classic `vite build --ssr` invocation must stay a
-                // single-environment build, so it doesn't get the flag.
-                ...(env.isSsrBuild ? {} : { builder: {} }),
-              }
+                  // Presence of `builder` makes a plain `vite build` build the
+                  // whole app (all environments: client then ssr) on Vite 6+.
+                  // A classic `vite build --ssr` invocation must stay a
+                  // single-environment build, so it doesn't get the flag.
+                  ...(env.isSsrBuild ? {} : { builder: {} }),
+                }
             : {
                 optimizeDeps: { entries: scanEntries },
               }),
@@ -526,10 +567,28 @@ export function ssrServe(
             ? [app!, ...(document ? [document] : [])]
             : [path.resolve(root, entryServer)];
         };
+        // Exposed for handlers that run outside this process (see
+        // fetchDevEntryStyles in the generated handler); registered even when
+        // an external server owns HTML, which is exactly when it is needed.
+        server.middlewares.use(DEV_ENTRY_CSS_PATH, (_req, res) => {
+          collectDevStyles(server, styleRoots()).then(
+            (styles) => {
+              res.setHeader('content-type', 'text/html; charset=utf-8');
+              res.setHeader('cache-control', 'no-store');
+              res.end(styles.map(renderDevStyleTag).join(''));
+            },
+            () => {
+              res.statusCode = 500;
+              res.end('');
+            },
+          );
+        });
         // Post middleware: Vite's own middlewares (transforms, static, the
         // server-function endpoint) run first; whatever asks for HTML after
         // that gets the streamed SSR render.
         return () => {
+          // An external server (see `externalServer` above) serves HTML itself.
+          if (externalServer) return;
           server.middlewares.use((req, res, next) => {
             if (req.method !== 'GET') return next();
             const accept = req.headers.accept || '';
