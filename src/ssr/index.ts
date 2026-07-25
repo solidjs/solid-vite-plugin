@@ -25,6 +25,7 @@
 //   `virtual:solid-server-function-handler` before SSR (in dev, the
 //   server-function middleware is registered earlier and already wins).
 import { existsSync } from 'fs';
+import type { ServerResponse } from 'node:http';
 import path from 'path';
 import type { Plugin, ViteDevServer } from 'vite';
 import { collectDevStyles, devStylePatch, renderDevStyleTag } from '../dev-manifest.js';
@@ -67,6 +68,57 @@ export interface SsrOptions {
 // Server-only turnkey request handler; also the server bundle's entry so a
 // production server is one import away from `Request -> Response`.
 const HANDLER_ID = 'virtual:solid-ssr-handler';
+
+/**
+ * Splices `html` in front of `</head>` in a streamed HTML response, once.
+ *
+ * Used when an external server renders the page: the markup is produced
+ * outside this process, so the only place left to add dev-only `<head>`
+ * content is the response as it passes back through Vite. Non-HTML responses
+ * and bodies without a `</head>` pass through untouched, and `content-length`
+ * is dropped when injecting since the body grows.
+ */
+function injectIntoHtmlHead(res: ServerResponse, html: string): void {
+  const write = res.write.bind(res);
+  const end = res.end.bind(res);
+  const writeHead = res.writeHead.bind(res);
+  let injected = false;
+
+  const isHtml = () => String(res.getHeader('content-type') || '').includes('text/html');
+  const transform = (chunk: unknown, encoding?: unknown): unknown => {
+    if (injected || chunk == null || typeof chunk === 'function' || !isHtml()) return chunk;
+    // Web-stream sources (an external server piping a Response body) write
+    // Uint8Array chunks, which are not Buffers.
+    const text =
+      typeof chunk === 'string'
+        ? chunk
+        : Buffer.isBuffer(chunk)
+          ? chunk.toString(typeof encoding === 'string' ? (encoding as BufferEncoding) : 'utf8')
+          : ArrayBuffer.isView(chunk)
+            ? Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength).toString('utf8')
+            : null;
+    if (text === null) return chunk;
+    const at = text.indexOf('</head>');
+    if (at === -1) return chunk;
+    injected = true;
+    return Buffer.from(text.slice(0, at) + html + text.slice(at), 'utf8');
+  };
+
+  res.writeHead = function (this: ServerResponse, ...args: never[]) {
+    // The injected bytes invalidate a precomputed length; streamed SSR
+    // responses are chunked and unaffected.
+    if (isHtml() && !injected) res.removeHeader('content-length');
+    return writeHead(...(args as Parameters<typeof writeHead>));
+  } as typeof res.writeHead;
+
+  res.write = function (this: ServerResponse, chunk: never, ...rest: never[]) {
+    return write(transform(chunk, rest[0]) as never, ...(rest as []));
+  } as typeof res.write;
+
+  res.end = function (this: ServerResponse, chunk?: never, ...rest: never[]) {
+    return end(transform(chunk, rest[0]) as never, ...(rest as []));
+  } as typeof res.end;
+}
 // Generated default entries / document shell. The `.tsx` suffix routes them
 // through the plugin's normal JSX transform (per-environment SSR/DOM
 // compile), exactly like user-authored entry files.
@@ -178,6 +230,7 @@ export function ssrServe(
   let root = process.cwd();
   let base = '/';
   let isBuild = false;
+  let externalServer = false;
   let entries: ResolvedEntries | undefined;
 
   function requireEntries(): ResolvedEntries {
@@ -453,33 +506,51 @@ export function ssrServe(
         const scanEntries = entries.generated
           ? [entries.app!, ...(entries.document ? [entries.document] : [])]
           : [path.resolve(root, entries.entryClient)];
+        // A configured ssr input means an external server integration owns
+        // the server: it drives the build and serves requests, adapting
+        // `virtual:solid-ssr-handler` to its own entry contract. Turnkey then
+        // contributes only the entries, the handler and the client manifest —
+        // overriding the ssr input here would leave that integration without a
+        // server entry, and its own build/serving pipeline in conflict.
+        externalServer = userConfig.environments?.ssr?.build?.rollupOptions?.input != null;
         return {
           // No index.html: dev must not fall back to SPA-serving one, and
           // the dep scanner needs explicit entries instead.
           appType: 'custom',
           ...(build
-            ? {
-                environments: {
-                  client: {
-                    build: {
-                      manifest: true,
-                      outDir: 'dist/client',
-                      rollupOptions: { input: clientInput },
+            ? externalServer
+              ? {
+                  environments: {
+                    client: {
+                      build: {
+                        manifest: true,
+                        rollupOptions: { input: clientInput },
+                      },
                     },
                   },
-                  ssr: {
-                    build: {
-                      outDir: 'dist/server',
-                      rollupOptions: { input: { server: HANDLER_ID } },
+                }
+              : {
+                  environments: {
+                    client: {
+                      build: {
+                        manifest: true,
+                        outDir: 'dist/client',
+                        rollupOptions: { input: clientInput },
+                      },
+                    },
+                    ssr: {
+                      build: {
+                        outDir: 'dist/server',
+                        rollupOptions: { input: { server: HANDLER_ID } },
+                      },
                     },
                   },
-                },
-                // Presence of `builder` makes a plain `vite build` build the
-                // whole app (all environments: client then ssr) on Vite 6+.
-                // A classic `vite build --ssr` invocation must stay a
-                // single-environment build, so it doesn't get the flag.
-                ...(env.isSsrBuild ? {} : { builder: {} }),
-              }
+                  // Presence of `builder` makes a plain `vite build` build the
+                  // whole app (all environments: client then ssr) on Vite 6+.
+                  // A classic `vite build --ssr` invocation must stay a
+                  // single-environment build, so it doesn't get the flag.
+                  ...(env.isSsrBuild ? {} : { builder: {} }),
+                }
             : {
                 optimizeDeps: { entries: scanEntries },
               }),
@@ -526,10 +597,36 @@ export function ssrServe(
             ? [app!, ...(document ? [document] : [])]
             : [path.resolve(root, entryServer)];
         };
+        // An external server owns HTML, so turnkey's own serving middleware
+        // (below) never gets the request — and with it goes the entry CSS
+        // that middleware would have inlined, leaving dev SSR to flash
+        // unstyled. Collect the styles here instead, in the Vite process
+        // where the module graph lives, and splice them into the response on
+        // its way back out. A *pre* middleware, because an external server
+        // typically answers before Vite's own middlewares run; and on the
+        // response rather than through the handler, so this works whether or
+        // not the integration renders via `handleRequest`.
+        if (externalServer) {
+          server.middlewares.use((req, res, next) => {
+            if (req.method !== 'GET' || !(req.headers.accept || '').includes('text/html')) {
+              return next();
+            }
+            collectDevStyles(server, styleRoots()).then(
+              (styles) => {
+                const tags = styles.map(renderDevStyleTag).join('');
+                if (tags) injectIntoHtmlHead(res, tags);
+                next();
+              },
+              () => next(),
+            );
+          });
+        }
         // Post middleware: Vite's own middlewares (transforms, static, the
         // server-function endpoint) run first; whatever asks for HTML after
         // that gets the streamed SSR render.
         return () => {
+          // An external server (see above) serves HTML itself.
+          if (externalServer) return;
           server.middlewares.use((req, res, next) => {
             if (req.method !== 'GET') return next();
             const accept = req.headers.accept || '';
