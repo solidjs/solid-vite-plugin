@@ -8,25 +8,25 @@ allowBuilds:
   msw: true
 
 catalog:
-  solid-js: ">=2.0.0-beta.25 <2.0.0-experimental.0"
-  "@solidjs/web": ">=2.0.0-beta.25 <2.0.0-experimental.0"
+  solid-js: ">=2.0.0-beta.26 <2.0.0-experimental.0"
+  "@solidjs/web": ">=2.0.0-beta.26 <2.0.0-experimental.0"
 
 ignoredBuiltDependencies:
   - cypress
 
 minimumReleaseAgeExclude:
-  - '@solidjs/signals@2.0.0-beta.25'
-  - '@solidjs/web@2.0.0-beta.25'
-  - babel-preset-solid@2.0.0-beta.25
-  - solid-js@2.0.0-beta.25
-  - '@dom-expressions/babel-plugin-jsx@0.50.0-next.29'
-  - '@dom-expressions/compiler-darwin-arm64@0.50.0-next.29'
-  - '@dom-expressions/compiler-darwin-x64@0.50.0-next.29'
-  - '@dom-expressions/compiler-linux-arm64-gnu@0.50.0-next.29'
-  - '@dom-expressions/compiler-linux-x64-gnu@0.50.0-next.29'
-  - '@dom-expressions/compiler-win32-x64-msvc@0.50.0-next.29'
-  - '@dom-expressions/compiler-wasm32-wasi@0.50.0-next.29'
-  - '@dom-expressions/compiler@0.50.0-next.29'
+  - '@solidjs/signals@2.0.0-beta.26'
+  - '@solidjs/web@2.0.0-beta.26'
+  - babel-preset-solid@2.0.0-beta.26
+  - solid-js@2.0.0-beta.26
+  - '@dom-expressions/babel-plugin-jsx@0.50.0-next.31'
+  - '@dom-expressions/compiler-darwin-arm64@0.50.0-next.31'
+  - '@dom-expressions/compiler-darwin-x64@0.50.0-next.31'
+  - '@dom-expressions/compiler-linux-arm64-gnu@0.50.0-next.31'
+  - '@dom-expressions/compiler-linux-x64-gnu@0.50.0-next.31'
+  - '@dom-expressions/compiler-win32-x64-msvc@0.50.0-next.31'
+  - '@dom-expressions/compiler-wasm32-wasi@0.50.0-next.31'
+  - '@dom-expressions/compiler@0.50.0-next.31'
   - '@solidjs/testing-library@1.0.0-beta.2'
 
 onlyBuiltDependencies:

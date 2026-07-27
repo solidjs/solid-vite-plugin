@@ -48,8 +48,10 @@
 //     nested regions survive the first morph (dom-expressions#547), a
 //     never-SSR'd boundary mounts and morphs from post-boot streams, a
 //     mutation via a plain data server function rides the same endpoint,
-//     and the server component's JSX never reaches client assets. The app
-//     surface lives in src/frames/,
+//     the server component's JSX never reaches client assets, and the
+//     fragment-rooted page survives a signal-nav unmount → remount cycle
+//     (frame insertable in an array insert position, dom-expressions#550).
+//     The app surface lives in src/frames/,
 //   - the option is pure codegen: the plain dev/prod modes assert the
 //     generated entries and client assets carry no reference to the
 //     server-components runtime when the option is off.
@@ -959,11 +961,16 @@ async function runFramesChecks(mode, origin) {
   // ---- The document over plain HTTP ------------------------------------
   const html = await (await fetch(origin + '/', { headers: { accept: 'text/html' } })).text();
   // (`panel:` not `panel:alpha`: hydration comment markers split the text.)
+  // As of beta.26 a boundary SSRs as a real <dx-frame data-fid> element
+  // (display:contents); slot records remain comment markers.
   record(
     mode,
     'document',
     'server component SSR\'d inline (frame markers in document)',
-    html.includes('panel:') && html.includes('frame:') && html.includes(':start-->'),
+    html.includes('panel:') &&
+      html.includes('<dx-frame') &&
+      html.includes('data-fid=') &&
+      html.includes(':start-->'),
   );
   record(
     mode,
@@ -1139,6 +1146,45 @@ async function runFramesChecks(mode, origin) {
       await cdp.waitFor(
         'document.querySelectorAll(".fresh-rows .row-body")[0]?.textContent?.endsWith(":beta")',
       ),
+    );
+
+    // ---- Unmount → remount over the fragment-rooted boundary -------------
+    // The page root is a fragment and the boundaries live under a reactive
+    // page conditional, so the frame insertable sits in an array insert
+    // position — the shape that used to crash insertBefore
+    // (dom-expressions#550). Navigate away (tears the regions down) and
+    // back: content must re-stream and reappear, and the remounted client
+    // wrappers must be live (the StackBlitz disappearing-server-component
+    // symptom). The trailing no-page-errors check covers the whole cycle.
+    await cdp.evalJs('document.querySelector("#nav-away").click()');
+    record(
+      mode,
+      'nav',
+      'navigating away tears the boundaries down',
+      await cdp.waitFor(
+        '!document.querySelector("#panel-name") && !!document.querySelector("#away-page")',
+      ),
+    );
+    await cdp.evalJs('document.querySelector("#nav-home").click()');
+    record(
+      mode,
+      'nav',
+      'boundary remounts after navigating back (dom-expressions#550)',
+      await cdp.waitFor('document.querySelector("#panel-name")?.textContent === "panel:beta"'),
+      `got ${JSON.stringify(await cdp.evalJs('document.querySelector("#panel-name")?.textContent'))}`,
+    );
+    record(
+      mode,
+      'nav',
+      'remounted boundary renders nested regions',
+      await cdp.waitFor('document.querySelectorAll(".rows .row-body").length === 2'),
+    );
+    await cdp.evalJs('document.querySelectorAll(".rows .row-bump")[0].click()');
+    record(
+      mode,
+      'nav',
+      'remounted wrapper interactive (no reactivity halt)',
+      await cdp.waitFor('document.querySelectorAll(".rows .row-count")[0]?.textContent === "1"'),
     );
 
     const errs = cdp.exceptions.filter((e) => !/favicon/i.test(e));
