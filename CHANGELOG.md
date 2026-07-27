@@ -1,5 +1,12 @@
 # Changelog
 
+## 3.0.0-next.17
+
+### Patch Changes
+
+- 178b9dc: update to solid 2.0.0-beta.26 and @dom-expressions/compiler 0.50.0-next.31
+- 3b913f5: Inject the server-component bootstrap at the top of `<head>`, before the hydration data script. It was appended at `</head>`, but the generated document renders `<HydrationScript />` inside `<head>`, so the bootstrap always landed _after_ the payload it has to precede. The render plugin serializes a server component's placeholder as `self._$SC.r(id)`, so any document whose hydration payload carried a frame reference threw `Cannot read properties of undefined (reading 'r')` on boot — which aborted hydration, leaving the whole page inert: no client state, no interactivity, and no navigation, on an otherwise perfectly server-rendered document. The turnkey example's own payload happens not to carry such a reference, so its "no page errors" check never caught this; the document assertion now verifies the ordering rather than mere presence.
+
 ## 3.0.0-next.16
 
 ### Minor Changes
