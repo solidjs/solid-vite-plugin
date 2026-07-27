@@ -979,7 +979,20 @@ async function runFramesChecks(mode, origin) {
     html.split(`${FRAMES_SECRET}-one`).length === 2,
   );
   record(mode, 'document', 't=0 slot records shipped (sc:slot)', html.includes('sc:slot:'));
-  record(mode, 'document', 'SC bootstrap inline in head', html.includes('self._$SC='));
+  // Presence is not enough: the render plugin serializes a placeholder as
+  // `self._$SC.r(id)`, so the registry must be defined BEFORE the hydration
+  // data script runs. Anchoring the injection on `</head>` put it after
+  // <HydrationScript />, and any document whose payload carried a frame ref
+  // threw "Cannot read properties of undefined (reading 'r')" — killing
+  // hydration, so nothing in the page was interactive.
+  const scBootstrapAt = html.indexOf('self._$SC=');
+  const hydrationDataAt = html.indexOf('_$HY.r[');
+  record(
+    mode,
+    'document',
+    'SC bootstrap inline in head, before the hydration data script',
+    scBootstrapAt !== -1 && (hydrationDataAt === -1 || scBootstrapAt < hydrationDataAt),
+  );
 
   const chrome = startProcess(CHROME, [
     '--headless=new',

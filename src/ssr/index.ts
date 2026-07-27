@@ -296,9 +296,9 @@ export function ssrServe(
     const composeServerFunctions = isBuild && internal.serverFunctions;
     // Generated entries own the whole document wiring, so the handler also
     // injects the server-component bootstrap (the per-function-id
-    // placeholder registry the render plugin references; must be inline in
-    // <head> before any hydration data script streams in). Authored entries
-    // inject it themselves.
+    // placeholder registry the render plugin references; must be inline at
+    // the TOP of <head>, before the hydration data script streams in — see
+    // the transform below). Authored entries inject it themselves.
     const injectComponentBootstrap = generated && serverComponents;
 
     const lines = [
@@ -351,8 +351,31 @@ export function ssrServe(
       ``,
       `function createHtmlChunkTransform(clientEntry, extraHead) {`,
       `  let injected = false;`,
+      ...(injectComponentBootstrap ? [`  let bootstrapped = false;`] : []),
       `  return (chunk) => {`,
     );
+    if (injectComponentBootstrap) {
+      // The bootstrap has to precede the hydration data script, not merely be
+      // present in <head>: the render plugin serializes a server component's
+      // placeholder as `self._$SC.r(id)`, so a document whose payload carries
+      // one throws on that reference if the registry is not defined yet.
+      // <HydrationScript /> sits inside <head>, so anchoring on `</head>`
+      // always lands after it — the opening tag is the only anchor that is
+      // reliably before it.
+      lines.push(
+        `    if (!bootstrapped) {`,
+        `      const headOpen = /<head(\\s[^>]*)?>/.exec(chunk);`,
+        `      if (headOpen) {`,
+        `        bootstrapped = true;`,
+        `        const at = headOpen.index + headOpen[0].length;`,
+        `        chunk =`,
+        `          chunk.slice(0, at) +`,
+        `          '<script>' + SERVER_COMPONENT_BOOTSTRAP + '</' + 'script>' +`,
+        `          chunk.slice(at);`,
+        `      }`,
+        `    }`,
+      );
+    }
     if (!generated) {
       // Authored entries reference the client entry by its dev path (the
       // `<script src="/src/entry-client.tsx">` convention); rewrite it to
@@ -368,9 +391,6 @@ export function ssrServe(
     // Dev: the style patch + Vite client, then the SSR'd entry styles the
     // middleware collected (per request, so HMR-edited CSS is current).
     if (!isBuild) headParts.push(`DEV_HEAD`, `(extraHead || '')`);
-    if (injectComponentBootstrap) {
-      headParts.push(`'<script>' + SERVER_COMPONENT_BOOTSTRAP + '</' + 'script>'`);
-    }
     if (generated) {
       headParts.push(
         `(clientEntry ? '<script type="module" src="' + clientEntry + '" async></' + 'script>' : '')`,
