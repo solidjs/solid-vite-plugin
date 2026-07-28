@@ -656,12 +656,21 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
       } as typeof hot.send;
     },
 
-    hotUpdate() {
+    hotUpdate({ modules }) {
       // solid-refresh only injects HMR boundaries into client modules, so
       // non-client environments have no accept handlers. Without this, Vite
       // would see no boundaries and send full-reload messages that race with
       // client-side HMR updates.
       if (this.environment.name !== 'client') {
+        // Returning [] also suppresses the signal environment-runner based
+        // servers (e.g. nitro's dev worker) rely on to re-evaluate modules,
+        // leaving SSR stale until a manual restart. Send the reload on this
+        // environment's own channel — for runner-based environments that is
+        // the runner, for the default ssr environment a no-op, and never the
+        // browser websocket, so client HMR stays free of full-reload races.
+        if (modules.length > 0) {
+          this.environment.hot.send({ type: 'full-reload' });
+        }
         return [];
       }
     },
