@@ -204,7 +204,6 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin {
 
   return {
     name: 'solid',
-    enforce: 'pre',
 
     async config(userConfig, { command }) {
       // We inject the dev mode only if the user explicitly wants it or if we are in dev (serve) mode
@@ -214,6 +213,11 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin {
 
       if (!userConfig.resolve) userConfig.resolve = {};
       userConfig.resolve.alias = normalizeAliases(userConfig.resolve && userConfig.resolve.alias);
+
+      // Forces "esbuild" to preserve JSX so that we can handle it here
+      // If "esbuild" is not being used, we don't need to change anything
+      if (userConfig.esbuild !== false)
+        userConfig.esbuild = { jsx: 'preserve', ...userConfig.esbuild };
 
       solidPkgsConfig = await crawlFrameworkPkgs({
         viteUserConfig: userConfig,
