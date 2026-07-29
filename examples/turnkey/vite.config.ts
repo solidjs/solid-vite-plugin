@@ -1,4 +1,6 @@
-import { defineConfig } from 'vite';
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import path from 'node:path';
+import { defineConfig, type Plugin } from 'vite';
 import solidPlugin from 'vite-plugin-solid';
 
 // Turnkey kitchen sink: the object form of `ssr` adds the serving layer on
@@ -23,6 +25,12 @@ import solidPlugin from 'vite-plugin-solid';
 //   the ssr environment before the client (builder-order mode) — mimicking
 //   host orchestrators like @cloudflare/vite-plugin; the plugin's
 //   client-build-first hook must keep the manifest available anyway.
+// - BUILD_PRE_WIPE installs a nitro-v3-shaped host (builder-prepare mode):
+//   a pre-order `buildApp` hook that rm -rf's the output directory (like
+//   `nitro:prepare`) plus a post-order orchestrator that builds ssr and
+//   skips already-built environments (like `nitro:main`). The plugin's
+//   client build must happen *after* the wipe (normal order, not pre) and
+//   its /complete hook must leave orchestration to the host's post hook.
 // - SOLID_JSX_COMPILER=babel forces the Babel JSX backend (babel-hmr mode);
 //   the define exposes the active backend to the page so the test can assert
 //   which one served it (their outputs are parity-identical otherwise).
@@ -63,5 +71,51 @@ export default defineConfig({
             ...(process.env.SERVER_FN_DEV_MIDDLEWARE === '0' ? { devMiddleware: false } : {}),
           },
     }),
+    // The nitro-v3-shaped host for builder-prepare mode. Registered after
+    // the solid plugin so that, were the client-build-first hook still
+    // pre-order, it would sort before the wipe and reproduce the bug
+    // (client built, then deleted). The markers written into dist let the
+    // test prove the wipe actually ran and who built the ssr environment.
+    ...(process.env.BUILD_PRE_WIPE
+      ? ([
+          {
+            name: 'test:host-prepare',
+            apply: 'build',
+            buildApp: {
+              // nitro v3's `nitro:prepare`: clean the output directory
+              // before any environment is built.
+              order: 'pre',
+              async handler(builder) {
+                const dist = path.resolve(builder.config.root, 'dist');
+                rmSync(dist, { recursive: true, force: true });
+                mkdirSync(dist, { recursive: true });
+                writeFileSync(path.join(dist, '.pre-wipe'), 'wiped');
+              },
+            },
+          },
+          {
+            name: 'test:host-build',
+            apply: 'build',
+            buildApp: {
+              // nitro v3's `nitro:main`: a post-order orchestrator that
+              // builds what's left, skipping already-built environments.
+              order: 'post',
+              async handler(builder) {
+                const built: string[] = [];
+                for (const env of [builder.environments.ssr!, builder.environments.client!]) {
+                  if (!env.isBuilt) {
+                    await builder.build(env);
+                    built.push(env.name);
+                  }
+                }
+                writeFileSync(
+                  path.resolve(builder.config.root, 'dist', '.host-built'),
+                  built.join(','),
+                );
+              },
+            },
+          },
+        ] satisfies Plugin[])
+      : []),
   ],
 });

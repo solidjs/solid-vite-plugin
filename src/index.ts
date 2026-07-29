@@ -1048,37 +1048,54 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
   //
   // Semantics (Vite 7.1+; Vite 6 has no plugin `buildApp` hook and ignores
   // these, keeping its build-everything default):
-  // - The pre-order hook builds the client environment first, but only
-  //   where the ordering matters: a client build that emits a manifest and
-  //   actually has an input. Orchestrators running after skip it via
-  //   `isBuilt` (or at worst rebuild it, which is wasteful but correct —
-  //   the manifest exists either way when the server environments build).
+  // - The first hook builds the client environment first, but only where
+  //   the ordering matters: a client build that emits a manifest and
+  //   actually has an input. It runs at *normal* order, deliberately not
+  //   `pre`: pre-order buildApp hooks are where hosts do destructive
+  //   preparation — nitro v3's `nitro:prepare` rm -rf's the whole output
+  //   directory from a pre-order hook, so a pre-order client build sorted
+  //   before it built into a directory that was then wiped (client assets
+  //   and manifest gone, the manifest-less fallback baked into the server
+  //   bundle, prod 500s). Normal order still runs before every known
+  //   server-first orchestrator: a config-level `builder.buildApp`
+  //   (@cloudflare/vite-plugin's workers-before-client orchestrator) is
+  //   invoked by Vite only after all pre- and normal-order plugin hooks
+  //   (just before the first post-order hook), and hook-based orchestrators
+  //   (nitro's `nitro:main`, cloudflare's own companion hook) declare
+  //   post order. Orchestrators running after skip the client via `isBuilt`
+  //   (or at worst rebuild it, which is wasteful but correct — the manifest
+  //   exists either way when the server environments build).
   // - Building anything from a hook suppresses Vite's own
   //   build-all-environments fallback (it only runs when *no* environment
   //   is built), so a setup with no real orchestrator — e.g. turnkey's
   //   plain `builder: {}` — would end up with only the client built. The
   //   post-order hook reinstates exactly that fallback: when nothing but
-  //   our own client build has happened, build the remaining environments
-  //   in definition order, precisely what Vite would have done.
+  //   our own client build has happened and no other plugin stakes a claim
+  //   on the app build, build the remaining environments in definition
+  //   order, precisely what Vite would have done. Another plugin declaring
+  //   a non-pre `buildApp` hook counts as such a claim even when it hasn't
+  //   built anything yet (its post-order hook may sort after ours):
+  //   building on its behalf would break staged orchestration (nitro
+  //   prerenders and copies public assets before its final server bundle)
+  //   and can error outright on environments the orchestrator knows to
+  //   skip (e.g. ones with no rollup input). Pre-order hooks don't count —
+  //   by convention they prepare (clean output dirs) rather than build.
   if (options.ssr) {
     let clientBuiltFirst = false;
     plugins.push(
       {
         name: 'solid:client-build-first',
         apply: 'build',
-        buildApp: {
-          order: 'pre',
-          async handler(builder) {
-            const client = builder.environments.client;
-            if (!client || client.isBuilt) return;
-            const clientBuild = client.config.build;
-            const hasInput =
-              !!clientBuild.rollupOptions?.input ||
-              existsSync(path.resolve(builder.config.root, 'index.html'));
-            if (!clientBuild.manifest || !hasInput) return;
-            await builder.build(client);
-            clientBuiltFirst = true;
-          },
+        async buildApp(builder) {
+          const client = builder.environments.client;
+          if (!client || client.isBuilt) return;
+          const clientBuild = client.config.build;
+          const hasInput =
+            !!clientBuild.rollupOptions?.input ||
+            existsSync(path.resolve(builder.config.root, 'index.html'));
+          if (!clientBuild.manifest || !hasInput) return;
+          await builder.build(client);
+          clientBuiltFirst = true;
         },
       },
       {
@@ -1088,10 +1105,18 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
           order: 'post',
           async handler(builder) {
             if (!clientBuiltFirst) return;
+            // Another plugin declares its own (non-pre) buildApp hook — the
+            // app build is spoken for, even if that hook sorts after this
+            // one and hasn't run yet.
+            const otherOrchestrator = builder.config.plugins.some((p) => {
+              if (!p.buildApp || p.name.startsWith('solid:client-build-first')) return false;
+              return typeof p.buildApp !== 'object' || p.buildApp.order !== 'pre';
+            });
+            if (otherOrchestrator) return;
             const environments = Object.values(builder.environments);
-            // Some orchestrator built something of its own — the app build
-            // is spoken for, don't build environments it may have skipped
-            // intentionally.
+            // A config-level orchestrator built something of its own — the
+            // app build is spoken for, don't build environments it may have
+            // skipped intentionally.
             if (environments.some((env) => env.isBuilt && env.name !== 'client')) return;
             for (const environment of environments) {
               if (!environment.isBuilt) await builder.build(environment);

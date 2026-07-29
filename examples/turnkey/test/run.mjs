@@ -44,6 +44,13 @@
 //     ssr environment first (mimicking e.g. @cloudflare/vite-plugin), the
 //     plugin's client-build-first hook still gets the client manifest baked
 //     into the server bundle,
+//   - builder-prepare: with a nitro-v3-shaped host — a pre-order `buildApp`
+//     hook that rm -rf's the output directory (`nitro:prepare`) plus a
+//     post-order orchestrator that builds ssr and skips already-built
+//     environments (`nitro:main`) — the client build lands *after* the
+//     wipe (hashed assets + manifest survive, the server bundle references
+//     them) and the plugin's /complete hook leaves the ssr build to the
+//     host's orchestrator instead of preempting it,
 //   - the conventional-entries path: when src/entry-server.tsx and
 //     src/entry-client.tsx exist (written temporarily by the test), they are
 //     used instead of the generated ones, and in prod the authored
@@ -71,7 +78,7 @@
 //
 // Requires the plugin built (pnpm build at the repo root) and Google Chrome.
 // Usage: node test/run.mjs
-// [dev|prod|document|entries|endpoint|configure|no-middleware|builder-order|babel-hmr|frames]
+// [dev|prod|document|entries|endpoint|configure|no-middleware|builder-order|builder-prepare|babel-hmr|frames]
 // (default: all)
 
 import { spawn, execSync } from 'node:child_process';
@@ -1283,6 +1290,107 @@ async function runBuilderOrderMode() {
   }
 }
 
+// Builder-mode preparation: BUILD_PRE_WIPE=1 installs a nitro-v3-shaped
+// host in vite.config.ts — a pre-order `buildApp` hook that rm -rf's dist
+// before anything builds (nitro's `nitro:prepare`) and a post-order
+// orchestrator that builds the ssr environment, skipping anything already
+// built (nitro's `nitro:main`). The regression under test: the plugin's
+// client-build-first hook used to run at pre order, so it built the client
+// *before* the wipe hook (which sorts later among pre hooks) deleted it —
+// no client assets in the final output and a manifest-less fallback baked
+// into the server bundle. At normal order the client build lands after
+// every pre-order prepare hook while still preceding the host's post-order
+// (and any config-level) server-first orchestration. The markers the host
+// writes into dist prove the wipe really ran and that the ssr build was
+// left to the host's orchestrator (the /complete hook must defer to a
+// plugin that declares its own non-pre buildApp hook, not preempt its
+// staged build).
+async function runBuilderPrepareMode() {
+  const mode = 'builder-prepare';
+  console.log(`\n=== ${mode.toUpperCase()} ===`);
+  const port = 3171;
+  const origin = `http://localhost:${port}`;
+  const env = { ...process.env, BUILD_PRE_WIPE: '1' };
+
+  let server;
+  let serverLog = '';
+  try {
+    rmSync(path.join(exampleDir, 'dist'), { recursive: true, force: true });
+    console.log('  building…');
+    execSync('pnpm run build', { cwd: exampleDir, stdio: 'pipe', env });
+    record(
+      mode,
+      'build',
+      'adversarial pre-order wipe ran (marker present)',
+      existsSync(path.join(exampleDir, 'dist/.pre-wipe')),
+    );
+    record(
+      mode,
+      'build',
+      'client manifest survived the wipe (built after it)',
+      existsSync(path.join(exampleDir, 'dist/client/.vite/manifest.json')),
+    );
+    const assetsDir = path.join(exampleDir, 'dist/client/assets');
+    record(
+      mode,
+      'build',
+      'hashed client assets survived the wipe',
+      existsSync(assetsDir) && readdirSync(assetsDir).some((f) => f.endsWith('.js')),
+    );
+    const serverBundle = readFileSync(path.join(exampleDir, 'dist/server/server.js'), 'utf-8');
+    record(
+      mode,
+      'build',
+      'server bundle baked the client manifest (hashed assets, ordering held)',
+      /"file":\s*"assets\//.test(serverBundle) && /"isEntry":\s*true/.test(serverBundle),
+    );
+    const hostBuilt = existsSync(path.join(exampleDir, 'dist/.host-built'))
+      ? readFileSync(path.join(exampleDir, 'dist/.host-built'), 'utf-8')
+      : '(missing)';
+    record(
+      mode,
+      'build',
+      "host's post-order orchestrator built ssr (plugin deferred, client already built)",
+      hostBuilt === 'ssr',
+      `.host-built: ${hostBuilt}`,
+    );
+
+    server = startProcess('node', ['server.js'], {
+      cwd: exampleDir,
+      env: { ...process.env, PORT: String(port), NODE_ENV: 'production' },
+    });
+    server.stdout.on('data', (d) => (serverLog += d));
+    server.stderr.on('data', (d) => (serverLog += d));
+    await waitForHttp(origin + '/', 30000, { headers: { accept: 'text/html' } });
+    const { html } = await fetchStreamed(origin + '/');
+    record(mode, 'prod', 'app server-rendered', html.includes('Turnkey SSR'));
+    record(
+      mode,
+      'prod',
+      'hashed client entry script injected',
+      /<script type="module" src="\/assets\/[^"]+\.js" async><\/script>/.test(html),
+    );
+  } catch (e) {
+    record(
+      mode,
+      'run',
+      'mode completed',
+      false,
+      String(e) + (serverLog ? `\nserver: ${serverLog.slice(-2000)}` : ''),
+    );
+  } finally {
+    if (server) {
+      try {
+        process.kill(-server.pid, 'SIGTERM');
+      } catch {}
+    }
+    // Leave dist in the standard state for anyone poking at it.
+    try {
+      execSync('pnpm run build', { cwd: exampleDir, stdio: 'pipe' });
+    } catch {}
+  }
+}
+
 // Frames: server components (`use server` functions returning a function)
 // enabled by the single config line `serverFunctions: { components: true }`
 // (via SOLID_SERVER_COMPONENTS in vite.config.ts, which also points
@@ -1863,6 +1971,7 @@ const ALL_MODES = [
   'configure',
   'no-middleware',
   'builder-order',
+  'builder-prepare',
   'frames',
   'babel-hmr',
   'external',
@@ -1879,6 +1988,7 @@ for (const mode of modes) {
   else if (mode === 'configure') await runConfigureMode();
   else if (mode === 'no-middleware') await runNoMiddlewareMode();
   else if (mode === 'builder-order') await runBuilderOrderMode();
+  else if (mode === 'builder-prepare') await runBuilderPrepareMode();
   else if (mode === 'frames') await runFramesMode();
   else if (mode === 'babel-hmr') await runBabelHmrMode();
   else if (mode === 'external') await runExternalMode();
