@@ -158,12 +158,14 @@ async function loadNativeCompiler() {
 export interface Options {
   /**
    * A [picomatch](https://github.com/micromatch/picomatch) pattern, or array of patterns, which specifies the files
-   * the plugin should operate on.
+   * the plugin should operate on. Relative patterns are resolved against the
+   * Vite root, not the invocation directory.
    */
   include?: FilterPattern;
   /**
    * A [picomatch](https://github.com/micromatch/picomatch) pattern, or array of patterns, which specifies the files
-   * to be ignored by the plugin.
+   * to be ignored by the plugin. Relative patterns are resolved against the
+   * Vite root, not the invocation directory.
    */
   exclude?: FilterPattern;
   /**
@@ -426,7 +428,10 @@ function normalizeEmittedLazyEntries(manifest: Record<string, any>) {
 }
 
 export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
-  const filter = createFilter(options.include, options.exclude);
+  // Recreated in configResolved: relative include/exclude patterns must
+  // resolve against the Vite root, not process.cwd() — running `vite` from
+  // outside the project would otherwise change what the filter matches.
+  let filter = createFilter(options.include, options.exclude);
   const serverComponents =
     typeof options.serverFunctions === 'object' && !!options.serverFunctions.components;
   const externalDevServer =
@@ -660,6 +665,7 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
       isSsrBuild = !!config.build.ssr;
       base = config.base;
       projectRoot = config.root;
+      filter = createFilter(options.include, options.exclude, { resolve: projectRoot });
       if (serverComponents && typeof options.ssr !== 'object') {
         config.logger.warn(
           '[vite-plugin-solid] serverFunctions.components is set without the turnkey `ssr` object ' +

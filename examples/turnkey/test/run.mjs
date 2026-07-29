@@ -88,11 +88,11 @@ import {
 } from 'vite';
 
 const exampleDir = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
-// The in-process modes (external, detect) create the dev server here rather
-// than spawning the CLI, and the plugin's server-function filter resolves its
-// relative include glob against process.cwd() — pin it so the runner behaves
-// the same from any invocation directory (spawned modes pass explicit cwds).
-process.chdir(exampleDir);
+// Deliberately no process.chdir(exampleDir): the in-process modes (external,
+// detect) create the dev server with `root: exampleDir` while the runner's
+// cwd stays wherever it was invoked from — regression coverage for the
+// plugin resolving relative filter globs against process.cwd() instead of
+// the Vite root (spawned modes pass explicit cwds either way).
 const CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 const CDP_PORT = 9337;
 

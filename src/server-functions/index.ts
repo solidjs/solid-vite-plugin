@@ -22,6 +22,14 @@ import { joinBase, sendWebResponse, webRequestFromNode } from '../http.js';
 import { compile, type CompileOptions } from './compile.js';
 import xxHash32 from './xxhash32.js';
 
+/**
+ * Picomatch patterns selecting the modules the directive compiler runs on.
+ * Relative patterns (the defaults included) are resolved against the Vite
+ * root — not the invocation directory — so running `vite` from outside the
+ * project keeps compiling the same files. Absolute patterns are used as-is.
+ *
+ * @default include "src/**\/*.{jsx,tsx,ts,js,mjs,cjs}", exclude "node_modules/**\/*.{jsx,tsx,ts,js,mjs,cjs}"
+ */
 export interface ServerFunctionsFilter {
   include?: FilterPattern;
   exclude?: FilterPattern;
@@ -297,10 +305,12 @@ export function serverFunctions(
   options: ServerFunctionsOptions = {},
   internal: { devMiddleware?: boolean; externalDevServer?: boolean } = {},
 ): Plugin[] {
-  const filter = createFilter(
-    options.filter?.include || DEFAULT_INCLUDE,
-    options.filter?.exclude || DEFAULT_EXCLUDE,
-  );
+  const filterInclude = options.filter?.include || DEFAULT_INCLUDE;
+  const filterExclude = options.filter?.exclude || DEFAULT_EXCLUDE;
+  // Recreated in configResolved: relative patterns (the defaults included)
+  // must resolve against the Vite root, not process.cwd() — running `vite`
+  // from outside the project would otherwise silently skip every module.
+  let filter = createFilter(filterInclude, filterExclude);
   const manifestId = options.manifest || DEFAULT_MANIFEST;
   const directive = options.directive || DEFAULT_DIRECTIVE;
   const runtime = options.runtime || { server: DEFAULT_RUNTIME, client: DEFAULT_RUNTIME };
@@ -518,6 +528,7 @@ export function serverFunctions(
       configResolved(config) {
         env = config.mode !== 'production' ? 'development' : 'production';
         root = config.root;
+        filter = createFilter(filterInclude, filterExclude, { resolve: root });
         isBuild = config.command === 'build';
         isSsrBuild = !!config.build.ssr;
         outDir = config.build.outDir;
