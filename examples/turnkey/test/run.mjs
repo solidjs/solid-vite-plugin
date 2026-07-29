@@ -78,7 +78,14 @@ import { spawn, execSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { rmSync, existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { createServer } from 'vite';
+import http from 'node:http';
+import {
+  createServer,
+  createServerHotChannel,
+  createServerModuleRunner,
+  DevEnvironment,
+  isRunnableDevEnvironment,
+} from 'vite';
 
 const exampleDir = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
@@ -1765,6 +1772,83 @@ async function runExternalMode() {
   }
 }
 
+// The automatic-detection counterpart to the external mode: no option set,
+// but the `ssr` environment slot holds a plain (non-runnable) DevEnvironment
+// — the shape a provider like @cloudflare/vite-plugin leaves behind. The
+// plugin must notice on its own (`isRunnableDevEnvironment`) and stand both
+// dev middlewares down, while the generated handler keeps self-serving when
+// the host imports it through its own environment.
+async function runDetectMode() {
+  const mode = 'detect';
+  console.log(`\n=== ${mode.toUpperCase()} ===`);
+  let server;
+  let httpServer;
+
+  try {
+    server = await createServer({
+      root: exampleDir,
+      server: { middlewareMode: true },
+      environments: {
+        ssr: {
+          dev: {
+            createEnvironment: (name, config) =>
+              new DevEnvironment(name, config, { hot: true, transport: createServerHotChannel() }),
+          },
+        },
+      },
+    });
+    record(
+      mode,
+      'env',
+      'probe ssr environment is non-runnable',
+      !isRunnableDevEnvironment(server.environments.ssr),
+    );
+
+    httpServer = http.createServer(server.middlewares);
+    await new Promise((resolve) => httpServer.listen(0, '127.0.0.1', resolve));
+    const origin = `http://127.0.0.1:${httpServer.address().port}`;
+
+    const endpointResponse = await fetch(`${origin}/_server?id=x&args=%5B%5D`, { method: 'POST' });
+    record(
+      mode,
+      'sf',
+      'server-function middleware stands down (endpoint falls through)',
+      endpointResponse.status === 404,
+    );
+    const htmlResponse = await fetch(origin + '/', { headers: { accept: 'text/html' } });
+    record(
+      mode,
+      'ssr',
+      'SSR middleware stands down (HTML request falls through)',
+      htmlResponse.status === 404,
+    );
+
+    // Provider-style import: a module runner over the environment's channel.
+    const runner = createServerModuleRunner(server.environments.ssr);
+    const handler = await runner.import('virtual:solid-ssr-handler');
+    const response = await handler.handleRequest(new Request('http://localhost/'));
+    const html = await response.text();
+    record(
+      mode,
+      'handler',
+      'handler self-serves through the provider environment',
+      response.status === 200 && html.includes('Turnkey SSR'),
+    );
+    record(
+      mode,
+      'css',
+      'self-served HTML inlines entry CSS',
+      html.includes('data-vite-dev-id') && html.includes(APP_CSS_COLOR),
+    );
+    await runner.close();
+  } catch (error) {
+    record(mode, 'run', 'mode completed', false, String(error));
+  } finally {
+    await server?.close();
+    httpServer?.close();
+  }
+}
+
 const ALL_MODES = [
   'dev',
   'prod',
@@ -1777,6 +1861,7 @@ const ALL_MODES = [
   'frames',
   'babel-hmr',
   'external',
+  'detect',
 ];
 const arg = process.argv[2];
 const modes = ALL_MODES.includes(arg) ? [arg] : ALL_MODES;
@@ -1791,7 +1876,8 @@ for (const mode of modes) {
   else if (mode === 'builder-order') await runBuilderOrderMode();
   else if (mode === 'frames') await runFramesMode();
   else if (mode === 'babel-hmr') await runBabelHmrMode();
-  else await runExternalMode();
+  else if (mode === 'external') await runExternalMode();
+  else await runDetectMode();
 }
 
 const failed = results.filter((r) => !r.ok);
