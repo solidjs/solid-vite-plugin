@@ -106,6 +106,25 @@ export interface Options {
     omitQuotes?: boolean;
 
     /**
+     * When `true` (the default), the generated template output drops the
+     * whitespace between a quoted attribute and the next attribute
+     * (`<svg width="12"height="13">`). This preserves upstream behavior and
+     * relies on the browser's HTML parser to tolerate the missing space.
+     *
+     * Set to `false` when targeting strict parsers (e.g. XML/SVG-only or
+     * game-engine browser-likes such as Coherent Gameface) that reject the
+     * resulting markup; the output will then contain a regular space between
+     * attributes (`<svg width="12" height="13">`).
+     *
+     * Requires `babel-plugin-jsx-dom-expressions` / `babel-preset-solid`
+     * versions that understand the `omitAttributeSpacing` option; older
+     * versions silently ignore the flag.
+     *
+     * @default true
+     */
+    omitAttributeSpacing?: boolean;
+
+    /**
      * The name of the runtime module to import the methods from.
      *
      * @default "solid-js/web"
