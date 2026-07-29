@@ -8,7 +8,7 @@
     "build:client": "vite build --outDir dist/client",
     "build:server": "vite build --ssr src/entry-server.tsx --outDir dist/server",
     "serve": "NODE_ENV=production node server.js",
-    "test": "node test/run.mjs"
+    "test": "node test/run.mjs && node test/bridge.mjs"
   },
   "devDependencies": {
     "vite": "^7.0.0",

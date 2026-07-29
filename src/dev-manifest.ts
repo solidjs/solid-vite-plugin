@@ -36,15 +36,102 @@ export type DevAssetResolver = {
 
 // The resolver is created plugin-side (it closes over the dev server) but is
 // called from the SSR module runner, which only shares `globalThis` with the
-// plugin when it runs in-process (the default). The bridge is a
+// plugin when it runs in-process (the default). The primary channel is a
 // `Symbol.for`-keyed registry mapping project roots to resolvers; isolated
-// runners (workers) simply won't find it and fall back to js-only resolution.
+// runners (nitro's dev worker, workerd) won't find it and instead fall back
+// to fetching the HTTP bridge endpoint below.
 export const DEV_MANIFEST_REGISTRY_KEY = 'vite-plugin-solid:dev-manifest';
 
 export function registerDevAssetResolver(root: string, resolver: DevAssetResolver): void {
   const key = Symbol.for(DEV_MANIFEST_REGISTRY_KEY);
   const registry: Record<string, DevAssetResolver> = ((globalThis as any)[key] ??= {});
   registry[root] = resolver;
+}
+
+/**
+ * HTTP bridge endpoint for isolated SSR runners. Hosts that evaluate server
+ * modules outside the Vite process (nitro's dev worker, workerd via
+ * @cloudflare/vite-plugin) can't see the `globalThis` registry, so the dev
+ * server itself serves asset resolution: `GET
+ * /@vite-plugin-solid/dev-manifest?key=<module key>` answers with the
+ * resolver's `ResolvedAssets` JSON (`null` when the key can't be resolved).
+ * The dev flavor of `virtual:solid-manifest` falls back to fetching it when
+ * the registry has no entry for the root — in-process consumers hit the
+ * registry and never touch HTTP.
+ */
+export const DEV_MANIFEST_ENDPOINT = '/@vite-plugin-solid/dev-manifest';
+
+export function installDevManifestBridge(server: ViteDevServer): void {
+  // configureServer middlewares run ahead of Vite's internals, so `req.url`
+  // may or may not still carry the configured `base` — accept both forms.
+  const base = (server.config.base || '/').replace(/\/$/, '');
+  const basedEndpoint = base + DEV_MANIFEST_ENDPOINT;
+  server.middlewares.use(async (req, res, next) => {
+    const url = new URL(req.url || '/', 'http://localhost');
+    if (url.pathname !== DEV_MANIFEST_ENDPOINT && url.pathname !== basedEndpoint) return next();
+
+    const key = url.searchParams.get('key');
+    if (!key) {
+      res.statusCode = 400;
+      return res.end('Missing asset key');
+    }
+
+    try {
+      const registry: Record<string, DevAssetResolver> | undefined = (globalThis as any)[
+        Symbol.for(DEV_MANIFEST_REGISTRY_KEY)
+      ];
+      const resolver = registry?.[server.config.root];
+      if (!resolver) {
+        // A silent null strips the module's client assets from the SSR'd
+        // hydration asset map and hydration fails much later with a cryptic
+        // client-side error — report the miss where it happens.
+        console.error(
+          `[vite-plugin-solid] The dev manifest registry has no resolver for root "${server.config.root}" ` +
+            `(requested asset key "${key}"). The module's client assets cannot be resolved and hydration ` +
+            'will fail for it. Typical causes: the dev server was not restarted after dependency changes, ' +
+            'or the install is stale.',
+        );
+      }
+      const assets = resolver ? await resolver.resolve(key) : null;
+      if (resolver && assets == null) {
+        console.error(
+          `[vite-plugin-solid] Dev manifest resolver returned no assets for key "${key}" (root "${server.config.root}"). ` +
+            "The module's hydration preload entry will be missing.",
+        );
+      }
+      res.setHeader('content-type', 'application/json');
+      res.setHeader('cache-control', 'no-store');
+      return res.end(JSON.stringify(assets));
+    } catch (error) {
+      return next(error);
+    }
+  });
+}
+
+/**
+ * The absolute URL isolated runners should fetch the bridge from, baked into
+ * the dev flavor of `virtual:solid-manifest` when its code is generated.
+ * Generation happens while serving an SSR request, so the server is already
+ * listening and `resolvedUrls` carries the real origin (a config-time define
+ * could only guess the port). Middleware-mode servers have no origin of
+ * their own to advertise — returns null there, and the manifest module keeps
+ * the js-only fallback (in-process registry hits are unaffected either way).
+ */
+export function devManifestBridgeUrl(server: ViteDevServer): string | null {
+  const local = server.resolvedUrls?.local?.[0];
+  let origin: string | null = null;
+  if (local) {
+    origin = new URL(local).origin;
+  } else if (!server.config.server.middlewareMode) {
+    const address = server.httpServer?.address();
+    if (address && typeof address === 'object') {
+      const https = !!server.config.server.https;
+      origin = `${https ? 'https' : 'http'}://localhost:${address.port}`;
+    }
+  }
+  if (!origin) return null;
+  const base = (server.config.base || '/').replace(/\/$/, '');
+  return origin + base + DEV_MANIFEST_ENDPOINT;
 }
 
 // https://github.com/vitejs/vite/blob/main/packages/vite/src/node/constants.ts

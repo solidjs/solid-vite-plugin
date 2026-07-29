@@ -343,6 +343,34 @@ An array of custom extension that will be passed through the solid compiler.
 By default, the plugin only transform `jsx` and `tsx` files.
 This is useful if you want to transform `mdx` files for example.
 
+## `server-only` and `client-only` boundary markers
+
+The plugin always claims the bare specifiers `server-only` and `client-only`
+as marker modules. Import one to pin a module to an environment:
+
+```ts
+import 'server-only'; // this module must never be bundled for the client
+
+export const dbClient = createDbClient(process.env.DATABASE_URL);
+```
+
+Importing `server-only` from a module that ends up in a client bundle fails
+the build with an error naming the importer (and vice versa for
+`client-only`); in the allowed environment the marker resolves to an empty
+module. This turns "server code silently shipped to the browser and crashed
+at runtime" into a build-time error at the exact import edge.
+
+For TypeScript, the ambient declarations ship with the plugin — add to an
+`env.d.ts`:
+
+```ts
+/// <reference types="vite-plugin-solid/boundary-modules" />
+```
+
+Note: these markers shadow React's `server-only` / `client-only` npm
+packages if they happen to be installed; the semantics are the same, and the
+plugin's errors are prefixed `[vite-plugin-solid]`.
+
 ## Note on HMR
 
 Starting from version `1.1.0`, this plugin handles automatic HMR. The refresh

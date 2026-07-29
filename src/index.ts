@@ -8,8 +8,11 @@ import { createRequire } from 'module';
 import {
   createDevAssetResolver,
   registerDevAssetResolver,
+  installDevManifestBridge,
+  devManifestBridgeUrl,
   DEV_MANIFEST_REGISTRY_KEY,
 } from './dev-manifest.js';
+import { boundaryModules } from './boundary-modules.js';
 import {
   CLIENT_MANIFEST_ID,
   RESOLVED_CLIENT_MANIFEST_ID,
@@ -29,7 +32,7 @@ export type { ServerFunctionsOptions };
 export type { ServerFunctionsFilter } from './server-functions/index.js';
 export type { SsrOptions };
 import path from 'path';
-import type { FilterPattern, Plugin } from 'vite';
+import type { FilterPattern, Plugin, ViteDevServer } from 'vite';
 import { createFilter, version } from 'vite';
 import { crawlFrameworkPkgs } from 'vitefu';
 
@@ -64,13 +67,52 @@ const RESOLVED_VIRTUAL_MANIFEST_ID = '\0' + VIRTUAL_MANIFEST_ID;
 // lazy modules resolve to their dev URL plus transitively imported CSS as
 // inline-style descriptors collected from the live module graph. The resolver
 // itself lives plugin-side (it closes over the dev server) and is reached
-// through a global registry; isolated module runners that don't share globals
-// fall back to js-only resolution, which matches the previous dev behavior.
-const devManifestCode = (root: string) => `const registry = globalThis[Symbol.for(${JSON.stringify(
+// through a global registry; isolated module runners that don't share
+// globals (nitro's dev worker, workerd) fall back to fetching the dev
+// server's bridge endpoint, whose URL is baked in at generation time
+// (`bridgeUrl` — null outside a live dev server, e.g. the manifest-less SSR
+// build fallback, where js-only resolution remains). Bridge failures log
+// loudly and resolve to null so the runtime's own no-assets warning stays
+// the final catch-all.
+const devManifestCode = (root: string, bridgeUrl: string | null) => `const registry = globalThis[Symbol.for(${JSON.stringify(
   DEV_MANIFEST_REGISTRY_KEY,
 )})];
-const fallback = key => ({ js: ["/" + key], css: [] });
-export default (registry && registry[${JSON.stringify(root)}]) || { resolve: fallback, resolveSync: fallback };`;
+const jsOnly = key => ({ js: ["/" + key], css: [] });
+const bridgeUrl = ${JSON.stringify(bridgeUrl)};
+function createBridgeResolver() {
+  return {
+    async resolve(key) {
+      const url = new URL(bridgeUrl);
+      url.searchParams.set("key", key);
+      let response;
+      try {
+        response = await fetch(url);
+      } catch (error) {
+        console.error(
+          '[vite-plugin-solid] Dev manifest bridge request failed for module key "' + key +
+            '" (' + url.href + '): ' + ((error && error.message) || error) +
+            ". SSR will render without this module's client assets, so its hydration preload entry will be missing.",
+        );
+        return null;
+      }
+      if (!response.ok) {
+        // A silent null here strips the module's client assets from the
+        // SSR'd hydration asset map and hydration fails much later with a
+        // cryptic client-side error — report the miss where it happens.
+        console.error(
+          '[vite-plugin-solid] Dev manifest bridge request failed with status ' + response.status +
+            ' for module key "' + key + '" (' + url.href +
+            "). SSR will render without this module's client assets, so its hydration preload entry will be missing.",
+        );
+        return null;
+      }
+      return response.json();
+    },
+    resolveSync: jsOnly,
+  };
+}
+export default (registry && registry[${JSON.stringify(root)}]) ||
+  (bridgeUrl ? createBridgeResolver() : { resolve: jsOnly, resolveSync: jsOnly });`;
 
 const SOLID_BUILT_INS = [
   'For',
@@ -390,6 +432,9 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
 
   let needHmr = false;
   let replaceDev = false;
+  // The live dev server, kept so the dev manifest module can bake the bridge
+  // endpoint URL in when its code is generated (see devManifestBridgeUrl).
+  let devServer: ViteDevServer | null = null;
   let projectRoot = process.cwd();
   let isTestMode = false;
   let isBuild = false;
@@ -631,11 +676,15 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
     },
 
     configureServer(server) {
+      devServer = server;
       // Dev asset resolution for SSR: the virtual manifest module (evaluated
       // in the SSR environment) picks this resolver up through the global
-      // registry keyed by project root.
+      // registry keyed by project root — or, from isolated module runners
+      // that don't share globals with this process, through the HTTP bridge
+      // endpoint the middleware serves.
       if (options.ssr) {
         registerDevAssetResolver(server.config.root, createDevAssetResolver(server));
+        installDevManifestBridge(server);
       }
       if (!needHmr) return;
       // When a module has a syntax error, Vite sends the error overlay via
@@ -709,7 +758,9 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
 
     load(id) {
       if (id === RESOLVED_VIRTUAL_MANIFEST_ID) {
-        if (!isBuild) return devManifestCode(projectRoot);
+        if (!isBuild) {
+          return devManifestCode(projectRoot, devServer ? devManifestBridgeUrl(devServer) : null);
+        }
         const manifestPath = clientManifestPath();
         if (manifestPath) {
           const manifest = JSON.parse(readFileSync(manifestPath, 'utf-8'));
@@ -719,7 +770,7 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
         }
         // SSR build before the client build produced a manifest: bake in the
         // dev-shaped fallback (registry miss degrades to js-only resolution).
-        return devManifestCode(projectRoot);
+        return devManifestCode(projectRoot, null);
       }
       if (id === RESOLVED_CLIENT_MANIFEST_ID) {
         // Client-side flavor: dynamic-entry source keys → resolved client
@@ -952,15 +1003,17 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
 
   // The directive transform must run before the JSX transform (it operates
   // on raw directives, and client-mode module-level extraction must happen
-  // before templates are generated), so its sub-plugins go first.
+  // before templates are generated), so its sub-plugins go first. The
+  // boundary markers (`server-only` / `client-only`) are always on.
   const plugins: Plugin[] = options.serverFunctions
     ? [
+        boundaryModules(),
         ...serverFunctions(options.serverFunctions === true ? {} : options.serverFunctions, {
           devMiddleware: true,
         }),
         mainPlugin,
       ]
-    : [mainPlugin];
+    : [boundaryModules(), mainPlugin];
 
   // The object form of `ssr` opts into turnkey serving on top of the
   // transforms (`ssr: true` keeps the historical transform-only behavior).
