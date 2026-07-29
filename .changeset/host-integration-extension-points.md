@@ -1,5 +1,5 @@
 ---
-'vite-plugin-solid': minor
+'vite-plugin-solid': patch
 ---
 
 Three extension points for composing the plugin with host environments
