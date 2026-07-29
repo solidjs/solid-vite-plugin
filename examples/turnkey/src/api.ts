@@ -27,3 +27,10 @@ export async function requestMethod() {
   const event = getRequestEvent();
   return event ? event.request.method : 'no-event';
 }
+
+// Probe for the `serverFunctions.configure` e2e: src/serverConfig.ts (when
+// pinned into the handler graph) rewrites this exact result and stamps a
+// response header — in every other mode the string round-trips untouched.
+export async function configureProbe() {
+  return 'configure-probe';
+}

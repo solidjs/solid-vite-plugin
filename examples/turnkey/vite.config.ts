@@ -14,6 +14,15 @@ import solidPlugin from 'vite-plugin-solid';
 // Test knobs (all exercised by test/run.mjs):
 // - SSR_DOCUMENT swaps the document shell via the `ssr.document` escape hatch.
 // - SERVER_FN_ENDPOINT overrides the server-function endpoint.
+// - SERVER_FN_CONFIGURE pins src/serverConfig.ts into the handler graph via
+//   `serverFunctions.configure` (configure mode).
+// - SERVER_FN_DEV_MIDDLEWARE=0 disables the turnkey dev middleware via
+//   `serverFunctions.devMiddleware` (no-middleware mode) — endpoint dispatch
+//   becomes the host's job, like a Cloudflare-style environment plugin.
+// - BUILD_SSR_FIRST installs an adversarial `builder.buildApp` that builds
+//   the ssr environment before the client (builder-order mode) — mimicking
+//   host orchestrators like @cloudflare/vite-plugin; the plugin's
+//   client-build-first hook must keep the manifest available anyway.
 // - SOLID_JSX_COMPILER=babel forces the Babel JSX backend (babel-hmr mode);
 //   the define exposes the active backend to the page so the test can assert
 //   which one served it (their outputs are parity-identical otherwise).
@@ -28,6 +37,16 @@ export default defineConfig({
   define: {
     __JSX_COMPILER__: JSON.stringify(jsxCompiler),
   },
+  ...(process.env.BUILD_SSR_FIRST
+    ? {
+        builder: {
+          async buildApp(builder) {
+            await builder.build(builder.environments.ssr!);
+            await builder.build(builder.environments.client!);
+          },
+        },
+      }
+    : {}),
   plugins: [
     solidPlugin({
       compiler: jsxCompiler,
@@ -38,9 +57,11 @@ export default defineConfig({
           : {},
       serverFunctions: serverComponents
         ? { components: true }
-        : process.env.SERVER_FN_ENDPOINT
-          ? { endpoint: process.env.SERVER_FN_ENDPOINT }
-          : true,
+        : {
+            ...(process.env.SERVER_FN_ENDPOINT ? { endpoint: process.env.SERVER_FN_ENDPOINT } : {}),
+            ...(process.env.SERVER_FN_CONFIGURE ? { configure: './src/serverConfig.ts' } : {}),
+            ...(process.env.SERVER_FN_DEV_MIDDLEWARE === '0' ? { devMiddleware: false } : {}),
+          },
     }),
   ],
 });

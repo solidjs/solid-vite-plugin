@@ -164,6 +164,13 @@ export default function App() {
   environments/builder API — client assets (+ manifest) to `dist/client` and
   the server bundle to `dist/server/server.js`. (`vite build --app`, or the
   classic `vite build` + `vite build --ssr` two-step, work too.)
+- **Build ordering**: server builds read the client manifest, so with `ssr`
+  enabled the plugin also orders builder-mode (environments API) app builds
+  client-first via a `buildApp` hook (Vite 7.1+). That covers composed
+  setups whose own orchestrator builds server environments before the
+  client — e.g. @cloudflare/vite-plugin — with no hand-written ordering
+  plugin; setups without another orchestrator keep Vite's stock
+  build-everything behavior, just client-first.
 - **Prod**: the server bundle's entry is `virtual:solid-ssr-handler`, whose
   `handleRequest(request)` export maps a web-standard `Request` to a
   streamed `Response` — adapter-agnostic, so any node server / worker /
@@ -216,7 +223,7 @@ manual `ssr: true` wiring.
 Enables `"use server"` server function compilation (experimental). Pass
 `true` for the defaults (runtime from `@solidjs/web/server-functions`,
 endpoint `/_server`) or an options object (`runtime`, `endpoint`, `filter`,
-`directive`, `manifest`) to customize.
+`directive`, `manifest`, `devMiddleware`, `configure`) to customize.
 
 The setup is turnkey: in dev a middleware on the Vite server handles the
 endpoint end to end — no server-function code needed in your server entry.
@@ -224,6 +231,38 @@ For production SSR builds, either use turnkey SSR (the object form of
 [`ssr`](#optionsssr), whose handler serves the endpoint automatically) or
 import `virtual:solid-server-function-handler` in your server entry and
 mount its `handleServerFunctionRequest(request)` export on the endpoint.
+
+**`devMiddleware: false`** hands endpoint dispatch in dev to a host instead
+of the plugin's middleware. The middleware executes functions in Vite's
+node-side SSR environment; when another plugin's server environment should
+run them — e.g. @cloudflare/vite-plugin, so functions see workerd bindings
+(`env`/`ctx`) in dev exactly like production — turn it off and let the host
+dispatch: it loads `virtual:solid-server-function-handler` through its own
+environment and calls `handleServerFunctionRequest(request)`, the same
+contract as production. Compilation and the virtual modules keep working;
+endpoint requests simply fall through to the host. Since the middleware's
+on-demand module loading is off too, a host owning dev dispatch should
+side-effect import `virtual:solid-server-function-manifest` in its server
+entry so functions referenced only by client code still register.
+
+**`configure: './src/server-config.ts'`** pins a server-only module (path
+resolved against the Vite root) into the handler graph: the generated
+`virtual:solid-server-function-handler` module side-effect imports it before
+dispatching anything. It's the guaranteed pre-dispatch home for server-side
+runtime registration — e.g. a router's single-flight collector:
+
+```ts
+// src/server-config.ts
+import { configureServerFunctionsServer } from '@solidjs/web/server-functions';
+configureServerFunctionsServer({ collectFlightData: createFlightDataCollector(router) });
+```
+
+Registration living in the app graph only loads with the first page render,
+so after a dev-server restart the first mutation can race it; the handler
+graph loads before the first dispatch on every surface (dev middleware and
+production handler alike), and edits to the module hot-invalidate the
+handler in dev. Config calls merge per key, so it composes with the
+plugin's own runtime configuration.
 
 Meta-frameworks that need to control plugin ordering and dispatch requests
 through their own server should use the standalone `serverFunctions()`

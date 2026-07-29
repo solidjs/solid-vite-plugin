@@ -65,6 +65,55 @@ export interface ServerFunctionsOptions {
    */
   endpoint?: string;
   /**
+   * Whether the turnkey dev middleware owns the server-function endpoint on
+   * the Vite dev server. Only meaningful through the main plugin's
+   * `serverFunctions` option (the standalone `serverFunctions()` export
+   * never installs the middleware).
+   *
+   * Set `false` when another plugin's server environment should own
+   * dispatch in dev — e.g. @cloudflare/vite-plugin, whose workerd
+   * environment carries the bindings (`env`/`ctx`) your server functions
+   * need: the middleware executes functions in Vite's node-side SSR
+   * environment, so with it installed those requests never reach the
+   * worker. With the middleware off, everything else keeps working —
+   * compilation, the manifest and handler virtual modules — and endpoint
+   * requests fall through to whatever the host serves; the host loads
+   * `virtual:solid-server-function-handler` itself and dispatches through
+   * its `handleServerFunctionRequest` export, exactly like production.
+   * Functions referenced only by client code register on demand through
+   * the middleware in dev, so a host owning dispatch should side-effect
+   * import the manifest module in its server entry to cover them.
+   *
+   * @default true
+   */
+  devMiddleware?: boolean;
+  /**
+   * Path to a server-only module (resolved relative to the Vite root, like
+   * `ssr.document`) that the generated
+   * `virtual:solid-server-function-handler` module side-effect imports
+   * before configuring the runtime. A guaranteed pre-dispatch home for
+   * server-side registration — typically `configureServerFunctionsServer`
+   * calls whose config the app graph can't reliably install first, e.g. a
+   * router's single-flight collector:
+   *
+   * ```ts
+   * // src/server-config.ts
+   * import { configureServerFunctionsServer } from '@solidjs/web/server-functions';
+   * configureServerFunctionsServer({ collectFlightData: createFlightDataCollector(router) });
+   * ```
+   *
+   * Because the module lives in the handler graph, it is evaluated before
+   * any dispatch on every surface — the dev middleware and the production
+   * handler alike — and is immune to the dev-restart race where
+   * registration living in the app graph only loads with the first page
+   * render (the handler graph loads before the first mutation). Config
+   * calls merge per key, so it composes with the plugin's own
+   * `configureServerFunctionsServer` call in the same module.
+   *
+   * @default undefined
+   */
+  configure?: string;
+  /**
    * Enable server components (experimental): `"use server"` functions that
    * return a component. Responses for them are served over the
    * server-function endpoint as streamed HTML that the client runtime
@@ -236,7 +285,8 @@ function invalidateModules(
  * `serverFunctions` option: the turnkey dev middleware is only installed
  * through that path, so meta-frameworks composing this factory directly
  * (and dispatching to `handleServerFunctionRequest` themselves) never race
- * it for the endpoint.
+ * it for the endpoint. On the turnkey path the public
+ * `options.devMiddleware` (default true) can opt back out of it.
  */
 export function serverFunctions(
   options: ServerFunctionsOptions = {},
@@ -252,6 +302,9 @@ export function serverFunctions(
   const endpointOption = options.endpoint || DEFAULT_ENDPOINT;
   const endpoint = endpointOption.startsWith('/') ? endpointOption : '/' + endpointOption;
   const components = !!options.components;
+  // The middleware only exists on the turnkey path to begin with (see the
+  // `internal` parameter doc); the public option opts out of it there.
+  const installDevMiddleware = !!internal.devMiddleware && options.devMiddleware !== false;
 
   let env: CompileOptions['env'];
   let root = process.cwd();
@@ -261,6 +314,9 @@ export function serverFunctions(
   // Endpoint with Vite `base` applied; final after configResolved, which
   // runs before every transform/load/middleware that reads it.
   let resolvedEndpoint = endpoint;
+  // Absolute path of the user's `configure` module; resolved (and existence-
+  // checked) in configResolved, before any handler load can read it.
+  let configureModulePath: string | null = null;
 
   const manifest = createManifest();
 
@@ -333,6 +389,13 @@ export function serverFunctions(
     // import is only emitted when the option is on, so disabled setups keep
     // a server-component-free graph.
     return [
+      // The user's `configure` module comes first: a side-effect import in
+      // the handler graph, evaluated before any dispatch on both surfaces
+      // (dev middleware and prod handler) and bundled into the handler
+      // chunk by production builds. Order relative to the configure call
+      // below doesn't actually matter — runtime config merges per key —
+      // import-first is just the cleaner shape.
+      ...(configureModulePath ? [`import ${JSON.stringify(configureModulePath)};`] : []),
       ...(includeManifest ? [`import ${JSON.stringify(manifestId)};`] : []),
       `import { handleServerFunctionRequest as handle, configureServerFunctionsServer } from ${JSON.stringify(runtime.server)};`,
       `import { provideRequestEvent } from ${JSON.stringify(STORAGE_SOURCE)};`,
@@ -393,7 +456,7 @@ export function serverFunctions(
     },
   ];
 
-  if (internal.devMiddleware) {
+  if (installDevMiddleware) {
     turnkeyPlugins.push({
       name: 'solid:server-functions/dev-middleware',
       apply: 'serve',
@@ -444,6 +507,17 @@ export function serverFunctions(
         isSsrBuild = !!config.build.ssr;
         outDir = config.build.outDir;
         resolvedEndpoint = joinBase(config.base, endpoint);
+        if (options.configure) {
+          const absolute = path.isAbsolute(options.configure)
+            ? options.configure
+            : path.resolve(root, options.configure);
+          if (!existsSync(absolute)) {
+            throw new Error(
+              `[vite-plugin-solid] serverFunctions.configure does not exist: ${options.configure}`,
+            );
+          }
+          configureModulePath = absolute;
+        }
         if (isBuild && isSsrBuild) {
           // Classic two-invocation build: pick up the modules the client
           // build discovered so the server manifest registers them even when

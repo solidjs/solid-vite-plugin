@@ -31,6 +31,19 @@
 //   - the `ssr.document` escape hatch swaps the document shell and the
 //     `serverFunctions.endpoint` option threads through middleware and
 //     runtime configure calls (separate dev servers, no browser),
+//   - `serverFunctions.configure` pins src/serverConfig.ts into the handler
+//     graph: its `transformResult` hook is live on a cold dev dispatch
+//     (before anything rendered), an edit to it hot-applies without a
+//     restart, and in prod the module is bundled into the handler chunk
+//     (and absent from client assets) with the same observable effect,
+//   - `serverFunctions.devMiddleware: false` keeps compilation on while the
+//     middleware no longer intercepts `/_server` (a dev POST 404s), and a
+//     host emulation (test/host-dispatch.mjs) proves the manifest + handler
+//     virtual modules still dispatch through `ssrLoadModule`,
+//   - builder-order: with an adversarial `builder.buildApp` that builds the
+//     ssr environment first (mimicking e.g. @cloudflare/vite-plugin), the
+//     plugin's client-build-first hook still gets the client manifest baked
+//     into the server bundle,
 //   - the conventional-entries path: when src/entry-server.tsx and
 //     src/entry-client.tsx exist (written temporarily by the test), they are
 //     used instead of the generated ones, and in prod the authored
@@ -57,7 +70,8 @@
 //     server-components runtime when the option is off.
 //
 // Requires the plugin built (pnpm build at the repo root) and Google Chrome.
-// Usage: node test/run.mjs [dev|prod|document|entries|endpoint|babel-hmr|frames]
+// Usage: node test/run.mjs
+// [dev|prod|document|entries|endpoint|configure|no-middleware|builder-order|babel-hmr|frames]
 // (default: all)
 
 import { spawn, execSync } from 'node:child_process';
@@ -937,6 +951,325 @@ async function runEndpointMode() {
   }
 }
 
+// `serverFunctions.configure`: SERVER_FN_CONFIGURE=1 pins src/serverConfig.ts
+// into the `virtual:solid-server-function-handler` graph. Its
+// `transformResult` hook rewrites the configureProbe result and stamps a
+// response header — both observable over plain HTTP, so no browser needed.
+// Asserted where it matters:
+// - dev, cold: the very first request to the server is the dispatch itself
+//   (nothing has rendered in the SSR environment), so the hook being live
+//   proves the module rides the handler graph — immune to the dev-restart
+//   race where app-graph registration only loads with the first render,
+// - dev, HMR: an edit to the configure module must invalidate the handler
+//   (the import edge) so the next dispatch sees the new config, no restart,
+// - prod: the module is bundled into the handler chunk (marker in the server
+//   bundle, absent from client assets) and the same dispatch observes it.
+async function runConfigureMode() {
+  const mode = 'configure';
+  console.log(`\n=== ${mode.toUpperCase()} ===`);
+  const port = 3168;
+  const origin = `http://localhost:${port}`;
+  const env = { ...process.env, SERVER_FN_CONFIGURE: '1' };
+  const configFile = path.join(exampleDir, 'src/serverConfig.ts');
+  const originalConfigSource = readFileSync(configFile, 'utf-8');
+
+  let server;
+  let serverLog = '';
+  const captureLog = (child) => {
+    child.stdout.on('data', (d) => (serverLog += d));
+    child.stderr.on('data', (d) => (serverLog += d));
+  };
+  const dispatch = async (id) => {
+    const res = await fetch(
+      `${origin}/_server?id=${encodeURIComponent(id)}&args=${encodeURIComponent('[]')}`,
+      { method: 'POST' },
+    );
+    return {
+      status: res.status,
+      header: res.headers.get('x-configure-module'),
+      body: await res.text(),
+    };
+  };
+  let functionId = null;
+  try {
+    // ---- Dev --------------------------------------------------------------
+    server = startProcess('pnpm', ['exec', 'vite', '--port', String(port), '--strictPort'], {
+      cwd: exampleDir,
+      env,
+    });
+    captureLog(server);
+    await waitForHttp(origin + '/src/api.ts', 30000);
+    const clientModule = await (await fetch(origin + '/src/api.ts')).text();
+    functionId = extractFunctionId(clientModule, 'configureProbe');
+    const cold = functionId ? await dispatch(functionId) : null;
+    record(
+      mode,
+      'dev',
+      'configure hook live on cold dispatch (value transformed)',
+      cold?.body.includes('configure-probe+transformed'),
+      functionId ? JSON.stringify(cold) : 'could not extract function id',
+    );
+    record(
+      mode,
+      'dev',
+      'configure hook header stamped',
+      cold?.header === 'configure-v1',
+      JSON.stringify(cold),
+    );
+
+    writeFileSync(configFile, originalConfigSource.replace(/configure-v1/g, 'configure-v2'));
+    let hot = cold;
+    const deadline = Date.now() + 15000;
+    while (functionId && Date.now() < deadline && hot?.header !== 'configure-v2') {
+      await new Promise((r) => setTimeout(r, 250));
+      hot = await dispatch(functionId);
+    }
+    record(
+      mode,
+      'hmr',
+      'configure module edit hot-applies to the handler graph',
+      hot?.header === 'configure-v2',
+      JSON.stringify(hot),
+    );
+    writeFileSync(configFile, originalConfigSource);
+    try {
+      process.kill(-server.pid, 'SIGTERM');
+    } catch {}
+    server = undefined;
+
+    // ---- Prod -------------------------------------------------------------
+    console.log('  building…');
+    execSync('pnpm run build', { cwd: exampleDir, stdio: 'pipe', env });
+    const serverBundle = readFileSync(path.join(exampleDir, 'dist/server/server.js'), 'utf-8');
+    record(
+      mode,
+      'build',
+      'configure module bundled into the handler chunk',
+      serverBundle.includes('x-configure-module'),
+    );
+    const assetsDir = path.join(exampleDir, 'dist/client/assets');
+    const leaks = readdirSync(assetsDir).filter((f) =>
+      readFileSync(path.join(assetsDir, f), 'utf-8').includes('x-configure-module'),
+    );
+    record(
+      mode,
+      'build',
+      'configure module absent from client assets',
+      leaks.length === 0,
+      leaks.join(', '),
+    );
+
+    server = startProcess('node', ['server.js'], {
+      cwd: exampleDir,
+      env: { ...env, PORT: String(port), NODE_ENV: 'production' },
+    });
+    captureLog(server);
+    await waitForHttp(origin + '/', 30000, { headers: { accept: 'text/html' } });
+    // Production ids are the dev id minus its dev-only trailing `-name`
+    // segment (`hash-count` vs `hash-count-name`), so the dev phase's id
+    // carries over. Dispatch before any page render, like dev.
+    const prodId = functionId ? functionId.replace(/-configureProbe$/, '') : null;
+    const prod = prodId ? await dispatch(prodId) : null;
+    record(
+      mode,
+      'prod',
+      'configure hook live in the prod handler (value transformed)',
+      prod?.body.includes('configure-probe+transformed'),
+      JSON.stringify(prod),
+    );
+    record(
+      mode,
+      'prod',
+      'configure hook header stamped in prod',
+      prod?.header === 'configure-v1',
+      JSON.stringify(prod),
+    );
+  } catch (e) {
+    record(
+      mode,
+      'run',
+      'mode completed',
+      false,
+      String(e) + (serverLog ? `\nserver: ${serverLog.slice(-2000)}` : ''),
+    );
+  } finally {
+    writeFileSync(configFile, originalConfigSource);
+    if (server) {
+      try {
+        process.kill(-server.pid, 'SIGTERM');
+      } catch {}
+    }
+    // Leave dist in the standard state for anyone poking at it.
+    try {
+      execSync('pnpm run build', { cwd: exampleDir, stdio: 'pipe' });
+    } catch {}
+  }
+}
+
+// `serverFunctions.devMiddleware: false`: a dev server whose `/_server` the
+// plugin no longer owns. Compilation must keep working (the module still
+// compiles to references) while an endpoint POST falls through to Vite's
+// 404. Then test/host-dispatch.mjs emulates the host that owns dispatch
+// instead (a metaframework or an environment plugin like
+// @cloudflare/vite-plugin): manifest + handler virtual modules loaded
+// through `ssrLoadModule`, request dispatched like production.
+async function runNoMiddlewareMode() {
+  const mode = 'no-middleware';
+  console.log(`\n=== ${mode.toUpperCase()} ===`);
+  const port = 3169;
+  const origin = `http://localhost:${port}`;
+  const env = { ...process.env, SERVER_FN_DEV_MIDDLEWARE: '0' };
+
+  const server = startProcess('pnpm', ['exec', 'vite', '--port', String(port), '--strictPort'], {
+    cwd: exampleDir,
+    env,
+  });
+  let serverLog = '';
+  server.stdout.on('data', (d) => (serverLog += d));
+  server.stderr.on('data', (d) => (serverLog += d));
+
+  try {
+    await waitForHttp(origin + '/src/api.ts', 30000);
+
+    const clientModule = await (await fetch(origin + '/src/api.ts')).text();
+    record(
+      mode,
+      'compile',
+      'compilation still on (client module compiled to references)',
+      clientModule.includes('createServerReference'),
+    );
+    record(mode, 'compile', 'secret absent from transformed module', !clientModule.includes(SECRET));
+
+    const functionId = extractFunctionId(clientModule, 'getServerMessage');
+    const res = functionId
+      ? await fetch(
+          `${origin}/_server?id=${encodeURIComponent(functionId)}&args=${encodeURIComponent('["nobody"]')}`,
+          { method: 'POST' },
+        )
+      : null;
+    const body = res ? await res.text() : '';
+    record(
+      mode,
+      'dev',
+      'middleware does not intercept /_server (request falls through, 404)',
+      res?.status === 404,
+      functionId ? `status ${res?.status}` : 'could not extract function id',
+    );
+    record(
+      mode,
+      'dev',
+      'no server-function result served by the dev server',
+      !body.includes('hello nobody from the server'),
+      JSON.stringify(body.slice(0, 120)),
+    );
+
+    // The host's side of the contract, in-process against the dev API.
+    let hostOut = '';
+    let hostOk = false;
+    try {
+      hostOut = execSync('node test/host-dispatch.mjs', {
+        cwd: exampleDir,
+        env,
+        stdio: 'pipe',
+        timeout: 120000,
+      }).toString();
+      hostOk = true;
+    } catch (e) {
+      hostOut = String(e.stdout || '') + String(e.stderr || '');
+    }
+    record(
+      mode,
+      'host',
+      'host-owned dispatch through the handler module works',
+      hostOk && hostOut.includes('HOST-DISPATCH 200 hello host from the server'),
+      hostOut.slice(-500),
+    );
+  } catch (e) {
+    record(
+      mode,
+      'run',
+      'mode completed',
+      false,
+      String(e) + (serverLog ? `\nserver: ${serverLog.slice(-2000)}` : ''),
+    );
+  } finally {
+    try {
+      process.kill(-server.pid, 'SIGTERM');
+    } catch {}
+  }
+}
+
+// Builder-mode ordering: BUILD_SSR_FIRST=1 installs an adversarial
+// `builder.buildApp` in vite.config.ts that builds the ssr environment
+// before the client — the @cloudflare/vite-plugin shape that used to force
+// users to hand-write a client-first ordering plugin. The plugin's own
+// client-build-first hook must have built the client (manifest included)
+// before that orchestrator runs, so the server bundle bakes real hashed
+// assets instead of the manifest-less dev fallback. dist is cleaned first so
+// a stale manifest from an earlier mode can't mask a regression.
+async function runBuilderOrderMode() {
+  const mode = 'builder-order';
+  console.log(`\n=== ${mode.toUpperCase()} ===`);
+  const port = 3170;
+  const origin = `http://localhost:${port}`;
+  const env = { ...process.env, BUILD_SSR_FIRST: '1' };
+
+  let server;
+  let serverLog = '';
+  try {
+    rmSync(path.join(exampleDir, 'dist'), { recursive: true, force: true });
+    console.log('  building…');
+    execSync('pnpm run build', { cwd: exampleDir, stdio: 'pipe', env });
+    record(
+      mode,
+      'build',
+      'client bundle + manifest emitted',
+      existsSync(path.join(exampleDir, 'dist/client/.vite/manifest.json')),
+    );
+    const serverBundle = readFileSync(path.join(exampleDir, 'dist/server/server.js'), 'utf-8');
+    record(
+      mode,
+      'build',
+      'server bundle baked the client manifest (hashed assets, ordering held)',
+      /"file":\s*"assets\//.test(serverBundle) && /"isEntry":\s*true/.test(serverBundle),
+    );
+
+    server = startProcess('node', ['server.js'], {
+      cwd: exampleDir,
+      env: { ...process.env, PORT: String(port), NODE_ENV: 'production' },
+    });
+    server.stdout.on('data', (d) => (serverLog += d));
+    server.stderr.on('data', (d) => (serverLog += d));
+    await waitForHttp(origin + '/', 30000, { headers: { accept: 'text/html' } });
+    const { html } = await fetchStreamed(origin + '/');
+    record(mode, 'prod', 'app server-rendered', html.includes('Turnkey SSR'));
+    record(
+      mode,
+      'prod',
+      'hashed client entry script injected',
+      /<script type="module" src="\/assets\/[^"]+\.js" async><\/script>/.test(html),
+    );
+  } catch (e) {
+    record(
+      mode,
+      'run',
+      'mode completed',
+      false,
+      String(e) + (serverLog ? `\nserver: ${serverLog.slice(-2000)}` : ''),
+    );
+  } finally {
+    if (server) {
+      try {
+        process.kill(-server.pid, 'SIGTERM');
+      } catch {}
+    }
+    // Leave dist in the standard state for anyone poking at it.
+    try {
+      execSync('pnpm run build', { cwd: exampleDir, stdio: 'pipe' });
+    } catch {}
+  }
+}
+
 // Frames: server components (`use server` functions returning a function)
 // enabled by the single config line `serverFunctions: { components: true }`
 // (via SOLID_SERVER_COMPONENTS in vite.config.ts, which also points
@@ -1380,7 +1713,18 @@ async function runBabelHmrMode() {
   }
 }
 
-const ALL_MODES = ['dev', 'prod', 'document', 'entries', 'endpoint', 'frames', 'babel-hmr'];
+const ALL_MODES = [
+  'dev',
+  'prod',
+  'document',
+  'entries',
+  'endpoint',
+  'configure',
+  'no-middleware',
+  'builder-order',
+  'frames',
+  'babel-hmr',
+];
 const arg = process.argv[2];
 const modes = ALL_MODES.includes(arg) ? [arg] : ALL_MODES;
 for (const mode of modes) {
@@ -1389,6 +1733,9 @@ for (const mode of modes) {
   else if (mode === 'document') await runDocumentMode();
   else if (mode === 'entries') await runEntriesMode();
   else if (mode === 'endpoint') await runEndpointMode();
+  else if (mode === 'configure') await runConfigureMode();
+  else if (mode === 'no-middleware') await runNoMiddlewareMode();
+  else if (mode === 'builder-order') await runBuilderOrderMode();
   else if (mode === 'frames') await runFramesMode();
   else await runBabelHmrMode();
 }

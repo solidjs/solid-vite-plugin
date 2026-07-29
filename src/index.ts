@@ -225,6 +225,14 @@ export interface Options {
    * endpoint; it eagerly imports every module containing server functions so
    * registrations survive tree-shaking.
    *
+   * Hosts whose own server environment should own endpoint dispatch in dev
+   * (e.g. @cloudflare/vite-plugin, so functions run in workerd with
+   * bindings) can keep this option and set
+   * `serverFunctions: { devMiddleware: false }` — see
+   * {@link ServerFunctionsOptions.devMiddleware}. A server-only module can
+   * be pinned into the handler graph for pre-dispatch runtime registration
+   * via {@link ServerFunctionsOptions.configure}.
+   *
    * Meta-frameworks that need to control plugin ordering themselves (e.g.
    * relative to a file-system router) and dispatch requests through their
    * own server should use the standalone `serverFunctions()` export instead,
@@ -959,6 +967,73 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
   if (typeof options.ssr === 'object' && options.ssr !== null) {
     plugins.push(
       ...ssrServe(options.ssr, { serverFunctions: !!options.serverFunctions, serverComponents }),
+    );
+  }
+
+  // Builder-mode (environments API) client-before-server build ordering.
+  // Server builds read the client manifest — `virtual:solid-manifest` bakes
+  // dist/client/.vite/manifest.json in, and the persisted server-function
+  // manifest merges the client build's discoveries — so the client
+  // environment must build first. Turnkey's own orchestration already
+  // orders it that way (environment definition order), but a composed setup
+  // whose orchestrator builds server environments first (e.g.
+  // @cloudflare/vite-plugin's buildApp, which builds workers before client)
+  // would bake a manifest-less fallback into the server bundle. Every user
+  // of such a setup had to hand-write this ordering plugin; absorb it.
+  //
+  // Semantics (Vite 7.1+; Vite 6 has no plugin `buildApp` hook and ignores
+  // these, keeping its build-everything default):
+  // - The pre-order hook builds the client environment first, but only
+  //   where the ordering matters: a client build that emits a manifest and
+  //   actually has an input. Orchestrators running after skip it via
+  //   `isBuilt` (or at worst rebuild it, which is wasteful but correct —
+  //   the manifest exists either way when the server environments build).
+  // - Building anything from a hook suppresses Vite's own
+  //   build-all-environments fallback (it only runs when *no* environment
+  //   is built), so a setup with no real orchestrator — e.g. turnkey's
+  //   plain `builder: {}` — would end up with only the client built. The
+  //   post-order hook reinstates exactly that fallback: when nothing but
+  //   our own client build has happened, build the remaining environments
+  //   in definition order, precisely what Vite would have done.
+  if (options.ssr) {
+    let clientBuiltFirst = false;
+    plugins.push(
+      {
+        name: 'solid:client-build-first',
+        apply: 'build',
+        buildApp: {
+          order: 'pre',
+          async handler(builder) {
+            const client = builder.environments.client;
+            if (!client || client.isBuilt) return;
+            const clientBuild = client.config.build;
+            const hasInput =
+              !!clientBuild.rollupOptions?.input ||
+              existsSync(path.resolve(builder.config.root, 'index.html'));
+            if (!clientBuild.manifest || !hasInput) return;
+            await builder.build(client);
+            clientBuiltFirst = true;
+          },
+        },
+      },
+      {
+        name: 'solid:client-build-first/complete',
+        apply: 'build',
+        buildApp: {
+          order: 'post',
+          async handler(builder) {
+            if (!clientBuiltFirst) return;
+            const environments = Object.values(builder.environments);
+            // Some orchestrator built something of its own — the app build
+            // is spoken for, don't build environments it may have skipped
+            // intentionally.
+            if (environments.some((env) => env.isBuilt && env.name !== 'client')) return;
+            for (const environment of environments) {
+              if (!environment.isBuilt) await builder.build(environment);
+            }
+          },
+        },
+      },
     );
   }
 
