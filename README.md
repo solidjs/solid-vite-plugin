@@ -210,6 +210,35 @@ With [`serverFunctions`](#optionsserverfunctions) also enabled the two
 compose: in dev the server-function middleware handles the endpoint before
 SSR; in production the same `handleRequest` serves the endpoint too.
 
+**`external: true`** hands the server side of turnkey to a host integration
+that owns the server environment — build wiring and HTTP serving alike. The
+plugin skips its turnkey server-build config (no `dist/server` output or
+builder flag; the host's orchestrator drives the server build) and stands
+its dev middlewares down (SSR serving and the server-function endpoint
+both). Turnkey still provides everything the host loads through its own
+environment: the generated entries, the client manifest, and the
+`virtual:solid-ssr-handler` request handler — which self-serves in dev,
+inlining the entry graph's CSS through a virtual dev-styles module (HMR
+included) and composing the server-function endpoint, so
+`handleRequest(request)` is the whole contract in dev exactly as in
+production.
+
+Three switches cover host-owned setups, broadest first:
+
+1. **Nothing — capability detection.** When a provider (e.g.
+   @cloudflare/vite-plugin) replaces the dev server's `ssr` environment with
+   its own non-runnable one, the plugin detects that and stands the dev
+   middlewares down automatically; the handler self-serves as above. Zero
+   config.
+2. **`ssr.external: true`** — the explicit whole-server switch: everything
+   detection does, plus skipping the server-build wiring. Also needed when
+   the provider owns a _differently named_ environment (not `ssr`), which
+   detection can't see.
+3. **[`serverFunctions.devMiddleware: false`](#optionsserverfunctions)** —
+   the narrow, endpoint-only switch: keeps turnkey's server build and SSR
+   serving, hands only server-function dispatch in dev to the host. For
+   non-turnkey setups, or when only the endpoint should move.
+
 Turnkey serving is opt-in via the object form, so existing `ssr: true` setups
 are unaffected. See `examples/turnkey` for a complete app (including a
 one-file production server and server functions) and `examples/ssr` for the
@@ -243,7 +272,11 @@ contract as production. Compilation and the virtual modules keep working;
 endpoint requests simply fall through to the host. Since the middleware's
 on-demand module loading is off too, a host owning dev dispatch should
 side-effect import `virtual:solid-server-function-manifest` in its server
-entry so functions referenced only by client code still register.
+entry so functions referenced only by client code still register. (When a
+provider owns the `ssr` environment outright — it isn't runnable — the
+middleware already stands down automatically; see the `external` option
+under [`ssr`](#optionsssr) for the whole-server switch and how the three
+options relate.)
 
 **`configure: './src/server-config.ts'`** pins a server-only module (path
 resolved against the Vite root) into the handler graph: the generated

@@ -69,10 +69,21 @@ export interface SsrOptions {
    */
   document?: string;
   /**
-   * Let an integration own the server build and HTTP serving. Turnkey still
-   * provides its generated entries, request handler, and client manifest.
+   * Let a host integration own the server environment — build wiring and
+   * HTTP serving alike. The plugin skips its turnkey server-build config and
+   * stands its dev middlewares down (SSR serving and the server-function
+   * endpoint); the generated `virtual:solid-ssr-handler` self-serves
+   * instead, inlining dev styles through a virtual module and composing the
+   * server-function endpoint, so `handleRequest(request)` is the whole
+   * contract in dev exactly as in production. Generated entries and the
+   * client manifest are still provided.
    *
-   * Non-runnable development environments are detected automatically.
+   * Often unnecessary: a provider-owned (non-runnable) `ssr` dev environment
+   * is detected automatically and the middlewares stand down on their own.
+   * Set this when the host also owns the server build, or when its
+   * environment uses a different name so detection can't see it. To hand
+   * over only the server-function endpoint, use
+   * `serverFunctions.devMiddleware: false` instead.
    *
    * @default false
    */

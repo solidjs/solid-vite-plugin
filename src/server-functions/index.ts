@@ -85,7 +85,11 @@ export interface ServerFunctionsOptions {
    * the middleware in dev, so a host owning dispatch should side-effect
    * import the manifest module in its server entry to cover them.
    *
-   * @default true
+   * When a provider owns the dev server's `ssr` environment (it isn't
+   * runnable), the middleware already stands down automatically — no need
+   * to set this. See `ssr.external` for the whole-server switch.
+   *
+   * @default true (stands down automatically when the `ssr` dev environment isn't runnable)
    */
   devMiddleware?: boolean;
   /**
