@@ -186,14 +186,16 @@ export const devStylePatch = `(function(){var P=${JSON.stringify(
 async function getModuleNode(
   env: DevEnvironment,
   file: string,
+  importer?: string,
 ): Promise<EnvironmentModuleNode | undefined> {
   try {
-    let node = env.moduleGraph.getModuleById(file) ?? (await env.moduleGraph.getModuleByUrl(file));
-    if (!node?.transformResult) {
-      await env.transformRequest(node?.url ?? file);
-      node = env.moduleGraph.getModuleById(file) ?? (await env.moduleGraph.getModuleByUrl(file));
-    }
-    return node;
+    // fetchModule resolves through the plugin container with importer
+    // context, so dep strings that are placeholder-wrapped virtual URLs
+    // (`/@id/__x00__…`) or importer-relative specifiers land on the right
+    // module id — a raw moduleGraph/transformRequest lookup would miss them.
+    const resolved = await env.fetchModule(file, importer);
+    if (!('id' in resolved)) return;
+    return env.moduleGraph.getModuleById(resolved.id);
   } catch {
     return;
   }
@@ -205,9 +207,10 @@ async function collectModuleDeps(
   deps: Set<EnvironmentModuleNode>,
   crawled: Set<string>,
   onFile?: (file: string) => void,
+  importer?: string,
 ): Promise<void> {
   crawled.add(file);
-  const node = await getModuleNode(env, file);
+  const node = await getModuleNode(env, file, importer);
   if (!node?.id || deps.has(node)) return;
   deps.add(node);
   if (node.file && !node.id.includes('node_modules')) onFile?.(node.file);
@@ -224,7 +227,7 @@ async function collectModuleDeps(
   // from dynamicDeps — dynamic imports load their own styles when rendered.
   for (const dep of directDeps) {
     if (crawled.has(dep)) continue;
-    await collectModuleDeps(env, dep, deps, crawled, onFile);
+    await collectModuleDeps(env, dep, deps, crawled, onFile, node.id);
   }
 }
 
