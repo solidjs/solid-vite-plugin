@@ -23,11 +23,11 @@
 import { existsSync } from 'fs';
 import path from 'path';
 import {
-  isRunnableDevEnvironment,
   type DevEnvironment,
   type Plugin,
   type ViteDevServer,
 } from 'vite';
+import { isRunnableEnvironment } from '../environment.js';
 import {
   collectDevStyles,
   collectDevStyleSources,
@@ -607,7 +607,7 @@ export function ssrServe(
           const externalDev =
             !isBuild &&
             this.environment.mode === 'dev' &&
-            (externalServer || !isRunnableDevEnvironment(this.environment));
+            (externalServer || !isRunnableEnvironment(this.environment));
           return handlerModuleCode(externalDev);
         }
         if (id === RESOLVED_DEV_STYLES_ID) {
@@ -635,7 +635,7 @@ export function ssrServe(
         // that gets the streamed SSR render.
         return () => {
           const ssrEnvironment = server.environments.ssr;
-          if (externalServer || (ssrEnvironment && !isRunnableDevEnvironment(ssrEnvironment))) {
+          if (externalServer || (ssrEnvironment && !isRunnableEnvironment(ssrEnvironment))) {
             return;
           }
           server.middlewares.use((req, res, next) => {

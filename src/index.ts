@@ -33,7 +33,8 @@ export type { ServerFunctionsFilter } from './server-functions/index.js';
 export type { SsrOptions };
 import path from 'path';
 import type { FilterPattern, Plugin, ViteDevServer } from 'vite';
-import { createFilter, isRunnableDevEnvironment, version } from 'vite';
+import { createFilter, version } from 'vite';
+import { isRunnableEnvironment } from './environment.js';
 import { crawlFrameworkPkgs } from 'vitefu';
 
 const require = createRequire(import.meta.url);
@@ -729,7 +730,7 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
       // fall through instead: their plugin needs the real module list to
       // invalidate its remote runner, and its channel never reaches the
       // browser websocket.
-      if (this.environment.name !== 'client' && isRunnableDevEnvironment(this.environment)) {
+      if (this.environment.name !== 'client' && isRunnableEnvironment(this.environment)) {
         // Returning [] also suppresses the signal environment-runner based
         // servers (e.g. nitro's dev worker) rely on to re-evaluate modules,
         // leaving SSR stale until a manual restart. Send the reload on this
