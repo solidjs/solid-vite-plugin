@@ -1,5 +1,15 @@
 # Changelog
 
+## 3.0.0-next.21
+
+### Patch Changes
+
+- 6662c0f: update to solid 2.0.0-beta.29 and @dom-expressions/compiler 0.50.0-next.34 (the single-flight handler wiring imports `frameTransformFlightResult` from `@solidjs/web`, which first ships in beta.29)
+- 1c51f54: Replace vite's `isRunnableDevEnvironment` with a duck-typed `runner`-presence check. Vite's helper is an `instanceof` test against the caller's own `vite` module, so when the plugin resolves to a different physical vite copy than the dev server's (workspace/`link:` installs), every environment failed the check and the SSR/dev middlewares silently stood down — serving markup without hydration wiring.
+- c0fa77c: Install `frameTransformFlightResult` alongside `frameTransformResult` in the generated server-function handler module when `serverComponents` is on: mutations whose single-flight payload includes invalidated server-component markup answer with the frame stream as carrier (regions + envelope in one response). Only active when a router registers a `collectFlightData` hook.
+
+  `frameTransformDirectResult` is now installed in the handler module too (previously only in the generated SSR entry): flight collection makes direct in-process calls during handler dispatch, and the transform brands their results with the call address the client matches showing boundaries against. Without it, a mutation dispatched before the SSR entry loads (dev restart with an open page) would silently degrade in-place morphs to minted boundaries.
+
 ## 3.0.0-next.20
 
 ### Patch Changes
