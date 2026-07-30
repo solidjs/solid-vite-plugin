@@ -12,12 +12,12 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import path from 'path';
 import {
   createFilter,
-  isRunnableDevEnvironment,
   type EnvironmentModuleGraph,
   type FilterPattern,
   type Plugin,
   type ViteDevServer,
 } from 'vite';
+import { isRunnableEnvironment } from '../environment.js';
 import { joinBase, sendWebResponse, webRequestFromNode } from '../http.js';
 import { compile, type CompileOptions } from './compile.js';
 import xxHash32 from './xxhash32.js';
@@ -414,9 +414,30 @@ export function serverFunctions(
       ...(includeManifest ? [`import ${JSON.stringify(manifestId)};`] : []),
       `import { handleServerFunctionRequest as handle, configureServerFunctionsServer } from ${JSON.stringify(runtime.server)};`,
       `import { provideRequestEvent } from ${JSON.stringify(STORAGE_SOURCE)};`,
-      ...(components ? [`import { frameTransformResult } from '@solidjs/web/frames';`] : []),
+      ...(components
+        ? [
+            `import { frameTransformResult, frameTransformFlightResult, frameTransformDirectResult } from '@solidjs/web/frames';`,
+          ]
+        : []),
+      // `transformFlightResult` is the single-flight leg of the same wire
+      // protocol: a mutation whose invalidated payload includes markup gets
+      // the frame stream as its carrier (regions + envelope in one
+      // response). It only runs when a router registered a collectFlightData
+      // hook, so installing it unconditionally alongside the result
+      // transform costs disabled setups nothing.
+      //
+      // `transformDirectResult` is ALSO installed here — not just in the
+      // generated SSR entry — because flight collection makes direct
+      // (in-process) calls during handler dispatch, and the transform is what
+      // brands their results with the call address the client matches showing
+      // boundaries against. The SSR entry usually loads first and installs
+      // the same value (config merges per key), but the handler graph cannot
+      // depend on that: in dev, a mutation from an already-open page can be
+      // the first request after a server restart.
       `configureServerFunctionsServer({ provideEvent: provideRequestEvent, endpoint: ${JSON.stringify(resolvedEndpoint)}${
-        components ? ', transformResult: frameTransformResult' : ''
+        components
+          ? ', transformResult: frameTransformResult, transformFlightResult: frameTransformFlightResult, transformDirectResult: frameTransformDirectResult'
+          : ''
       } });`,
       `export const endpoint = ${JSON.stringify(resolvedEndpoint)};`,
       `export function handleServerFunctionRequest(request, options) {`,
@@ -466,7 +487,7 @@ export function serverFunctions(
         if (id === HANDLER_ID && opts?.ssr) {
           const externalDev =
             this.environment.mode === 'dev' &&
-            (internal.externalDevServer || !isRunnableDevEnvironment(this.environment));
+            (internal.externalDevServer || !isRunnableEnvironment(this.environment));
           return handlerModuleCode(isBuild || externalDev);
         }
         return null;
@@ -482,7 +503,7 @@ export function serverFunctions(
         const ssrEnvironment = server.environments.ssr;
         if (
           internal.externalDevServer ||
-          (ssrEnvironment && !isRunnableDevEnvironment(ssrEnvironment))
+          (ssrEnvironment && !isRunnableEnvironment(ssrEnvironment))
         ) {
           return;
         }
