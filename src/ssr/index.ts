@@ -354,9 +354,9 @@ export function ssrServe(
     const composeServerFunctions = (isBuild || externalDev) && internal.serverFunctions;
     // Generated entries own the whole document wiring, so the handler also
     // injects the server-component bootstrap (the per-function-id
-    // placeholder registry the render plugin references; must be inline at
-    // the TOP of <head>, before the hydration data script streams in — see
-    // the transform below). Authored entries inject it themselves.
+    // placeholder registry the render plugin references; must start the
+    // hydration runtime script, before hydration data streams in — see the
+    // transform below). Authored entries inject it themselves.
     const injectComponentBootstrap = generated && serverComponents;
 
     const lines = [
@@ -419,17 +419,16 @@ export function ssrServe(
       // placeholder as `self._$SC.r(id)`, so a document whose payload carries
       // one throws on that reference if the registry is not defined yet.
       // <HydrationScript /> sits inside <head>, so anchoring on `</head>`
-      // always lands after it — the opening tag is the only anchor that is
-      // reliably before it.
+      // always lands after it. Prepend the bootstrap to that existing script
+      // so it runs first without adding a node that shifts hydration.
       lines.push(
         `    if (!bootstrapped) {`,
-        `      const headOpen = /<head(\\s[^>]*)?>/.exec(chunk);`,
-        `      if (headOpen) {`,
+        `      const at = chunk.indexOf('window._$HY');`,
+        `      if (at !== -1) {`,
         `        bootstrapped = true;`,
-        `        const at = headOpen.index + headOpen[0].length;`,
         `        chunk =`,
         `          chunk.slice(0, at) +`,
-        `          '<script>' + SERVER_COMPONENT_BOOTSTRAP + '</' + 'script>' +`,
+        `          SERVER_COMPONENT_BOOTSTRAP +`,
         `          chunk.slice(at);`,
         `      }`,
         `    }`,
