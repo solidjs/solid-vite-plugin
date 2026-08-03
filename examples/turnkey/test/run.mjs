@@ -298,6 +298,16 @@ async function runSsrChecks(mode, origin) {
     `content in chunk ${contentAt}`,
   );
   record(mode, 'stream', 'async content streamed in', html.includes('STREAMED-ASYNC-CONTENT'));
+
+  // clientOnly's server contract: the import never starts on the server, so
+  // only the fallback may appear in the document — the widget's own marker
+  // text must not (it lives solely in the client chunk).
+  record(
+    mode,
+    'ssr',
+    'clientOnly SSRs its fallback only',
+    html.includes('client-only-fallback') && !html.includes('CLIENT-ONLY-WIDGET'),
+  );
   return html;
 }
 
@@ -479,6 +489,23 @@ async function runBrowserChecks(mode, origin, { hmr, devCss, expectCompiler } = 
       'streamed content settled in the DOM',
       (await cdp.evalJs('document.querySelector("#streamed")?.textContent')) ===
         'STREAMED-ASYNC-CONTENT',
+    );
+
+    // The clientOnly swap runs post-settle: the real widget must land and
+    // replace the SSR'd fallback.
+    record(
+      mode,
+      'browser',
+      'clientOnly widget swapped in after settle',
+      await cdp.waitFor(
+        'document.querySelector("#client-only-widget")?.textContent === "CLIENT-ONLY-WIDGET"',
+      ),
+    );
+    record(
+      mode,
+      'browser',
+      'clientOnly fallback removed after swap',
+      (await cdp.evalJs('document.querySelector("#client-only-fallback")')) === null,
     );
 
     // App.css actually applies after hydration, dev and prod alike.
@@ -728,6 +755,39 @@ async function runProdMode() {
       /<link rel="stylesheet" href="\/assets\/[^"]+\.css">/.test(html),
     );
     record(mode, 'prod', 'no dev injections leaked', !html.includes('/@vite/client'));
+
+    // clientOnly preload contract (compiler 0.50.0-next.35 + @solidjs/web
+    // 2.0.0-beta.30): the module-URL pass annotates the clientOnly() call,
+    // the server half resolves the chunk through the client manifest and
+    // emits a PLAIN modulepreload hint. The chunk URL must appear exactly
+    // once in the document — the link only, never a hydration asset map
+    // entry (the module is not required for hydration; the fallback is what
+    // hydrates).
+    const clientManifest = JSON.parse(
+      readFileSync(path.join(exampleDir, 'dist/client/.vite/manifest.json'), 'utf-8'),
+    );
+    const widgetKey = Object.keys(clientManifest).find((k) => k.endsWith('ClientOnlyWidget.tsx'));
+    const widgetFile = widgetKey && clientManifest[widgetKey].file;
+    record(
+      mode,
+      'prod',
+      'clientOnly chunk emitted and manifest-keyed',
+      !!widgetFile,
+      `manifest keys: ${Object.keys(clientManifest).slice(0, 10).join(', ')}`,
+    );
+    record(
+      mode,
+      'prod',
+      'clientOnly chunk modulepreload hint in SSR head',
+      !!widgetFile && html.includes(`<link rel="modulepreload" href="/${widgetFile}">`),
+    );
+    record(
+      mode,
+      'prod',
+      'clientOnly chunk absent from hydration asset map (URL appears once)',
+      !!widgetFile && html.split(widgetFile).length - 1 === 1,
+      widgetFile ? `${html.split(widgetFile).length - 1} occurrence(s)` : '',
+    );
 
     await runBrowserChecks(mode, origin);
   } catch (e) {

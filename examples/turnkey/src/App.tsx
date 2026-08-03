@@ -9,11 +9,16 @@
 // - HMR (HmrTarget is edited on disk by the test),
 // - CSS handling (App.css must reach the page in dev and prod — inlined in
 //   the dev SSR head, linked as a hashed asset in prod),
+// - clientOnly (the widget SSRs as its fallback, its chunk gets a
+//   modulepreload hint in prod, and the real component swaps in post-settle),
 // - the active JSX backend marker (define-injected) for the babel-hmr mode.
 import { createMemo, createSignal, Loading } from 'solid-js';
+import { clientOnly } from '@solidjs/web';
 import { getServerMessage, greet, hasSecret, requestMethod } from './api';
 import HmrTarget from './HmrTarget';
 import './App.css';
+
+const OnlyClient = clientOnly(() => import('./ClientOnlyWidget'));
 
 // Injected by the vite config's `define`; names the active JSX backend so
 // the e2e can assert which compiler served the page.
@@ -84,6 +89,13 @@ export default function App() {
       <Loading fallback={<p id="stream-fallback">streaming…</p>}>
         <p id="streamed">{streamed()}</p>
       </Loading>
+      {/* Deliberately the LAST sibling: as of @solidjs/web 2.0.0-beta.29/30 a
+          hydrated clientOnly desyncs DOM node tracking for siblings that
+          FOLLOW it — their first post-settle re-render inserts a duplicate
+          instead of replacing (observed as the HMR swap of a following
+          <HmrTarget /> leaving the old text in place). Solid-side bug,
+          reported upstream; when it's fixed this ordering constraint can go. */}
+      <OnlyClient fallback={<p id="client-only-fallback">client-only-fallback</p>} />
     </main>
   );
 }
