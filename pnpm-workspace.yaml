@@ -8,25 +8,25 @@ allowBuilds:
   msw: true
 
 catalog:
-  solid-js: ">=2.0.0-beta.28 <2.0.0-experimental.0"
-  "@solidjs/web": ">=2.0.0-beta.28 <2.0.0-experimental.0"
+  solid-js: ">=2.0.0-beta.30 <2.0.0-experimental.0"
+  "@solidjs/web": ">=2.0.0-beta.30 <2.0.0-experimental.0"
 
 ignoredBuiltDependencies:
   - cypress
 
 minimumReleaseAgeExclude:
-  - '@solidjs/signals@2.0.0-beta.28 || 2.0.0-beta.29'
-  - '@solidjs/web@2.0.0-beta.28 || 2.0.0-beta.29'
-  - babel-preset-solid@2.0.0-beta.28 || 2.0.0-beta.29
-  - solid-js@2.0.0-beta.28 || 2.0.0-beta.29
-  - '@dom-expressions/babel-plugin-jsx@0.50.0-next.33 || 0.50.0-next.34'
-  - '@dom-expressions/compiler-darwin-arm64@0.50.0-next.33 || 0.50.0-next.34'
-  - '@dom-expressions/compiler-darwin-x64@0.50.0-next.33 || 0.50.0-next.34'
-  - '@dom-expressions/compiler-linux-arm64-gnu@0.50.0-next.33 || 0.50.0-next.34'
-  - '@dom-expressions/compiler-linux-x64-gnu@0.50.0-next.33 || 0.50.0-next.34'
-  - '@dom-expressions/compiler-win32-x64-msvc@0.50.0-next.33 || 0.50.0-next.34'
-  - '@dom-expressions/compiler-wasm32-wasi@0.50.0-next.33 || 0.50.0-next.34'
-  - '@dom-expressions/compiler@0.50.0-next.33 || 0.50.0-next.34'
+  - '@solidjs/signals@2.0.0-beta.29 || 2.0.0-beta.30'
+  - '@solidjs/web@2.0.0-beta.29 || 2.0.0-beta.30'
+  - babel-preset-solid@2.0.0-beta.29 || 2.0.0-beta.30
+  - solid-js@2.0.0-beta.29 || 2.0.0-beta.30
+  - '@dom-expressions/babel-plugin-jsx@0.50.0-next.34 || 0.50.0-next.35'
+  - '@dom-expressions/compiler-darwin-arm64@0.50.0-next.34 || 0.50.0-next.35'
+  - '@dom-expressions/compiler-darwin-x64@0.50.0-next.34 || 0.50.0-next.35'
+  - '@dom-expressions/compiler-linux-arm64-gnu@0.50.0-next.34 || 0.50.0-next.35'
+  - '@dom-expressions/compiler-linux-x64-gnu@0.50.0-next.34 || 0.50.0-next.35'
+  - '@dom-expressions/compiler-win32-x64-msvc@0.50.0-next.34 || 0.50.0-next.35'
+  - '@dom-expressions/compiler-wasm32-wasi@0.50.0-next.34 || 0.50.0-next.35'
+  - '@dom-expressions/compiler@0.50.0-next.34 || 0.50.0-next.35'
   - '@solidjs/testing-library@1.0.0-beta.2'
 
 onlyBuiltDependencies:
