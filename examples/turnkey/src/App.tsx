@@ -89,12 +89,17 @@ export default function App() {
       <Loading fallback={<p id="stream-fallback">streaming…</p>}>
         <p id="streamed">{streamed()}</p>
       </Loading>
-      {/* Deliberately the LAST sibling: as of @solidjs/web 2.0.0-beta.29/30 a
-          hydrated clientOnly desyncs DOM node tracking for siblings that
-          FOLLOW it — their first post-settle re-render inserts a duplicate
-          instead of replacing (observed as the HMR swap of a following
-          <HmrTarget /> leaving the old text in place). Solid-side bug,
-          reported upstream; when it's fixed this ordering constraint can go. */}
+      {/* Deliberately the LAST sibling: in @solidjs/web ≤2.0.0-beta.30 a
+          hydrated clientOnly shifts the hydration ids of every FOLLOWING
+          sibling (its swap gate held an id-consuming owner the server half
+          never minted), so a following sibling's first post-settle re-render
+          duplicated instead of replacing — observed as the HMR swap of a
+          following <HmrTarget /> leaving the old text in place. Fixed
+          upstream in solidjs/solid next @ edb3e36f ("Arm clientOnly's swap
+          without an owner so sibling hydration ids stay aligned"); once the
+          release after beta.30 lands, move this above <HmrTarget /> so the
+          e2e exercises the fixed path. Verified locally: with a @solidjs/web
+          built from edb3e36f the reordered layout passes 197/197. */}
       <OnlyClient fallback={<p id="client-only-fallback">client-only-fallback</p>} />
     </main>
   );
