@@ -12,8 +12,11 @@
 // - clientOnly (the widget SSRs as its fallback, its chunk gets a
 //   modulepreload hint in prod, and the real component swaps in post-settle),
 // - the active JSX backend marker (define-injected) for the babel-hmr mode.
+// - the response-head lifecycle (paths under /missing, /redirect-pre,
+//   /redirect-post, /whoami, /boom — plain-HTTP surfaces for the http and
+//   middleware e2e checks; the default path is untouched).
 import { createMemo, createSignal, Loading } from 'solid-js';
-import { clientOnly } from '@solidjs/web';
+import { clientOnly, getRequestEvent, httpHeader, httpStatus, isServer } from '@solidjs/web';
 import { getServerMessage, greet, hasSecret, requestMethod } from './api';
 import HmrTarget from './HmrTarget';
 import './App.css';
@@ -24,7 +27,55 @@ const OnlyClient = clientOnly(() => import('./ClientOnlyWidget'));
 // the e2e can assert which compiler served the page.
 declare const __JSX_COMPILER__: string;
 
+// Streams a shell, then writes a redirect Location AFTER the shell is out:
+// the head is committed, so the runtime must fall back to the script
+// redirect (`<script>window.location=...`) instead of a 3xx.
+function LateRedirect() {
+  const late = createMemo(async function* () {
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    if (isServer) {
+      // httpHeader() would no-op here (the head is committed); routers write
+      // the stub directly for post-flush redirects, so do the same.
+      getRequestEvent()!.response.headers.set('Location', '/redirected-target');
+    }
+    yield 'LATE-REDIRECT-CONTENT';
+  });
+  return (
+    <main>
+      <Loading fallback={<p>late…</p>}>
+        <p>{late()}</p>
+      </Loading>
+    </main>
+  );
+}
+
 export default function App() {
+  // Plain-HTTP test surfaces keyed off the path (isomorphic read so the
+  // rendered tree can't mismatch if one of them were ever hydrated).
+  const pathname = isServer
+    ? new URL(getRequestEvent()!.request.url).pathname
+    : window.location.pathname;
+  if (pathname === '/missing') {
+    httpStatus(404);
+    httpHeader('x-page', 'missing');
+    return <main id="not-found">NOT-FOUND-PAGE</main>;
+  }
+  if (pathname === '/redirect-pre') {
+    // Pre-flush: a Location on the stub must become a real 3xx (no body).
+    httpHeader('Location', '/redirected-target');
+    return <main>redirecting…</main>;
+  }
+  if (pathname === '/redirect-post') return <LateRedirect />;
+  if (pathname === '/whoami') {
+    // Middleware decorates locals before dispatch; the page reads them.
+    const user = isServer ? String(getRequestEvent()!.locals.user ?? 'anonymous') : '';
+    return <main id="whoami">user:{user}</main>;
+  }
+  if (pathname === '/boom') {
+    // A render throw the error middleware must be able to catch.
+    throw new Error('boom-page');
+  }
+
   const [count, setCount] = createSignal(0);
   const [message, setMessage] = createSignal('');
   const [doubled, setDoubled] = createSignal('');

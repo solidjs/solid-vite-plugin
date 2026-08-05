@@ -18,6 +18,9 @@ import solidPlugin from 'vite-plugin-solid';
 // - SERVER_FN_ENDPOINT overrides the server-function endpoint.
 // - SERVER_FN_CONFIGURE pins src/serverConfig.ts into the handler graph via
 //   `serverFunctions.configure` (configure mode).
+// - SSR_MIDDLEWARE=1 wires src/middleware.ts through `ssr.middleware`
+//   (middleware and preview modes): a fetch-style chain fronting every
+//   dispatch path with getRequestEvent() live inside it.
 // - SERVER_FN_DEV_MIDDLEWARE=0 disables the turnkey dev middleware via
 //   `serverFunctions.devMiddleware` (no-middleware mode) — endpoint dispatch
 //   becomes the host's job, like a Cloudflare-style environment plugin.
@@ -62,7 +65,13 @@ export default defineConfig({
         ? { app: 'src/frames/FramesApp.tsx' }
         : process.env.SSR_DOCUMENT
           ? { document: process.env.SSR_DOCUMENT }
-          : { external: !!process.env.SOLID_EXTERNAL },
+          : {
+              external: !!process.env.SOLID_EXTERNAL,
+              // SSR_MIDDLEWARE=1 (middleware/preview modes): a fetch-style
+              // chain fronting every dispatch path — page SSR, /_server,
+              // preview — with getRequestEvent() live inside it.
+              ...(process.env.SSR_MIDDLEWARE ? { middleware: './src/middleware.ts' } : {}),
+            },
       serverFunctions: serverComponents
         ? { components: true }
         : {

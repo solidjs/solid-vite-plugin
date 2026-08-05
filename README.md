@@ -182,9 +182,53 @@ import { handleRequest } from './dist/server/server.js';
 const response = await handleRequest(request);
 ```
 
+- **Preview**: `vite build && vite preview` runs the production artifact
+  with no server file — Vite's preview statics serve `dist/client`, and
+  everything else (pages, the server-function endpoint, middleware)
+  dispatches through the built handler.
+
 Each request is scoped with `provideRequestEvent`, so `getRequestEvent()`
 works during the render; hashed client assets (entry script, CSS) are
 resolved through the build manifest and injected into `<head>`.
+
+Every dispatch runs under a stub-backed request event
+(`createRequestEvent` from `@solidjs/web`), and page responses go through
+the runtime's response-head lifecycle (`createSSRResponse`):
+`httpStatus()` / `httpHeader()` writes made during the render land on the
+wire at shell flush, a `Location` header set before the flush becomes a
+real 3xx redirect, and one set after it (streamed responses) falls back to
+a `<script>window.location=...</script>` tail.
+
+**`middleware`** points at a server-only module default-exporting one
+fetch-style middleware — `(request, next) => Response | Promise<Response>`
+— or an array of them, composed in order:
+
+```ts
+// vite.config.ts
+solid({ ssr: { middleware: './src/middleware.ts' } });
+
+// src/middleware.ts
+import { getRequestEvent } from '@solidjs/web';
+
+export default async function auth(request: Request, next) {
+  getRequestEvent().locals.user = await userFromCookie(request);
+  try {
+    const response = await next();
+    response.headers.set('server-timing', 'app'); // pre-wire window
+    return response;
+  } catch (error) {
+    return new Response('oops', { status: 500 });
+  }
+}
+```
+
+The chain fronts every request the plugin dispatches — page SSR and the
+server-function endpoint, dev, production, and preview alike — and runs
+inside the request-event scope, so `getRequestEvent()` works exactly as in
+application code (the endpoint shares the chain's event, so `locals`
+decoration is visible to server functions too). Nothing reaches the wire
+until the outermost middleware returns: headers stay mutable after
+`next()` even for streamed responses.
 
 **Entry resolution** (all paths relative to the Vite root):
 
@@ -207,8 +251,10 @@ resolved through the build manifest and injected into `<head>`.
    automatically.
 
 With [`serverFunctions`](#optionsserverfunctions) also enabled the two
-compose: in dev the server-function middleware handles the endpoint before
-SSR; in production the same `handleRequest` serves the endpoint too.
+compose: `handleRequest` serves the endpoint on every surface (in dev the
+server-function middleware pre-loads the referenced module, then dispatches
+through the same handler), so one middleware chain and one request event
+front pages and server functions identically.
 
 **`external: true`** hands the server side of turnkey to a host integration
 that owns the server environment — build wiring and HTTP serving alike. The

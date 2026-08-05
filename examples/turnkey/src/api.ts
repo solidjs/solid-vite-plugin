@@ -28,6 +28,14 @@ export async function requestMethod() {
   return event ? event.request.method : 'no-event';
 }
 
+// Middleware-mode probe: user middleware decorates `event.locals` before
+// dispatch, and because the endpoint shares the chain's request event, the
+// function sees the decoration.
+export async function whoAmI() {
+  const event = getRequestEvent();
+  return String(event?.locals.user ?? 'anonymous');
+}
+
 // Probe for the `serverFunctions.configure` e2e: src/serverConfig.ts (when
 // pinned into the handler graph) rewrites this exact result and stamps a
 // response header — in every other mode the string round-trips untouched.

@@ -23,7 +23,7 @@ import {
 } from './client-manifest.js';
 
 import { serverFunctions, type ServerFunctionsOptions } from './server-functions/index.js';
-import { ssrServe, type SsrOptions } from './ssr/index.js';
+import { SSR_HANDLER_ID, ssrServe, type SsrOptions } from './ssr/index.js';
 
 export { devStylePatch } from './dev-manifest.js';
 export type { ClientAssetMap } from './client-manifest.js';
@@ -1017,12 +1017,18 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
   // on raw directives, and client-mode module-level extraction must happen
   // before templates are generated), so its sub-plugins go first. The
   // boundary markers (`server-only` / `client-only`) are always on.
+  const turnkeySsr =
+    typeof options.ssr === 'object' && options.ssr !== null ? options.ssr : null;
   const plugins: Plugin[] = options.serverFunctions
     ? [
         boundaryModules(),
         ...serverFunctions(options.serverFunctions === true ? {} : options.serverFunctions, {
           devMiddleware: true,
           externalDevServer,
+          // With turnkey SSR on, the dev middleware dispatches the endpoint
+          // through the SSR handler so user middleware and the stub-backed
+          // request event front it exactly like page SSR.
+          ...(turnkeySsr ? { ssrHandler: SSR_HANDLER_ID } : {}),
         }),
         mainPlugin,
       ]
@@ -1030,9 +1036,9 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
 
   // The object form of `ssr` opts into turnkey serving on top of the
   // transforms (`ssr: true` keeps the historical transform-only behavior).
-  if (typeof options.ssr === 'object' && options.ssr !== null) {
+  if (turnkeySsr) {
     plugins.push(
-      ...ssrServe(options.ssr, { serverFunctions: !!options.serverFunctions, serverComponents }),
+      ...ssrServe(turnkeySsr, { serverFunctions: !!options.serverFunctions, serverComponents }),
     );
   }
 

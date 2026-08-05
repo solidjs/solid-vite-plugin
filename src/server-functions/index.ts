@@ -303,7 +303,7 @@ function invalidateModules(
  */
 export function serverFunctions(
   options: ServerFunctionsOptions = {},
-  internal: { devMiddleware?: boolean; externalDevServer?: boolean } = {},
+  internal: { devMiddleware?: boolean; externalDevServer?: boolean; ssrHandler?: string } = {},
 ): Plugin[] {
   const filterInclude = options.filter?.include || DEFAULT_INCLUDE;
   const filterExclude = options.filter?.exclude || DEFAULT_EXCLUDE;
@@ -528,10 +528,14 @@ export function serverFunctions(
             }
             // Dispatch through a module evaluated in the SSR environment so
             // the handler shares the registry instance with the app modules.
-            const handler = await server.ssrLoadModule(HANDLER_ID);
-            const response: Response = await handler.handleServerFunctionRequest(
-              webRequestFromNode(req),
-            );
+            // With turnkey SSR active the main plugin threads its handler id
+            // in, and dispatch goes through `handleRequest` instead — one
+            // middleware chain and one stub-backed request event front the
+            // endpoint exactly as they front page SSR.
+            const handler = await server.ssrLoadModule(internal.ssrHandler ?? HANDLER_ID);
+            const response: Response = internal.ssrHandler
+              ? await handler.handleRequest(webRequestFromNode(req))
+              : await handler.handleServerFunctionRequest(webRequestFromNode(req));
             await sendWebResponse(res, response);
           })().catch((error) => {
             if (error instanceof Error) server.ssrFixStacktrace(error);

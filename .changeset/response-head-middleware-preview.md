@@ -1,0 +1,10 @@
+---
+'vite-plugin-solid': patch
+---
+
+Turnkey SSR adopts the runtime's response-head lifecycle, gains fetch-style middleware, and serves `vite preview` (requires `@solidjs/web` > 2.0.0-beta.31 for `createRequestEvent` / `createSSRResponse` / `composeMiddleware`):
+
+- Every dispatch runs under a stub-backed request event (`createRequestEvent`) and page responses go through `createSSRResponse`: `httpStatus()` / `httpHeader()` writes land on the wire at shell flush, a pre-flush `Location` becomes a real 3xx redirect, and a post-flush one (streamed responses) falls back to a nonce-aware `<script>window.location=...</script>` tail. Raw `Response` results and server-function responses get uncommitted stub headers merged (set-cookie appended) so cookie/header writes made before they were produced still land.
+- `ssr.middleware`: a server-only module default-exporting one `(request, next) => Response | Promise<Response>` function or an array, composed in order. The chain fronts every dispatch path — page SSR, the server-function endpoint, dev, external-dev, production, preview — and runs inside the request-event scope, so `getRequestEvent()` works exactly as in app code; the endpoint shares the chain's event, so `locals` decoration is visible to server functions. Nothing hits the wire until the outermost middleware returns (post-`next()` header mutation works on streamed responses), and error middleware is a plain `try { await next() } catch`.
+- `vite build && vite preview` now works with no server file: `configurePreviewServer` serves `dist/client` statically through Vite's preview statics and dispatches everything else through the built handler — middleware and lifecycle included, HTML opted out of preview compression so streaming stays observable.
+- With `serverFunctions` enabled, the runnable-dev endpoint middleware now dispatches through the SSR handler (after pre-loading the referenced module), so one middleware chain and one request event front pages and server functions identically on every surface.

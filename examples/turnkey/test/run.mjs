@@ -77,9 +77,22 @@
 //     generated entries and client assets carry no reference to the
 //     server-components runtime when the option is off.
 //
+//   - the response-head lifecycle in dev, prod, and preview (App.tsx's
+//     path-keyed surfaces): httpStatus(404)/httpHeader reach the wire, a
+//     pre-flush Location is a real 3xx with no body, a post-flush Location
+//     emits the script-redirect fallback on the streamed 200,
+//   - `ssr.middleware` (SSR_MIDDLEWARE=1, src/middleware.ts): composition
+//     order, locals decoration visible to the page and to a server function
+//     over /_server (one request event fronts both), short-circuiting,
+//     error middleware catching a render throw, and the post-next()
+//     header-mutation window on a streamed response — in dev and prod,
+//   - `vite preview` serves the production artifact with no server file:
+//     dist/client statically, everything else (pages, /_server, middleware,
+//     the lifecycle) through the built handler.
+//
 // Requires the plugin built (pnpm build at the repo root) and Google Chrome.
 // Usage: node test/run.mjs
-// [dev|prod|document|entries|endpoint|configure|no-middleware|builder-order|builder-prepare|babel-hmr|frames]
+// [dev|prod|document|entries|endpoint|configure|no-middleware|middleware|preview|builder-order|builder-prepare|babel-hmr|frames]
 // (default: all)
 
 import { spawn, execSync } from 'node:child_process';
@@ -167,7 +180,7 @@ async function fetchStreamed(url) {
     chunks.push(chunk);
     html += chunk;
   }
-  return { status: res.status, chunks, html };
+  return { status: res.status, headers: res.headers, chunks, html };
 }
 
 // ---------------------------------------------------------------------------
@@ -310,6 +323,63 @@ async function runSsrChecks(mode, origin) {
     html.includes('client-only-fallback') && !html.includes('CLIENT-ONLY-WIDGET'),
   );
   return html;
+}
+
+// Response-head lifecycle checks (App.tsx's path-keyed surfaces), shared by
+// dev, prod, and preview: httpStatus/httpHeader reach the wire, a pre-flush
+// Location is a real 3xx with no body, a post-flush Location (written after
+// the shell streamed) falls back to the script redirect on a 200.
+async function runHttpChecks(mode, origin) {
+  const missing = await fetchStreamed(origin + '/missing');
+  record(
+    mode,
+    'http',
+    'httpStatus(404) reaches the wire',
+    missing.status === 404,
+    `status ${missing.status}`,
+  );
+  record(
+    mode,
+    'http',
+    'httpHeader lands on the response',
+    missing.headers.get('x-page') === 'missing',
+    `x-page: ${JSON.stringify(missing.headers.get('x-page'))}`,
+  );
+  record(mode, 'http', '404 still renders its page', missing.html.includes('NOT-FOUND-PAGE'));
+
+  const pre = await fetch(origin + '/redirect-pre', {
+    headers: { accept: 'text/html' },
+    redirect: 'manual',
+  });
+  record(
+    mode,
+    'http',
+    'pre-flush Location becomes a real 3xx',
+    pre.status === 302,
+    `status ${pre.status}`,
+  );
+  record(
+    mode,
+    'http',
+    'pre-flush redirect keeps its Location',
+    pre.headers.get('location') === '/redirected-target',
+  );
+  record(mode, 'http', 'pre-flush redirect ships no body', (await pre.text()) === '');
+
+  const post = await fetchStreamed(origin + '/redirect-post');
+  record(
+    mode,
+    'http',
+    'post-flush redirect stays 200 (head already committed)',
+    post.status === 200,
+    `status ${post.status}`,
+  );
+  record(
+    mode,
+    'http',
+    'post-flush redirect emits the script fallback',
+    post.html.includes('window.location') && post.html.includes('/redirected-target'),
+  );
 }
 
 // HMR checks against a running dev server: fresh page load (hydrated SSR),
@@ -654,6 +724,8 @@ async function runDevMode() {
         !generatedEntry.includes('@solidjs/web/frames'),
     );
 
+    await runHttpChecks(mode, origin);
+
     await runBrowserChecks(mode, origin, { hmr: true, devCss: true, expectCompiler: 'native' });
   } catch (e) {
     record(
@@ -789,6 +861,8 @@ async function runProdMode() {
       !!widgetFile && html.split(widgetFile).length - 1 === 1,
       widgetFile ? `${html.split(widgetFile).length - 1} occurrence(s)` : '',
     );
+
+    await runHttpChecks(mode, origin);
 
     await runBrowserChecks(mode, origin);
   } catch (e) {
@@ -1841,6 +1915,246 @@ async function runFramesMode() {
   }
 }
 
+// `ssr.middleware`: SSR_MIDDLEWARE=1 wires src/middleware.ts (two fetch-style
+// functions, composed in order) through the generated handler. Asserted over
+// plain HTTP in dev and prod (the same chain fronts both):
+// - composition + the post-next() window: the streamed page carries headers
+//   the outermost middleware set AFTER awaiting next() — while the body
+//   still streams (multiple chunks, late content present), proving nothing
+//   hit the wire before the chain unwound,
+// - locals decoration visible to the page render (/whoami) and to a server
+//   function over /_server (the endpoint shares the chain's request event),
+// - short-circuit (/blocked never reaches the render),
+// - error middleware (/boom: a render throw becomes the middleware's 500).
+async function runMiddlewareChecksOverHttp(mode, origin, functionId) {
+  const page = await fetchStreamed(origin + '/');
+  record(
+    mode,
+    'mw',
+    'middleware composed in order (x-mw-order header)',
+    page.headers.get('x-mw-order') === 'first,second',
+    `x-mw-order: ${JSON.stringify(page.headers.get('x-mw-order'))}`,
+  );
+  record(
+    mode,
+    'mw',
+    'post-next() header mutation lands on a streamed response',
+    page.headers.get('x-after-next') === 'set-after-next' &&
+      page.chunks.length > 1 &&
+      page.html.includes('STREAMED-ASYNC-CONTENT'),
+    `x-after-next: ${JSON.stringify(page.headers.get('x-after-next'))}, ${page.chunks.length} chunk(s)`,
+  );
+
+  // (`mw-user` alone: hydration comment markers split the `user:` prefix
+  // into its own text node.)
+  const whoami = await fetchStreamed(origin + '/whoami');
+  record(
+    mode,
+    'mw',
+    'locals decoration visible to the page render',
+    whoami.html.includes('mw-user'),
+  );
+
+  const blocked = await fetch(origin + '/blocked', { headers: { accept: 'text/html' } });
+  const blockedBody = await blocked.text();
+  record(
+    mode,
+    'mw',
+    'middleware short-circuits before the render',
+    blocked.status === 403 && blockedBody === 'blocked-by-middleware',
+    `status ${blocked.status}, body ${JSON.stringify(blockedBody.slice(0, 60))}`,
+  );
+
+  const boom = await fetch(origin + '/boom', { headers: { accept: 'text/html' } });
+  const boomBody = await boom.text();
+  record(
+    mode,
+    'mw',
+    'error middleware catches a render throw',
+    boom.status === 500 && boom.headers.get('x-mw-caught') === '1' && boomBody.includes('boom-page'),
+    `status ${boom.status}, body ${JSON.stringify(boomBody.slice(0, 60))}`,
+  );
+
+  if (functionId) {
+    const fn = await fetch(
+      `${origin}/_server?id=${encodeURIComponent(functionId)}&args=${encodeURIComponent('[]')}`,
+      { method: 'POST' },
+    );
+    const fnBody = await fn.text();
+    record(
+      mode,
+      'mw',
+      'server function sees middleware locals (shared request event)',
+      fnBody === 'mw-user',
+      `body ${JSON.stringify(fnBody.slice(0, 60))}`,
+    );
+    record(
+      mode,
+      'mw',
+      'middleware fronts the /_server endpoint (headers on the response)',
+      fn.headers.get('x-mw-order') === 'first,second',
+      `x-mw-order: ${JSON.stringify(fn.headers.get('x-mw-order'))}`,
+    );
+  }
+}
+
+async function runMiddlewareMode() {
+  console.log(`\n=== MIDDLEWARE ===`);
+  const devPort = 3172;
+  const prodPort = 3173;
+  const env = { ...process.env, SSR_MIDDLEWARE: '1' };
+
+  let server;
+  let serverLog = '';
+  const captureLog = (child) => {
+    child.stdout.on('data', (d) => (serverLog += d));
+    child.stderr.on('data', (d) => (serverLog += d));
+  };
+  let functionId = null;
+  try {
+    // ---- Dev: the chain fronts the dev middlewares -----------------------
+    const devOrigin = `http://localhost:${devPort}`;
+    server = startProcess('pnpm', ['exec', 'vite', '--port', String(devPort), '--strictPort'], {
+      cwd: exampleDir,
+      env,
+    });
+    captureLog(server);
+    await waitForHttp(devOrigin + '/src/api.ts', 30000);
+    const clientModule = await (await fetch(devOrigin + '/src/api.ts')).text();
+    functionId = extractFunctionId(clientModule, 'whoAmI');
+    await runMiddlewareChecksOverHttp('mw-dev', devOrigin, functionId);
+    // The lifecycle keeps working with middleware in front.
+    await runHttpChecks('mw-dev', devOrigin);
+    try {
+      process.kill(-server.pid, 'SIGTERM');
+    } catch {}
+    server = undefined;
+
+    // ---- Prod: the same chain in the virtual handler ---------------------
+    console.log('  building…');
+    execSync('pnpm run build', { cwd: exampleDir, stdio: 'pipe', env });
+    const prodOrigin = `http://localhost:${prodPort}`;
+    server = startProcess('node', ['server.js'], {
+      cwd: exampleDir,
+      env: { ...env, PORT: String(prodPort), NODE_ENV: 'production' },
+    });
+    captureLog(server);
+    await waitForHttp(prodOrigin + '/', 30000, { headers: { accept: 'text/html' } });
+    // Prod ids drop the dev-only trailing `-name` segment.
+    const prodId = functionId ? functionId.replace(/-whoAmI$/, '') : null;
+    await runMiddlewareChecksOverHttp('mw-prod', prodOrigin, prodId);
+    await runHttpChecks('mw-prod', prodOrigin);
+  } catch (e) {
+    record(
+      'middleware',
+      'run',
+      'mode completed',
+      false,
+      String(e) + (serverLog ? `\nserver: ${serverLog.slice(-2000)}` : ''),
+    );
+  } finally {
+    if (server) {
+      try {
+        process.kill(-server.pid, 'SIGTERM');
+      } catch {}
+    }
+    // Leave dist in the standard state for anyone poking at it.
+    try {
+      execSync('pnpm run build', { cwd: exampleDir, stdio: 'pipe' });
+    } catch {}
+  }
+}
+
+// `vite preview`: `vite build && vite preview` must serve the production
+// artifact with no server file — dist/client statically (Vite's preview
+// statics), everything else through the built handler (pages, /_server,
+// the middleware chain, the response-head lifecycle).
+async function runPreviewMode() {
+  const mode = 'preview';
+  console.log(`\n=== ${mode.toUpperCase()} ===`);
+  const port = 3174;
+  const origin = `http://localhost:${port}`;
+  const env = { ...process.env, SSR_MIDDLEWARE: '1' };
+
+  let server;
+  let serverLog = '';
+  try {
+    console.log('  building…');
+    execSync('pnpm run build', { cwd: exampleDir, stdio: 'pipe', env });
+    server = startProcess(
+      'pnpm',
+      ['exec', 'vite', 'preview', '--port', String(port), '--strictPort'],
+      { cwd: exampleDir, env },
+    );
+    serverLog = '';
+    server.stdout.on('data', (d) => (serverLog += d));
+    server.stderr.on('data', (d) => (serverLog += d));
+    await waitForHttp(origin + '/', 30000, { headers: { accept: 'text/html' } });
+
+    const page = await fetchStreamed(origin + '/');
+    record(
+      mode,
+      'ssr',
+      'preview serves the SSR page through the built handler',
+      page.status === 200 && page.html.includes('Turnkey SSR'),
+    );
+    record(
+      mode,
+      'ssr',
+      'preview response streams',
+      page.chunks.length > 1 && page.html.includes('STREAMED-ASYNC-CONTENT'),
+      `${page.chunks.length} chunk(s)`,
+    );
+    const entryMatch = /<script type="module" src="(\/assets\/[^"]+\.js)" async>/.exec(page.html);
+    record(mode, 'ssr', 'hashed client entry script injected', !!entryMatch);
+    if (entryMatch) {
+      const asset = await fetch(origin + entryMatch[1]);
+      record(
+        mode,
+        'static',
+        'hashed client asset served statically from dist/client',
+        asset.status === 200 && /javascript/.test(asset.headers.get('content-type') || ''),
+        `status ${asset.status}, content-type ${asset.headers.get('content-type')}`,
+      );
+      await asset.arrayBuffer();
+    }
+
+    // The endpoint dispatches through the same handler.
+    const bogus = await fetch(origin + '/_server?id=bogus-0', { method: 'POST' });
+    record(mode, 'sf', 'preview dispatches /_server (unknown id rejected)', bogus.status === 404);
+
+    // Middleware fronts preview exactly like dev and prod.
+    record(
+      mode,
+      'mw',
+      'middleware chain live under preview',
+      page.headers.get('x-mw-order') === 'first,second' &&
+        page.headers.get('x-after-next') === 'set-after-next',
+      `x-mw-order: ${JSON.stringify(page.headers.get('x-mw-order'))}`,
+    );
+
+    await runHttpChecks(mode, origin);
+  } catch (e) {
+    record(
+      mode,
+      'run',
+      'mode completed',
+      false,
+      String(e) + (serverLog ? `\nserver: ${serverLog.slice(-2000)}` : ''),
+    );
+  } finally {
+    if (server) {
+      try {
+        process.kill(-server.pid, 'SIGTERM');
+      } catch {}
+    }
+    // Leave dist in the standard state for anyone poking at it.
+    try {
+      execSync('pnpm run build', { cwd: exampleDir, stdio: 'pipe' });
+    } catch {}
+  }
+}
+
 // Babel-JSX HMR: a separate dev server forced to `compiler: 'babel'` via
 // SOLID_JSX_COMPILER, proving the native refresh pass and the
 // solid-js/refresh core runtime also work when the JSX transform runs
@@ -2035,6 +2349,8 @@ const ALL_MODES = [
   'endpoint',
   'configure',
   'no-middleware',
+  'middleware',
+  'preview',
   'builder-order',
   'builder-prepare',
   'frames',
@@ -2052,6 +2368,8 @@ for (const mode of modes) {
   else if (mode === 'endpoint') await runEndpointMode();
   else if (mode === 'configure') await runConfigureMode();
   else if (mode === 'no-middleware') await runNoMiddlewareMode();
+  else if (mode === 'middleware') await runMiddlewareMode();
+  else if (mode === 'preview') await runPreviewMode();
   else if (mode === 'builder-order') await runBuilderOrderMode();
   else if (mode === 'builder-prepare') await runBuilderPrepareMode();
   else if (mode === 'frames') await runFramesMode();

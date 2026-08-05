@@ -17,14 +17,24 @@
 //   absent, default entries are generated from a single root component
 //   (`ssr.app`, defaulting to `src/App.*`) wrapped in a document shell
 //   (`ssr.document`, defaulting to `src/Document.*`, else a built-in one).
-// - When `serverFunctions` is also enabled, the production handler and any
-//   provider-owned dev handler compose it. Runnable dev environments keep the
-//   earlier server-function middleware.
+// - When `serverFunctions` is also enabled, the handler composes the
+//   endpoint on every surface; the runnable-dev server-function middleware
+//   pre-loads the referenced module, then dispatches through this handler.
+// - Every dispatch runs under a stub-backed request event
+//   (`createRequestEvent`) with the optional `ssr.middleware` chain fronting
+//   it, and page responses go through the runtime's `createSSRResponse`
+//   head lifecycle (commit at shell flush, real pre-flush redirects, the
+//   script fallback post-flush).
+// - `vite preview` serves dist/client statically and dispatches everything
+//   else through the built handler — the production path, middleware
+//   included, with no server file needed.
 import { existsSync } from 'fs';
 import path from 'path';
+import { pathToFileURL } from 'node:url';
 import {
   type DevEnvironment,
   type Plugin,
+  type PreviewServer,
   type ViteDevServer,
 } from 'vite';
 import { isRunnableEnvironment } from '../environment.js';
@@ -69,6 +79,23 @@ export interface SsrOptions {
    */
   document?: string;
   /**
+   * Path to a server-only module (resolved relative to the Vite root) whose
+   * default export is one fetch-style middleware function — `(request,
+   * next) => Response | Promise<Response>` — or an array of them, composed
+   * in order. The chain fronts every request the plugin dispatches — page
+   * SSR, the server-function endpoint, dev and production, `vite preview` —
+   * and runs inside the request-event scope, so `getRequestEvent()` works
+   * exactly as it does in application code (decorate `locals`, write the
+   * `response` stub). `next()` advances the chain (pass a `Request` to
+   * substitute it downstream); nothing reaches the wire until the outermost
+   * middleware returns, so headers on the returned `Response` stay mutable
+   * after `next()` — streamed bodies included — and error middleware is a
+   * plain `try { return await next(); } catch { ... }`.
+   *
+   * @default undefined
+   */
+  middleware?: string;
+  /**
    * Let a host integration own the server environment — build wiring and
    * HTTP serving alike. The plugin skips its turnkey server-build config and
    * stands its dev middlewares down (SSR serving and the server-function
@@ -91,8 +118,12 @@ export interface SsrOptions {
 }
 
 // Server-only turnkey request handler; also the server bundle's entry so a
-// production server is one import away from `Request -> Response`.
-const HANDLER_ID = 'virtual:solid-ssr-handler';
+// production server is one import away from `Request -> Response`. Exported
+// for the main plugin to thread into the server-function dev middleware,
+// which dispatches through it when turnkey SSR is active (one middleware
+// chain and one request event across both dispatch paths).
+export const SSR_HANDLER_ID = 'virtual:solid-ssr-handler';
+const HANDLER_ID = SSR_HANDLER_ID;
 const DEV_STYLES_ID = 'virtual:solid-ssr-dev-styles';
 const RESOLVED_DEV_STYLES_ID = '\0' + DEV_STYLES_ID;
 // Generated default entries / document shell. The `.tsx` suffix routes them
@@ -208,6 +239,8 @@ export function ssrServe(
   let base = '/';
   let isBuild = false;
   let entries: ResolvedEntries | undefined;
+  /** Absolute path of the user's middleware module, when configured. */
+  let middlewarePath: string | null = null;
 
   function requireEntries(): ResolvedEntries {
     // config() always runs before resolveId/load/configureServer.
@@ -346,16 +379,26 @@ export function ssrServe(
 
   // The handler module: dev and prod share the render/response plumbing;
   // they differ in how the client entry URL is known (baked dev URL vs a
-  // manifest scan), what gets injected into <head> (Vite client + style
-  // patch in dev), and server-function composition (production and external
-  // dev; runnable dev environments use the server-function middleware).
+  // manifest scan) and what gets injected into <head> (Vite client + style
+  // patch in dev). The response-head lifecycle is the runtime's
+  // (`createRequestEvent`/`createSSRResponse` from @solidjs/web): every
+  // request runs under a stub-backed event, `httpStatus`/`httpHeader`
+  // writes land on the wire at shell flush, a pre-flush redirect becomes a
+  // real 3xx and a post-flush one the script fallback. When
+  // `serverFunctions` is enabled the endpoint is dispatched here on every
+  // surface (the runnable-dev middleware routes through this module), so
+  // user middleware and the shared request event front it identically.
   function handlerModuleCode(externalDev: boolean): string {
     const { generated, entryClient } = requireEntries();
-    const composeServerFunctions = (isBuild || externalDev) && internal.serverFunctions;
+    const composeServerFunctions = internal.serverFunctions;
 
     const lines = [
+      `import { createRequestEvent, createSSRResponse${middlewarePath ? ', composeMiddleware' : ''} } from '@solidjs/web';`,
       `import { provideRequestEvent } from ${JSON.stringify(STORAGE_SOURCE)};`,
       `import * as entry from ${JSON.stringify(entryServerSpec())};`,
+      ...(middlewarePath
+        ? [`import middlewareModule from ${JSON.stringify(middlewarePath)};`]
+        : []),
       ...(externalDev ? [`import DEV_STYLES_HEAD from ${JSON.stringify(DEV_STYLES_ID)};`] : []),
       ...(composeServerFunctions
         ? [
@@ -397,6 +440,24 @@ export function ssrServe(
       lines.push(``, `const DEV_HEAD = ${JSON.stringify(devHead)};`);
     }
 
+    // Middleware: the user module default-exports one fetch-style function
+    // or an array, composed in order. Without one, the chain degenerates to
+    // the terminal dispatch.
+    lines.push(``);
+    if (middlewarePath) {
+      lines.push(
+        `const middlewares = Array.isArray(middlewareModule) ? middlewareModule : [middlewareModule];`,
+        `for (const mw of middlewares) {`,
+        `  if (typeof mw !== 'function') {`,
+        `    throw new Error('[vite-plugin-solid] ssr.middleware must default-export a function or an array of functions: ' + ${JSON.stringify(middlewarePath)});`,
+        `  }`,
+        `}`,
+        `const runMiddleware = composeMiddleware(middlewares);`,
+      );
+    } else {
+      lines.push(`const runMiddleware = (request, next) => next(request);`);
+    }
+
     // No `_$SC` bootstrap injection: the runtime's serialized
     // server-component references self-bootstrap the registry (each
     // hydration script's first reference carries it as an idempotent
@@ -407,6 +468,7 @@ export function ssrServe(
     lines.push(
       ``,
       `function createHtmlChunkTransform(clientEntry, extraHead) {`,
+      `  let first = true;`,
       `  let injected = false;`,
       `  return (chunk) => {`,
     );
@@ -440,42 +502,46 @@ export function ssrServe(
     if (headParts.length) {
       lines.push(`      chunk = chunk.replace('</head>', ${headParts.join(' + ')} + '</head>');`);
     }
-    lines.push(`    }`, `    return chunk;`, `  };`, `}`);
+    lines.push(
+      `    }`,
+      `    if (first) { first = false; chunk = '<!DOCTYPE html>' + chunk; }`,
+      `    return chunk;`,
+      `  };`,
+      `}`,
+    );
 
     lines.push(
       ``,
-      `function htmlResponse(result, clientEntry, extraHead, init) {`,
-      `  const transform = createHtmlChunkTransform(clientEntry, extraHead);`,
-      `  const headers = new Headers(init && init.headers);`,
-      `  if (!headers.has('content-type')) headers.set('content-type', 'text/html; charset=utf-8');`,
-      `  const status = (init && init.status) || 200;`,
-      `  if (typeof result === 'string') {`,
-      `    return new Response('<!DOCTYPE html>' + transform(result), { status, headers });`,
-      `  }`,
-      `  const encoder = new TextEncoder();`,
-      // Streamed fragments write long after the shell; enqueueing after the
-      // client aborts throws, which would crash the server. Drop late writes.
-      `  let closed = false;`,
-      `  const stream = new ReadableStream({`,
-      `    start(controller) {`,
-      `      const enqueue = v => { if (!closed) try { controller.enqueue(encoder.encode(v)); } catch { closed = true; } };`,
-      `      enqueue('<!DOCTYPE html>');`,
-      `      result.pipe({`,
-      `        write(chunk) { enqueue(transform(chunk)); },`,
-      `        end() { if (!closed) { closed = true; try { controller.close(); } catch {} } },`,
-      `      });`,
-      `    },`,
-      `    cancel() { closed = true; },`,
-      `  });`,
-      `  return new Response(stream, { status, headers });`,
+      // Responses that don't run the render lifecycle (raw Responses from
+      // entry.render, server-function responses) still honor stub header
+      // writes made before they were produced — matching what an
+      // h3/framework layer merging `event.response` would do. Status stays
+      // the response's own; `set-cookie` values append entry by entry.
+      `function applyResponseStub(response, stub) {`,
+      `  if (!stub || stub.committed) return response;`,
+      `  stub.committed = true;`,
+      `  try {`,
+      `    stub.headers.forEach((value, key) => {`,
+      `      if (key !== 'set-cookie' && !response.headers.has(key)) response.headers.set(key, value);`,
+      `    });`,
+      `    const cookies = stub.headers.getSetCookie ? stub.headers.getSetCookie() : [];`,
+      `    for (const cookie of cookies) response.headers.append('set-cookie', cookie);`,
+      `  } catch {}`,
+      `  return response;`,
       `}`,
       ``,
-      `export async function handleRequest(request, options = {}) {`,
+      `async function dispatchRequest(request, event, options) {`,
     );
     if (composeServerFunctions) {
       lines.push(
         `  if (new URL(request.url).pathname === endpoint) {`,
-        `    return handleServerFunctionRequest(request, options.serverFunctions);`,
+        // The call shares the middleware chain's event (locals decoration,
+        // the response stub); an explicit host-provided createEvent wins.
+        `    const response = await handleServerFunctionRequest(request, {`,
+        `      createEvent: () => event,`,
+        `      ...options.serverFunctions,`,
+        `    });`,
+        `    return applyResponseStub(response, event.response);`,
         `  }`,
       );
     }
@@ -483,17 +549,32 @@ export function ssrServe(
       isBuild
         ? `  const clientEntry = options.clientEntry || resolveClientEntry();`
         : `  const clientEntry = options.clientEntry || ${JSON.stringify(devClientEntryUrl())};`,
-      `  return provideRequestEvent({ request, locals: {} }, async () => {`,
-      `    let result = entry.render(request, { clientEntry, ...options.context });`,
+      `  let result = entry.render(request, { clientEntry, ...options.context });`,
       // renderToStream results are thenables whose then() waits for the
       // *complete* render — check for pipe first so streaming survives, and
       // only await plain promises (async render functions).
-      `    if (result && typeof result.pipe !== 'function' && typeof result.then === 'function') {`,
-      `      result = await result;`,
-      `    }`,
-      `    if (result instanceof Response) return result;`,
-      `    return htmlResponse(result, clientEntry, options.devHead, options.responseInit);`,
+      `  if (result && typeof result.pipe !== 'function' && typeof result.then === 'function') {`,
+      `    result = await result;`,
+      `  }`,
+      `  if (result instanceof Response) return applyResponseStub(result, event.response);`,
+      // The runtime's response-head lifecycle: commit at shell flush,
+      // pre-flush Location as a real redirect, post-flush Location as the
+      // script fallback; the transform injects the doctype/head pieces.
+      `  return createSSRResponse(result, event, {`,
+      `    responseInit: options.responseInit,`,
+      `    nonce: options.nonce,`,
+      `    transformChunk: createHtmlChunkTransform(clientEntry, options.devHead),`,
       `  });`,
+      `}`,
+      ``,
+      `export async function handleRequest(request, options = {}) {`,
+      `  const event = createRequestEvent(request);`,
+      // Middleware runs inside the request scope, after event creation —
+      // getRequestEvent() answers in middleware exactly as in app code, and
+      // nothing reaches the wire until the outermost middleware returns.
+      `  return provideRequestEvent(event, () =>`,
+      `    runMiddleware(request, (req) => dispatchRequest(req || request, event, options)),`,
+      `  );`,
       `}`,
     );
 
@@ -507,6 +588,20 @@ export function ssrServe(
       config(userConfig, env) {
         root = path.resolve(userConfig.root || process.cwd());
         entries = resolveEntries(root, options);
+        middlewarePath = options.middleware
+          ? path.resolve(root, normalizeUserPath(root, options.middleware, 'middleware'))
+          : null;
+        if (env.isPreview) {
+          // `vite preview` serves `build.outDir` statically; point it at the
+          // client bundle so hashed assets resolve, while HTML (and
+          // everything else unhandled) falls through to the
+          // configurePreviewServer dispatch below. No index.html exists, so
+          // `custom` keeps preview from attempting an SPA fallback.
+          return {
+            appType: 'custom',
+            ...(externalServer ? {} : { build: { outDir: 'dist/client' } }),
+          };
+        }
         const build = env.command === 'build';
         const clientInput = entries.generated
           ? ENTRY_CLIENT_ID
@@ -596,6 +691,36 @@ export function ssrServe(
         if (id === ENTRY_CLIENT_ID) return generatedEntryClientCode();
         if (id === DOCUMENT_ID) return documentShellCode;
         return null;
+      },
+      configurePreviewServer(server: PreviewServer) {
+        // `vite build && vite preview` runs the production artifact as-is:
+        // Vite's preview statics serve dist/client (see the config hook) and
+        // everything else — pages, the server-function endpoint, middleware
+        // included — dispatches through the built handler, exactly like a
+        // deployed server. Hosts owning the server build (`ssr.external`)
+        // preview through their own runner instead.
+        if (externalServer) return;
+        return () => {
+          let handlerPromise: Promise<{
+            handleRequest: (request: Request) => Promise<Response>;
+          }> | null = null;
+          server.middlewares.use((req, res, next) => {
+            (async () => {
+              handlerPromise ??= import(
+                pathToFileURL(path.resolve(root, 'dist/server/server.js')).href
+              );
+              const handler = await handlerPromise;
+              const response = await handler.handleRequest(webRequestFromNode(req));
+              // Preview's compression middleware buffers whole responses;
+              // opting HTML out keeps SSR streaming observable, matching
+              // production behavior.
+              if ((response.headers.get('content-type') || '').includes('text/html')) {
+                res.setHeader('content-encoding', 'identity');
+              }
+              await sendWebResponse(res, response);
+            })().catch(next);
+          });
+        };
       },
       configureServer(server: ViteDevServer) {
         // The files whose static import graphs carry the app's entry CSS:
