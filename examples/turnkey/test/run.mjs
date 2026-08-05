@@ -59,8 +59,9 @@
 //   - frames (server components, enabled by the single option
 //     `serverFunctions: { components: true }` — SOLID_SERVER_COMPONENTS in
 //     vite.config.ts), in dev and prod: the plugin's generated entries emit
-//     all the wiring (render plugin, bootstrap script,
-//     installServerComponents()), document SSR renders a server component
+//     all the wiring (render plugin, installServerComponents(); the _$SC
+//     registry self-bootstraps from serialized references, no head splice),
+//     document SSR renders a server component
 //     inline with t=0 slot records and the SC bootstrap, the boundary is
 //     adopted at boot with zero `/_server` requests, refetch/navigation
 //     morph the boundary over the existing endpoint with client wrapper
@@ -1457,8 +1458,9 @@ async function runBuilderPrepareMode() {
 // `ssr.app` at the server-components page). Everything else is the stock
 // turnkey surface: generated entries carry the wiring the plugin emits for
 // the option — the render plugin + direct-call transform in the server
-// entry, the bootstrap script in <head>, installServerComponents() in the
-// client entry — and the untouched dev middleware / virtual prod handler
+// entry, installServerComponents() in the client entry (the _$SC registry
+// self-bootstraps from serialized references; nothing is spliced into
+// <head>) — and the untouched dev middleware / virtual prod handler
 // serve component responses through the config-level response transform.
 // The app surface (server component module, client Row wrapper, page) is
 // permanent code in src/frames/.
@@ -1493,19 +1495,22 @@ async function runFramesChecks(mode, origin) {
     html.split(`${FRAMES_SECRET}-one`).length === 2,
   );
   record(mode, 'document', 't=0 slot records shipped (sc:slot)', html.includes('sc:slot:'));
-  // Presence is not enough: the render plugin serializes a placeholder as
-  // `self._$SC.r(id)`, so the registry must be defined BEFORE the hydration
-  // data script runs. Anchoring the injection on `</head>` put it after
-  // <HydrationScript />, and any document whose payload carried a frame ref
-  // threw "Cannot read properties of undefined (reading 'r')" — killing
-  // hydration, so nothing in the page was interactive.
-  const scBootstrapAt = html.indexOf('self._$SC=');
-  const hydrationDataAt = html.indexOf('_$HY.r[');
+  // The registry must be defined before any placeholder reference reads it.
+  // Since runtime next.37 nothing is spliced into <head> (a head-open script
+  // drifted every positional hydration claim after it): the FIRST serialized
+  // server-component reference in each hydration script carries the registry
+  // bootstrap as an idempotent expression, making definition and read
+  // atomic. This document adopts its boundaries from markup and serializes
+  // no reference, so `_$SC` absent entirely is the expected shape — what
+  // must never appear is a bare `self._$SC.r(` read ahead of any
+  // definition (the pre-splice crash: "Cannot read properties of undefined
+  // (reading 'r')").
+  const scFirst = html.indexOf('self._$SC');
   record(
     mode,
     'document',
-    'SC bootstrap inline in head, before the hydration data script',
-    scBootstrapAt !== -1 && (hydrationDataAt === -1 || scBootstrapAt < hydrationDataAt),
+    'no bare _$SC read before a definition (self-bootstrapping references, no head splice)',
+    scFirst === -1 || html.startsWith('(self._$SC||(self._$SC={', scFirst - 1),
   );
 
   const chrome = startProcess(CHROME, [
