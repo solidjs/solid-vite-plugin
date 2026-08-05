@@ -352,12 +352,6 @@ export function ssrServe(
   function handlerModuleCode(externalDev: boolean): string {
     const { generated, entryClient } = requireEntries();
     const composeServerFunctions = (isBuild || externalDev) && internal.serverFunctions;
-    // Generated entries own the whole document wiring, so the handler also
-    // injects the server-component bootstrap (the per-function-id
-    // placeholder registry the render plugin references; must be inline at
-    // the TOP of <head>, before the hydration data script streams in — see
-    // the transform below). Authored entries inject it themselves.
-    const injectComponentBootstrap = generated && serverComponents;
 
     const lines = [
       `import { provideRequestEvent } from ${JSON.stringify(STORAGE_SOURCE)};`,
@@ -367,9 +361,6 @@ export function ssrServe(
         ? [
             `import { handleServerFunctionRequest, endpoint } from ${JSON.stringify(SERVER_FUNCTION_HANDLER_ID)};`,
           ]
-        : []),
-      ...(injectComponentBootstrap
-        ? [`import { SERVER_COMPONENT_BOOTSTRAP } from '@solidjs/web/frames';`]
         : []),
     ];
 
@@ -406,35 +397,19 @@ export function ssrServe(
       lines.push(``, `const DEV_HEAD = ${JSON.stringify(devHead)};`);
     }
 
+    // No `_$SC` bootstrap injection: the runtime's serialized
+    // server-component references self-bootstrap the registry (each
+    // hydration script's first reference carries it as an idempotent
+    // expression), so nothing needs to precede the data scripts. The old
+    // head-open splice actively broke hydration — a script ahead of the
+    // authored <head> elements claims as the first walked child and drifts
+    // every positional claim after it.
     lines.push(
       ``,
       `function createHtmlChunkTransform(clientEntry, extraHead) {`,
       `  let injected = false;`,
-      ...(injectComponentBootstrap ? [`  let bootstrapped = false;`] : []),
       `  return (chunk) => {`,
     );
-    if (injectComponentBootstrap) {
-      // The bootstrap has to precede the hydration data script, not merely be
-      // present in <head>: the render plugin serializes a server component's
-      // placeholder as `self._$SC.r(id)`, so a document whose payload carries
-      // one throws on that reference if the registry is not defined yet.
-      // <HydrationScript /> sits inside <head>, so anchoring on `</head>`
-      // always lands after it — the opening tag is the only anchor that is
-      // reliably before it.
-      lines.push(
-        `    if (!bootstrapped) {`,
-        `      const headOpen = /<head(\\s[^>]*)?>/.exec(chunk);`,
-        `      if (headOpen) {`,
-        `        bootstrapped = true;`,
-        `        const at = headOpen.index + headOpen[0].length;`,
-        `        chunk =`,
-        `          chunk.slice(0, at) +`,
-        `          '<script>' + SERVER_COMPONENT_BOOTSTRAP + '</' + 'script>' +`,
-        `          chunk.slice(at);`,
-        `      }`,
-        `    }`,
-      );
-    }
     if (!generated) {
       // Authored entries reference the client entry by its dev path (the
       // `<script src="/src/entry-client.tsx">` convention); rewrite it to
