@@ -1,6 +1,6 @@
 {
   "name": "vite-plugin-solid",
-  "version": "3.0.0-next.21",
+  "version": "3.0.0-next.22",
   "description": "solid-js integration plugin for vite 6/7/8",
   "type": "module",
   "files": [
@@ -55,7 +55,7 @@
   "dependencies": {
     "@ampproject/remapping": "^2.3.0",
     "@babel/core": "^7.23.3",
-    "@dom-expressions/compiler": "0.50.0-next.35",
+    "@dom-expressions/compiler": "0.50.0-next.37",
     "@types/babel__core": "^7.20.4",
     "babel-preset-solid": ">=2.0.0-beta.30 <2.0.0-experimental.0",
     "merge-anything": "^5.1.7",

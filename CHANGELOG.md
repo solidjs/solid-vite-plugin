@@ -1,5 +1,14 @@
 # Changelog
 
+## 3.0.0-next.22
+
+### Patch Changes
+
+- d6fcfb9: update to solid 2.0.0-beta.30 and @dom-expressions/compiler 0.50.0-next.35 (the compiler's module-URL pass now also annotates `clientOnly(() => import("x"))` calls — third argument, options slot padded with `void 0` — so the beta.30 server half can emit early modulepreload hints for browser-only modules; `resolveLazyModuleUrls` already resolves the placeholder position-independently)
+- Update @dom-expressions/compiler to 0.50.0-next.37: the directive DCE now removes an import declaration whose surviving specifiers are all type-only after pruning (solid-start #2273), instead of leaving a bare server-module edge in the client bundle.
+- 030fc89: Drop the `_$SC` bootstrap head-open splice. The runtime's serialized server-component references now self-bootstrap the registry (each hydration script's first reference carries it as an idempotent expression), so nothing needs to precede the data scripts — and the splice actively broke hydration: a script ahead of the authored `<head>` elements claims as the first walked child and drifts every positional claim after it (metas claimed as title, title as link), silently in production. Requires @dom-expressions/runtime 0.50.0-next.37 / @solidjs/web 2.0.0-beta.31.
+- d1b2ed0: The generated SSR handler no longer crashes the server process when a client aborts a streaming response mid-flight. Enqueueing into a closed `ReadableStream` controller throws, and a streamed fragment can land seconds after the shell — an abort (page reload, navigation away) during that window took down the whole Node process with `ERR_INVALID_STATE`. Writes are now dropped once the stream closes or is cancelled.
+
 ## 3.0.0-next.21
 
 ### Patch Changes

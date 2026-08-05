@@ -24,8 +24,8 @@ importers:
         specifier: ^7.23.3
         version: 7.29.7(supports-color@8.1.1)
       '@dom-expressions/compiler':
-        specifier: 0.50.0-next.35
-        version: 0.50.0-next.35
+        specifier: 0.50.0-next.37
+        version: 0.50.0-next.37
       '@solidjs/web':
         specifier: '>=2.0.0-beta.30 <2.0.0-experimental.0'
         version: 2.0.0-beta.30(solid-js@2.0.0-beta.30)
@@ -855,39 +855,39 @@ packages:
     peerDependencies:
       '@babel/core': ^7.20.12
 
-  '@dom-expressions/compiler-darwin-arm64@0.50.0-next.35':
-    resolution: {integrity: sha512-E8rv6zZ+qCtfp9ATirHuJuiOpJnLjOXWQdemtIm/QEfC6Mkf54DLjW5jsZFmUtGfDX5uXJCnyO7NL6cnB+ejzQ==}
+  '@dom-expressions/compiler-darwin-arm64@0.50.0-next.37':
+    resolution: {integrity: sha512-v3Hoq7UmsZHQ/4riVjHVejVShgsU/V34IhdHo1/55o0t2NbO94zzRVUNtwiRNc/hisef6deYLF/p6Y3z0vjoCQ==}
     cpu: [arm64]
     os: [darwin]
 
-  '@dom-expressions/compiler-darwin-x64@0.50.0-next.35':
-    resolution: {integrity: sha512-xjavpJQVxapQ7+E21ykMTtq0e4vk3OF5BvgdeX+Mat6o/fkjJxiglJ2592dAU0Psbib79MQwmzL4mjL9lQ76ag==}
+  '@dom-expressions/compiler-darwin-x64@0.50.0-next.37':
+    resolution: {integrity: sha512-SdiByaVE3gRMik5Nsa/oCfAIVZ7mattPUL9OP7DfAw0QoseLxp63OPAikWdU9CTbagVRWgoO42s/xR/G+GOUWw==}
     cpu: [x64]
     os: [darwin]
 
-  '@dom-expressions/compiler-linux-arm64-gnu@0.50.0-next.35':
-    resolution: {integrity: sha512-bJSUJM/WYYheFk3Pl9NPmlXSAkLngzHV0MeHwlUyiHoabtF8stgK+DAHzoERisUeP59dH7Ri4x/nkPYz5zLn9w==}
+  '@dom-expressions/compiler-linux-arm64-gnu@0.50.0-next.37':
+    resolution: {integrity: sha512-3TcT8hXeJY1N1WKGyYU+xy0XQZ0d9TFqzrOABgvhLQhXEyOs35oZTxwQJ6ENojxL2bF8RJcb3C5bkSB2ELffUw==}
     cpu: [arm64]
     os: [linux]
     libc: [glibc]
 
-  '@dom-expressions/compiler-linux-x64-gnu@0.50.0-next.35':
-    resolution: {integrity: sha512-XvCt8NzkrLgXmuO2sMBTG85EiBSjsoP5uOOdrgglJIHy9imdenjWzW8imVjoYdUKBu+RC4OHbqWLN3hrMJ+Jxg==}
+  '@dom-expressions/compiler-linux-x64-gnu@0.50.0-next.37':
+    resolution: {integrity: sha512-UT9gYIOVb6VQ3Fvc9Jp/vlb/1VBFXjiWae61FpXmXM/82ROoM5VTR53P0pzc6ViMZJ5OfRrT09yGYfyk9QQj8g==}
     cpu: [x64]
     os: [linux]
     libc: [glibc]
 
-  '@dom-expressions/compiler-wasm32-wasi@0.50.0-next.35':
-    resolution: {integrity: sha512-3OQZqNluqNHY8q6LvUBh3PLu3l/kw5amejWT+vFxE4+BMN82twhGLDaCAhbK2/GEl+b8WLHJSQZzv2yBxWquWg==}
+  '@dom-expressions/compiler-wasm32-wasi@0.50.0-next.37':
+    resolution: {integrity: sha512-O3KtOFP5Y9TjN1Ujt4lXuUd/epdb3h5sdWmlxrdptnjMAbw168vowuX5IakUQ2UMkgAB/6KemVtalzI75HvPZA==}
     engines: {node: '>=14.0.0'}
 
-  '@dom-expressions/compiler-win32-x64-msvc@0.50.0-next.35':
-    resolution: {integrity: sha512-NEg5BNy7q7+3x1GRvTbS4uiM3VNDe+GXaVirQIVoReuHYMjaOdZ9DixPaHLs3spxSzTSgxJM9rv+attaP+FeXQ==}
+  '@dom-expressions/compiler-win32-x64-msvc@0.50.0-next.37':
+    resolution: {integrity: sha512-RyE6bWTp+XrI+dUNwnkaXEZ4GgJcjATg1WFz3EpHyjiYe/JRI9XWbL6HorhDWuRdKmV030aZtLGp/H5pxxIZyw==}
     cpu: [x64]
     os: [win32]
 
-  '@dom-expressions/compiler@0.50.0-next.35':
-    resolution: {integrity: sha512-zV72+OKfc0ma2NiwSytqaBQYGqp8xCsM9OVmsNZ5ui9eR8fk7XVswwf7tWdmZB6TUSXkq1uTDswniyyYqji7NQ==}
+  '@dom-expressions/compiler@0.50.0-next.37':
+    resolution: {integrity: sha512-7VTx+8snF1OcYEidwh1lZxmU5iiZs60j18MgORHkFemrK8XFFgfc+GXUp+g1h/gm8C+kPMBqGl+E8cbwwqKzyg==}
 
   '@emnapi/core@1.11.1':
     resolution: {integrity: sha512-RSvbQmHzdKzNsLYa/wHrbc3KN4sYLKAdPZxqiM2HATqv/SBk2/ENSHpvXGaLOMcsAyz0poEGqkmmKYG3OWiJEQ==}
@@ -4211,36 +4211,36 @@ snapshots:
       parse5: 7.3.0
       validate-html-nesting: 1.2.4
 
-  '@dom-expressions/compiler-darwin-arm64@0.50.0-next.35':
+  '@dom-expressions/compiler-darwin-arm64@0.50.0-next.37':
     optional: true
 
-  '@dom-expressions/compiler-darwin-x64@0.50.0-next.35':
+  '@dom-expressions/compiler-darwin-x64@0.50.0-next.37':
     optional: true
 
-  '@dom-expressions/compiler-linux-arm64-gnu@0.50.0-next.35':
+  '@dom-expressions/compiler-linux-arm64-gnu@0.50.0-next.37':
     optional: true
 
-  '@dom-expressions/compiler-linux-x64-gnu@0.50.0-next.35':
+  '@dom-expressions/compiler-linux-x64-gnu@0.50.0-next.37':
     optional: true
 
-  '@dom-expressions/compiler-wasm32-wasi@0.50.0-next.35':
+  '@dom-expressions/compiler-wasm32-wasi@0.50.0-next.37':
     dependencies:
       '@emnapi/core': 1.11.2
       '@emnapi/runtime': 1.11.2
       '@napi-rs/wasm-runtime': 1.1.6(@emnapi/core@1.11.2)(@emnapi/runtime@1.11.2)
     optional: true
 
-  '@dom-expressions/compiler-win32-x64-msvc@0.50.0-next.35':
+  '@dom-expressions/compiler-win32-x64-msvc@0.50.0-next.37':
     optional: true
 
-  '@dom-expressions/compiler@0.50.0-next.35':
+  '@dom-expressions/compiler@0.50.0-next.37':
     optionalDependencies:
-      '@dom-expressions/compiler-darwin-arm64': 0.50.0-next.35
-      '@dom-expressions/compiler-darwin-x64': 0.50.0-next.35
-      '@dom-expressions/compiler-linux-arm64-gnu': 0.50.0-next.35
-      '@dom-expressions/compiler-linux-x64-gnu': 0.50.0-next.35
-      '@dom-expressions/compiler-wasm32-wasi': 0.50.0-next.35
-      '@dom-expressions/compiler-win32-x64-msvc': 0.50.0-next.35
+      '@dom-expressions/compiler-darwin-arm64': 0.50.0-next.37
+      '@dom-expressions/compiler-darwin-x64': 0.50.0-next.37
+      '@dom-expressions/compiler-linux-arm64-gnu': 0.50.0-next.37
+      '@dom-expressions/compiler-linux-x64-gnu': 0.50.0-next.37
+      '@dom-expressions/compiler-wasm32-wasi': 0.50.0-next.37
+      '@dom-expressions/compiler-win32-x64-msvc': 0.50.0-next.37
 
   '@emnapi/core@1.11.1':
     dependencies:
