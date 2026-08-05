@@ -85,22 +85,16 @@ export default function App() {
       </button>
       <p id="greeting">{greeting()}</p>
       <p id="jsx-compiler">{__JSX_COMPILER__}</p>
+      {/* Deliberately BEFORE <HmrTarget />: a hydrated clientOnly used to
+          shift the hydration ids of every following sibling (fixed upstream
+          in @solidjs/web 2.0.0-beta.31, solidjs/solid @ edb3e36f), so a
+          following sibling here keeps the e2e exercising the fixed path —
+          the HMR swap of <HmrTarget /> must replace, not duplicate. */}
+      <OnlyClient fallback={<p id="client-only-fallback">client-only-fallback</p>} />
       <HmrTarget />
       <Loading fallback={<p id="stream-fallback">streaming…</p>}>
         <p id="streamed">{streamed()}</p>
       </Loading>
-      {/* Deliberately the LAST sibling: in @solidjs/web ≤2.0.0-beta.30 a
-          hydrated clientOnly shifts the hydration ids of every FOLLOWING
-          sibling (its swap gate held an id-consuming owner the server half
-          never minted), so a following sibling's first post-settle re-render
-          duplicated instead of replacing — observed as the HMR swap of a
-          following <HmrTarget /> leaving the old text in place. Fixed
-          upstream in solidjs/solid next @ edb3e36f ("Arm clientOnly's swap
-          without an owner so sibling hydration ids stay aligned"); once the
-          release after beta.30 lands, move this above <HmrTarget /> so the
-          e2e exercises the fixed path. Verified locally: with a @solidjs/web
-          built from edb3e36f the reordered layout passes 197/197. */}
-      <OnlyClient fallback={<p id="client-only-fallback">client-only-fallback</p>} />
     </main>
   );
 }
