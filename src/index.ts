@@ -13,20 +13,11 @@ import {
   DEV_MANIFEST_REGISTRY_KEY,
 } from './dev-manifest.js';
 import { boundaryModules } from './boundary-modules.js';
-import {
-  CLIENT_MANIFEST_ID,
-  RESOLVED_CLIENT_MANIFEST_ID,
-  CLIENT_MANIFEST_PLACEHOLDER,
-  buildClientAssetMap,
-  buildClientAssetMapFromManifest,
-  substituteClientManifest,
-} from './client-manifest.js';
 
 import { serverFunctions, type ServerFunctionsOptions } from './server-functions/index.js';
 import { SSR_HANDLER_ID, ssrServe, type SsrOptions } from './ssr/index.js';
 
 export { devStylePatch } from './dev-manifest.js';
-export type { ClientAssetMap } from './client-manifest.js';
 export { serverFunctions };
 export type { ServerFunctionsOptions };
 export type { ServerFunctionsFilter } from './server-functions/index.js';
@@ -746,7 +737,6 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
 
     resolveId(id) {
       if (id === VIRTUAL_MANIFEST_ID) return RESOLVED_VIRTUAL_MANIFEST_ID;
-      if (id === CLIENT_MANIFEST_ID) return RESOLVED_CLIENT_MANIFEST_ID;
     },
 
     moduleParsed(info) {
@@ -784,48 +774,6 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
         // dev-shaped fallback (registry miss degrades to js-only resolution).
         return devManifestCode(projectRoot, null);
       }
-      if (id === RESOLVED_CLIENT_MANIFEST_ID) {
-        // Client-side flavor: dynamic-entry source keys → resolved client
-        // asset URLs, for routers managing route CSS/preloads on navigation.
-        // Dev exports an empty map (Vite's client owns dev CSS lifecycle).
-        if (!isBuild) return 'export default {};';
-        if (isClientBuild(this)) {
-          // The map is only known once the client bundle exists; emit a
-          // placeholder that generateBundle substitutes.
-          return `export default ${JSON.stringify(CLIENT_MANIFEST_PLACEHOLDER)};`;
-        }
-        const manifestPath = clientManifestPath();
-        if (manifestPath) {
-          const manifest = JSON.parse(readFileSync(manifestPath, 'utf-8'));
-          normalizeEmittedLazyEntries(manifest);
-          return `export default ${JSON.stringify(buildClientAssetMapFromManifest(manifest, base))};`;
-        }
-        return 'export default {};';
-      }
-    },
-
-    augmentChunkHash(chunkInfo) {
-      // The client-manifest chunk's final content (substituted in
-      // generateBundle, after hashing) is a function of every css source and
-      // the dynamic-import graph. Fold those inputs into the hash so a
-      // content change can't hide under an unchanged filename.
-      if (
-        !isBuild ||
-        !isClientBuild(this) ||
-        !chunkInfo.moduleIds?.includes(RESOLVED_CLIENT_MANIFEST_ID)
-      ) {
-        return;
-      }
-      let acc = '';
-      for (const id of this.getModuleIds()) {
-        const info = this.getModuleInfo(id);
-        if (/\.(css|less|sass|scss|styl|stylus|pcss|postcss|sss)$/.test(id.split('?')[0])) {
-          acc += id + '\0' + (info?.code || '');
-        } else if (info?.dynamicallyImportedIds?.length) {
-          acc += id + '>' + info.dynamicallyImportedIds.join(',') + '\0';
-        }
-      }
-      return acc;
     },
 
     generateBundle(outputOptions, bundle) {
@@ -851,7 +799,6 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
         }
         normalizeEmittedLazyEntries(bundle);
       }
-      substituteClientManifest(bundle, buildClientAssetMap(bundle, projectRoot, base));
     },
 
     async transform(source, id, transformOptions) {

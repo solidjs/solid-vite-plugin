@@ -16,12 +16,7 @@ Dev SSR CSS collection and a client-side asset manifest:
   it rewrites virtual-module ids to their null-byte form and removes the
   SSR'd twin when a late-streamed style arrives after Vite's client has
   seeded its registry — recommended for any streaming-SSR document in dev.
-- New `virtual:solid-manifest/client` module: a pruned map of dynamic-entry
-  source keys (e.g. `src/routes/About.tsx`) to resolved client asset URLs
-  `{ js, css }`, with entry-owned CSS excluded — for routers that manage
-  route stylesheets and preloads around client-side navigation. Exports an
-  empty map in dev where Vite owns the CSS lifecycle.
-- Build-side hooks (lazy facade-chunk emission, client manifest generation)
+- Build-side hooks (lazy facade-chunk emission, manifest classification)
   now detect the client build through the per-environment `consumer` config
   when available. Builder-mode builds that run the client and ssr
   environments in one Vite process (e.g. SolidStart's nitro plugin) were
