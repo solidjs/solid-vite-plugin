@@ -21,10 +21,10 @@ declare module "virtual:solid-server-function-handler" {
   ): Promise<Response>;
 }
 
-// Server-only turnkey SSR handler (object form of the `ssr` option). It is
-// the SSR build's entry, so a production server imports it from the built
-// bundle (e.g. `./dist/server/server.js`) rather than by this id; importing
-// the id directly also works from custom server code in SSR builds.
+// Server-only turnkey request handler (the `start` option). It is the SSR
+// build's entry, so a production server imports it from the built bundle
+// (e.g. `./dist/server/server.js`) rather than by this id; importing the
+// id directly also works from custom server code in SSR builds.
 // Streams the rendered app for a web Request, scopes it with
 // provideRequestEvent, resolves hashed client assets through the build
 // manifest, and — when `serverFunctions` is enabled — serves the

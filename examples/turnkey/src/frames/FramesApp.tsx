@@ -8,7 +8,7 @@ import Row from './Row';
  * app root. `serverFunctions: { components: true }` + turnkey SSR's
  * generated entries emit every bit of wiring (the render plugin, the
  * bootstrap script, the client-side installServerComponents() call) — this
- * file is only app code. The test's frames mode points `ssr.app` here.
+ * file is only app code. The test's frames mode points `start.app` here.
  *
  * The whole client surface for server components is `dynamic` over a server
  * function call: every response for a call site resolves to the same stable

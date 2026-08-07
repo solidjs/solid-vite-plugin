@@ -95,14 +95,14 @@ export interface ServerFunctionsOptions {
    *
    * When a provider owns the dev server's `ssr` environment (it isn't
    * runnable), the middleware already stands down automatically — no need
-   * to set this. See `ssr.external` for the whole-server switch.
+   * to set this. See `start.external` for the whole-server switch.
    *
    * @default true (stands down automatically when the `ssr` dev environment isn't runnable)
    */
   devMiddleware?: boolean;
   /**
    * Path to a server-only module (resolved relative to the Vite root, like
-   * `ssr.document`) that the generated
+   * `start.document`) that the generated
    * `virtual:solid-server-function-handler` module side-effect imports
    * before configuring the runtime. A guaranteed pre-dispatch home for
    * server-side registration — typically `configureServerFunctionsServer`
@@ -142,7 +142,7 @@ export interface ServerFunctionsOptions {
    * render must run with the server-component render plugin, the document
    * must carry the bootstrap script, and the client must call
    * `installServerComponents()` before hydrating. With turnkey SSR (the
-   * object form of the main plugin's `ssr` option) and generated entries
+   * main plugin's `start` option with `ssr: true`) and generated entries
    * the plugin emits all three. With authored entries those pieces live in
    * your entry files — import them from `@solidjs/web/frames` (see the
    * README).

@@ -1,7 +1,12 @@
-// Turnkey SSR for plain Vite apps: `solid({ ssr: {...} })` (the object form
-// of the existing `ssr` option) adds a serving layer on top of the SSR
-// transforms so no hand-rolled entries or dev server are needed.
+// Turnkey serving for plain Vite apps: `solid({ start: {...} })` (or the
+// zero-config sugar `start: true`) adds a serving layer with conventional
+// entries so no hand-rolled wiring is needed, and the plugin's `ssr`
+// boolean picks the mode — `ssr: true` server-renders the app per request;
+// `ssr: false`/omitted is client mode (the same conventions, but the
+// document shell is served/prerendered empty and the app `render()`s
+// client-side). The flip between them is that one boolean.
 //
+// SSR mode (`start` + `ssr: true`):
 // - Dev: runnable SSR environments are served by a Vite middleware. Provider-
 //   owned environments serve through `virtual:solid-ssr-handler` instead.
 //   Both paths inject the Vite client, dev style patch, and entry CSS as
@@ -15,20 +20,28 @@
 // - Entries are conventional with escape hatches: `src/entry-server.*` /
 //   `src/entry-client.*` are used when present (or set explicitly); when
 //   absent, default entries are generated from a single root component
-//   (`ssr.app`, defaulting to `src/App.*`) wrapped in a document shell
-//   (`ssr.document`, defaulting to `src/Document.*`, else a built-in one).
+//   (`start.app`, defaulting to `src/App.*`) wrapped in a document shell
+//   (`start.document`, defaulting to `src/Document.*`, else a built-in one).
 // - When `serverFunctions` is also enabled, the handler composes the
 //   endpoint on every surface; the runnable-dev server-function middleware
 //   pre-loads the referenced module, then dispatches through this handler.
 // - Every dispatch runs under a stub-backed request event
-//   (`createRequestEvent`) with the optional `ssr.middleware` chain fronting
+//   (`createRequestEvent`) with the optional `start.middleware` chain fronting
 //   it, and page responses go through the runtime's `createSSRResponse`
 //   head lifecycle (commit at shell flush, real pre-flush redirects, the
 //   script fallback post-flush).
 // - `vite preview` serves dist/client statically and dispatches everything
 //   else through the built handler — the production path, middleware
 //   included, with no server file needed.
-import { existsSync } from 'fs';
+//
+// Client mode (`start` without `ssr: true`) rides the same machinery with
+// three deltas: the generated server entry renders the document shell
+// WITHOUT the app (dev serving doubles as history fallback, and a
+// post-build hook prerenders it once into dist/client/index.html), the
+// generated client entry render()s instead of hydrating, and dist/server is
+// dropped from the output unless `serverFunctions` needs it for the
+// endpoint. Client code compiles non-hydratable, exactly like a plain SPA.
+import { existsSync, rmSync, writeFileSync } from 'fs';
 import path from 'path';
 import { pathToFileURL } from 'node:url';
 import {
@@ -46,7 +59,16 @@ import {
 } from '../dev-manifest.js';
 import { joinBase, sendWebResponse, webRequestFromNode } from '../http.js';
 
-export interface SsrOptions {
+/**
+ * Options for the main plugin's turnkey `start` option (`start: true` is
+ * sugar for the empty bag). One bag serves both modes — the plugin's `ssr`
+ * boolean picks between them, so flipping a project between
+ * client-rendered and server-rendered is toggling that boolean, never
+ * reshaping this object. Server-only options (`entryServer`, `external`)
+ * are documented no-ops in client mode: they stay in the config across a
+ * flip instead of erroring.
+ */
+export interface StartOptions {
   /**
    * Root component module for generated entries (the zero-config path).
    * Resolved relative to the Vite root.
@@ -59,21 +81,31 @@ export interface SsrOptions {
    * a `renderToStream` result, an HTML string, or a `Response`.
    * `context.clientEntry` carries the resolved client entry URL.
    *
+   * Server mode only — ignored in client mode, where the server entry is
+   * always generated (it renders the document shell without the app, for
+   * dev serving and the build-time prerender). Conventional
+   * `src/entry-server.*` files are likewise ignored there.
+   *
    * @default "src/entry-server.{tsx,jsx,ts,js,mjs}" when present, else a
    * generated entry rendering `<Document><App /></Document>`
    */
   entryServer?: string;
   /**
-   * Client (hydration) entry module.
+   * Client entry module. In SSR mode it hydrates; in client mode it mounts
+   * (a generated one calls `render()`), and it stands alone — no pairing
+   * rule with a server entry.
    *
    * @default "src/entry-client.{tsx,jsx,ts,js,mjs}" when present, else a
-   * generated entry hydrating `<Document><App /></Document>`
+   * generated entry
    */
   entryClient?: string;
   /**
    * Document shell component wrapping the app in generated entries. Receives
    * `props.children` and must render the full `<html>` document including
-   * `<HydrationScript />`. Only used when the entries are generated.
+   * `<HydrationScript />` (in client mode, where nothing hydrates, the
+   * handler strips its output from the served/prerendered shell — a shared
+   * Document costs nothing across the flip; the built-in shell omits it per
+   * mode). Only used when the server entry is generated.
    *
    * @default "src/Document.{tsx,jsx}" when present, else a built-in shell
    */
@@ -111,6 +143,10 @@ export interface SsrOptions {
    * environment uses a different name so detection can't see it. To hand
    * over only the server-function endpoint, use
    * `serverFunctions.devMiddleware: false` instead.
+   *
+   * Server mode only — ignored in client mode (there is no server side to
+   * hand over; the shell prerender and, with `serverFunctions`, the
+   * endpoint handler are the whole story).
    *
    * @default false
    */
@@ -152,11 +188,11 @@ function probe(root: string, stem: string, extensions: string[]): string | null 
 function normalizeUserPath(root: string, spec: string, option: string): string {
   const absolute = path.isAbsolute(spec) ? spec : path.resolve(root, spec);
   if (!existsSync(absolute)) {
-    throw new Error(`[vite-plugin-solid] ssr.${option} does not exist: ${spec}`);
+    throw new Error(`[vite-plugin-solid] start.${option} does not exist: ${spec}`);
   }
   const relative = path.relative(root, absolute).split(path.sep).join('/');
   if (relative.startsWith('..')) {
-    throw new Error(`[vite-plugin-solid] ssr.${option} must live inside the Vite root: ${spec}`);
+    throw new Error(`[vite-plugin-solid] start.${option} must live inside the Vite root: ${spec}`);
   }
   return relative;
 }
@@ -174,12 +210,52 @@ interface ResolvedEntries {
   document: string | null;
 }
 
-function resolveEntries(root: string, options: SsrOptions): ResolvedEntries {
-  const explicitServer = options.entryServer
-    ? normalizeUserPath(root, options.entryServer, 'entryServer')
-    : null;
+function resolveEntries(root: string, options: StartOptions, clientMode: boolean): ResolvedEntries {
   const explicitClient = options.entryClient
     ? normalizeUserPath(root, options.entryClient, 'entryClient')
+    : null;
+
+  if (clientMode) {
+    // Client mode: the server entry is always generated (it renders the
+    // document shell only — no App — for dev serving and the build-time
+    // prerender); `start.entryServer` and conventional src/entry-server.*
+    // files are documented no-ops here, so a project flipping the `ssr`
+    // boolean never has to touch them. No entry pairing rule either: an
+    // authored client entry stands alone. The document resolves in every
+    // case because it IS the page in this mode.
+    const document = options.document
+      ? normalizeUserPath(root, options.document, 'document')
+      : probe(root, 'src/Document', DOCUMENT_EXTENSIONS);
+    const entryClient = explicitClient ?? probe(root, 'src/entry-client', ENTRY_EXTENSIONS);
+    if (entryClient) {
+      return {
+        entryServer: ENTRY_SERVER_ID,
+        entryClient,
+        generated: false,
+        app: null,
+        document: document ? path.resolve(root, document) : null,
+      };
+    }
+    const app = options.app
+      ? normalizeUserPath(root, options.app, 'app')
+      : (probe(root, 'src/App', APP_EXTENSIONS) ?? probe(root, 'src/app', APP_EXTENSIONS));
+    if (!app) {
+      throw new Error(
+        `[vite-plugin-solid] the turnkey \`start\` option needs an app root: add src/App.tsx ` +
+          `(or set start.app), or provide a src/entry-client.* entry.`,
+      );
+    }
+    return {
+      entryServer: ENTRY_SERVER_ID,
+      entryClient: ENTRY_CLIENT_ID,
+      generated: true,
+      app: path.resolve(root, app),
+      document: document ? path.resolve(root, document) : null,
+    };
+  }
+
+  const explicitServer = options.entryServer
+    ? normalizeUserPath(root, options.entryServer, 'entryServer')
     : null;
   const entryServer = explicitServer ?? probe(root, 'src/entry-server', ENTRY_EXTENSIONS);
   const entryClient = explicitClient ?? probe(root, 'src/entry-client', ENTRY_EXTENSIONS);
@@ -195,8 +271,8 @@ function resolveEntries(root: string, options: SsrOptions): ResolvedEntries {
     const missing = entryServer ? 'entry-client' : 'entry-server';
     throw new Error(
       `[vite-plugin-solid] found ${found} but no ${missing}; entry files come in pairs. ` +
-        `Provide both (src/entry-server.* and src/entry-client.*, or the ssr.entryServer / ` +
-        `ssr.entryClient options) or neither (to generate both from ssr.app).`,
+        `Provide both (src/entry-server.* and src/entry-client.*, or the start.entryServer / ` +
+        `start.entryClient options) or neither (to generate both from start.app).`,
     );
   }
 
@@ -205,8 +281,8 @@ function resolveEntries(root: string, options: SsrOptions): ResolvedEntries {
     : (probe(root, 'src/App', APP_EXTENSIONS) ?? probe(root, 'src/app', APP_EXTENSIONS));
   if (!app) {
     throw new Error(
-      `[vite-plugin-solid] turnkey SSR needs an app root: add src/App.tsx (or set ssr.app), ` +
-        `or provide src/entry-server.* and src/entry-client.* entries.`,
+        `[vite-plugin-solid] the turnkey \`start\` option needs an app root: add src/App.tsx ` +
+          `(or set start.app), or provide src/entry-server.* and src/entry-client.* entries.`,
     );
   }
   const document = options.document
@@ -222,10 +298,21 @@ function resolveEntries(root: string, options: SsrOptions): ResolvedEntries {
   };
 }
 
-export function ssrServe(
-  options: SsrOptions,
-  internal: { serverFunctions?: boolean; serverComponents?: boolean } = {},
+export function startServe(
+  options: StartOptions,
+  internal: { serverFunctions?: boolean; serverComponents?: boolean; ssr?: boolean } = {},
 ): Plugin[] {
+  // Client mode (the `start` option without `ssr: true`) rides this exact
+  // plugin with three deltas: the generated server entry renders the
+  // document shell WITHOUT the app (dev serving doubles as history
+  // fallback, and a post-build hook prerenders it once into
+  // dist/client/index.html), the generated client entry render()s instead
+  // of hydrating, and dist/server is dropped from the output unless
+  // `serverFunctions` needs it for the endpoint. Everything else — entry
+  // probing, the handler, middleware, dev styles, the manifest — is shared,
+  // which is what makes flipping a project between the modes a one-boolean
+  // config change.
+  const clientMode = !internal.ssr;
   // Server components (`serverFunctions: { components: true }`): generated
   // entries additionally emit the document-SSR wiring — the render plugin +
   // direct-call transform server-side, the bootstrap script in <head>, and
@@ -234,7 +321,9 @@ export function ssrServe(
   // the server-function handler module either way). Everything is gated
   // codegen: with the option off, none of these imports exist anywhere.
   const serverComponents = !!internal.serverComponents;
-  const externalServer = !!options.external;
+  // `external` is server-mode-only (documented no-op in client mode, so a
+  // host-integrated config survives the `ssr` boolean flip untouched).
+  const externalServer = !clientMode && !!options.external;
   let root = process.cwd();
   let base = '/';
   let isBuild = false;
@@ -268,7 +357,16 @@ export function ssrServe(
   }
 
   function styleRoots(): string[] {
-    const { generated, app, document, entryServer } = requireEntries();
+    const { generated, app, document, entryServer, entryClient } = requireEntries();
+    if (clientMode) {
+      // The app graph's CSS is inlined into the dev shell too (not just the
+      // document's): the client injects it again when the modules load and
+      // the dev style patch dedupes, so this is pure anti-flash.
+      return [
+        generated ? app! : path.resolve(root, entryClient),
+        ...(document ? [document] : []),
+      ];
+    }
     return generated ? [app!, ...(document ? [document] : [])] : [path.resolve(root, entryServer)];
   }
 
@@ -297,6 +395,21 @@ export function ssrServe(
   }
 
   function generatedEntryServerCode(): string {
+    if (clientMode) {
+      // The client-mode shell: the document without the app. Rendered per
+      // request in dev (any HTML GET gets it — history-fallback semantics)
+      // and once at build time into dist/client/index.html. The client
+      // entry script is injected by the handler, exactly like SSR mode.
+      return [
+        `import { renderToStream } from '@solidjs/web';`,
+        `import manifest from ${JSON.stringify(MANIFEST_ID)};`,
+        `import Document from ${JSON.stringify(documentSpec())};`,
+        ``,
+        `export function render(request, context) {`,
+        `  return renderToStream(() => <Document />, { manifest });`,
+        `}`,
+      ].join('\n');
+    }
     const { app } = requireEntries();
     return [
       `import { renderToStream } from '@solidjs/web';`,
@@ -332,6 +445,19 @@ export function ssrServe(
 
   function generatedEntryClientCode(): string {
     const { app } = requireEntries();
+    if (clientMode) {
+      // render(), not hydrate(): the shell's body is empty, the app mounts
+      // fresh. Client code compiles non-hydratable in client mode, so the
+      // app cannot claim server DOM anyway. The entry script is injected
+      // without `async` (plain module = deferred), so document.body is
+      // complete when this runs.
+      return [
+        `import { render } from '@solidjs/web';`,
+        `import App from ${JSON.stringify(app)};`,
+        ``,
+        `render(() => <App />, document.body);`,
+      ].join('\n');
+    }
     return [
       `import { hydrate } from '@solidjs/web';`,
       ...(serverComponents
@@ -360,16 +486,19 @@ export function ssrServe(
   // Built-in document shell: minimal, hydration-ready. The client entry
   // script is injected into <head> by the handler (not rendered here) so its
   // URL never has to survive hydration or a manifest lookup client-side.
+  // The client-mode variant drops <HydrationScript /> — nothing hydrates,
+  // so the shell stays inert HTML. (A user-authored Document carrying
+  // HydrationScript is covered too: the handler strips the event-capture
+  // script from the client-mode shell.)
   const documentShellCode = [
-    `import { HydrationScript } from '@solidjs/web';`,
-    ``,
+    ...(clientMode ? [] : [`import { HydrationScript } from '@solidjs/web';`, ``]),
     `export default function Document(props) {`,
     `  return (`,
     `    <html lang="en">`,
     `      <head>`,
     `        <meta charset="utf-8" />`,
     `        <meta name="viewport" content="width=device-width, initial-scale=1.0" />`,
-    `        <HydrationScript />`,
+    ...(clientMode ? [] : [`        <HydrationScript />`]),
     `      </head>`,
     `      <body>{props.children}</body>`,
     `    </html>`,
@@ -453,7 +582,7 @@ export function ssrServe(
         `const middlewares = Array.isArray(middlewareModule) ? middlewareModule : [middlewareModule];`,
         `for (const mw of middlewares) {`,
         `  if (typeof mw !== 'function') {`,
-        `    throw new Error('[vite-plugin-solid] ssr.middleware must default-export a function or an array of functions: ' + ${JSON.stringify(middlewarePath)});`,
+        `    throw new Error('[vite-plugin-solid] start.middleware must default-export a function or an array of functions: ' + ${JSON.stringify(middlewarePath)});`,
         `  }`,
         `}`,
         `const runMiddleware = composeMiddleware(middlewares);`,
@@ -487,6 +616,17 @@ export function ssrServe(
       );
     }
     lines.push(`    if (!injected && chunk.includes('</head>')) {`, `      injected = true;`);
+    if (clientMode) {
+      // Nothing hydrates in client mode, so the event-capture bootstrap
+      // `<HydrationScript />` renders (`window._$HY||...`) is dead weight —
+      // but a Document shared with SSR mode carries it by design (the flip
+      // story). Strip it from the shell here instead of making users fork
+      // their Document per mode. (`<!--xs-->` is the script's stream
+      // marker; the shell head always arrives in one chunk.)
+      lines.push(
+        `      chunk = chunk.replace(/<script(?:\\s[^>]*)?>window\\._\\$HY\\|\\|[\\s\\S]*?<\\/script>(?:<!--xs-->)?/, '');`,
+      );
+    }
     const headParts: string[] = [];
     // Dev: the style patch + Vite client, then either middleware-provided
     // styles or the external environment's HMR-tracked virtual styles module.
@@ -498,9 +638,15 @@ export function ssrServe(
           : `(extraHead || '')`,
       );
     }
-    if (generated) {
+    if (generated || clientMode) {
+      // Client-mode note: the shell never references its client entry
+      // itself (even an authored one — the Document knows nothing about
+      // entries), so the handler always injects it. Without `async`: module
+      // scripts default to deferred execution, which is exactly right for a
+      // fresh render-into-body mount (hydration, by contrast, wants to
+      // start as early as possible).
       headParts.push(
-        `(clientEntry ? '<script type="module" src="' + clientEntry + '" async></' + 'script>' : '')`,
+        `(clientEntry ? '<script type="module" src="' + clientEntry + '"${clientMode ? '' : ' async'}></' + 'script>' : '')`,
       );
     }
     if (headParts.length) {
@@ -591,11 +737,19 @@ export function ssrServe(
       enforce: 'pre',
       config(userConfig, env) {
         root = path.resolve(userConfig.root || process.cwd());
-        entries = resolveEntries(root, options);
+        entries = resolveEntries(root, options, clientMode);
         middlewarePath = options.middleware
           ? path.resolve(root, normalizeUserPath(root, options.middleware, 'middleware'))
           : null;
         if (env.isPreview) {
+          if (clientMode) {
+            // Client-mode builds emit a real dist/client/index.html (the
+            // prerendered shell), so preview is Vite's stock static +
+            // history-fallback story. When server functions are on, the
+            // endpoint dispatches through the kept dist/server handler
+            // (configurePreviewServer).
+            return { appType: 'spa', build: { outDir: 'dist/client' } };
+          }
           // `vite preview` serves `build.outDir` statically; point it at the
           // client bundle so hashed assets resolve, while HTML (and
           // everything else unhandled) falls through to the
@@ -611,9 +765,15 @@ export function ssrServe(
           ? ENTRY_CLIENT_ID
           : path.resolve(root, entries.entryClient);
         // Real files only — the dep scanner can't crawl virtual modules.
+        // (In client mode the resolved document joins the scan/style roots
+        // even with an authored client entry; in SSR mode authored entries
+        // own the whole graph.)
         const scanEntries = entries.generated
           ? [entries.app!, ...(entries.document ? [entries.document] : [])]
-          : [path.resolve(root, entries.entryClient)];
+          : [
+              path.resolve(root, entries.entryClient),
+              ...(clientMode && entries.document ? [entries.document] : []),
+            ];
         return {
           // No index.html: dev must not fall back to SPA-serving one, and
           // the dep scanner needs explicit entries instead.
@@ -701,9 +861,13 @@ export function ssrServe(
         // Vite's preview statics serve dist/client (see the config hook) and
         // everything else — pages, the server-function endpoint, middleware
         // included — dispatches through the built handler, exactly like a
-        // deployed server. Hosts owning the server build (`ssr.external`)
+        // deployed server. Hosts owning the server build (`start.external`)
         // preview through their own runner instead.
-        if (externalServer) return;
+        // Client mode: pages are the static index.html (preview's own
+        // history fallback serves them before this post middleware runs);
+        // only the server-function endpoint needs the handler, and without
+        // server functions there is no dist/server at all.
+        if (externalServer || (clientMode && !internal.serverFunctions)) return;
         return () => {
           let handlerPromise: Promise<{
             handleRequest: (request: Request) => Promise<Response>;
@@ -768,5 +932,49 @@ export function ssrServe(
         };
       },
     },
+    ...(clientMode
+      ? [
+          {
+            name: 'solid:start/prerender',
+            apply: 'build',
+            buildApp: {
+              // Post order: this hook owns the whole client-mode app build (the
+              // client-build-first orchestration pair is SSR-only). It
+              // builds client-then-ssr itself — building anything from a
+              // hook suppresses Vite's build-all fallback, so the ordering
+              // is guaranteed and the manifest is on disk before the shell
+              // bundle bakes it in — then runs the built handler once to
+              // prerender the shell into dist/client/index.html and drops
+              // dist/server unless server functions still need its handler.
+              // The shell arrives complete from the handler: the runtime
+              // registers every manifest entry's CSS during the render
+              // (registerEntryAssets), so the entry graph's stylesheet
+              // links are already in its head — injecting them here again
+              // double-links every stylesheet.
+              order: 'post' as const,
+              async handler(builder: any) {
+                const client = builder.environments.client;
+                const ssrEnvironment = builder.environments.ssr;
+                if (client && !client.isBuilt) await builder.build(client);
+                if (ssrEnvironment && !ssrEnvironment.isBuilt) {
+                  await builder.build(ssrEnvironment);
+                }
+
+                const serverDir = path.resolve(root, 'dist/server');
+                const handler = await import(
+                  pathToFileURL(path.join(serverDir, 'server.js')).href
+                );
+                const response: Response = await handler.handleRequest(
+                  new Request(new URL(base || '/', 'http://localhost')),
+                );
+                writeFileSync(path.resolve(root, 'dist/client/index.html'), await response.text());
+                if (!internal.serverFunctions) {
+                  rmSync(serverDir, { recursive: true, force: true });
+                }
+              },
+            },
+          } satisfies Plugin,
+        ]
+      : []),
   ];
 }

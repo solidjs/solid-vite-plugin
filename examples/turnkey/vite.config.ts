@@ -3,7 +3,7 @@ import path from 'node:path';
 import { defineConfig, type Plugin } from 'vite';
 import solidPlugin from 'vite-plugin-solid';
 
-// Turnkey kitchen sink: the object form of `ssr` adds the serving layer on
+// Turnkey kitchen sink: `start: {}` + `ssr: true` adds the serving layer on
 // top of the SSR transforms, and `serverFunctions` composes with it. No
 // entry files, no index.html, no dev server script — the plugin generates
 // default entries around src/App.tsx, a dev middleware streams the render
@@ -14,11 +14,11 @@ import solidPlugin from 'vite-plugin-solid';
 // dispatches endpoint requests to the server-function runtime before SSR.
 //
 // Test knobs (all exercised by test/run.mjs):
-// - SSR_DOCUMENT swaps the document shell via the `ssr.document` escape hatch.
+// - SSR_DOCUMENT swaps the document shell via the `start.document` escape hatch.
 // - SERVER_FN_ENDPOINT overrides the server-function endpoint.
 // - SERVER_FN_CONFIGURE pins src/serverConfig.ts into the handler graph via
 //   `serverFunctions.configure` (configure mode).
-// - SSR_MIDDLEWARE=1 wires src/middleware.ts through `ssr.middleware`
+// - SSR_MIDDLEWARE=1 wires src/middleware.ts through `start.middleware`
 //   (middleware and preview modes): a fetch-style chain fronting every
 //   dispatch path with getRequestEvent() live inside it.
 // - SERVER_FN_DEV_MIDDLEWARE=0 disables the turnkey dev middleware via
@@ -61,7 +61,8 @@ export default defineConfig({
   plugins: [
     solidPlugin({
       compiler: jsxCompiler,
-      ssr: serverComponents
+      ssr: true,
+      start: serverComponents
         ? { app: 'src/frames/FramesApp.tsx' }
         : process.env.SSR_DOCUMENT
           ? { document: process.env.SSR_DOCUMENT }

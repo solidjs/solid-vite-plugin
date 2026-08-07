@@ -1,5 +1,5 @@
 // Fetch-style middleware chain for the middleware/preview e2e modes
-// (SSR_MIDDLEWARE=1 wires it through `ssr.middleware` in vite.config.ts).
+// (SSR_MIDDLEWARE=1 wires it through `start.middleware` in vite.config.ts).
 // Server-only: only the generated handler imports it. Exercises the whole
 // contract:
 // - runs inside the request-event scope: getRequestEvent() answers, locals

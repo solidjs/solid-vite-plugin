@@ -1,5 +1,6 @@
-// Turnkey kitchen-sink fixture test: proves `solid({ ssr: {}, serverFunctions:
-// true })` gives a plain Vite app working streaming SSR *and* "use server"
+// Turnkey kitchen-sink fixture test: proves `solid({ start: {}, ssr: true,
+// serverFunctions: true })` gives a plain Vite app working streaming SSR
+// *and* "use server"
 // server functions with zero wiring — no entry files, no index.html, no dev
 // server script. Union of the former ssr-turnkey and server-functions
 // suites. Asserts, in both dev (`vite`) and production (`vite build` + the
@@ -28,7 +29,7 @@
 //     survives, and a CSS edit hot-applies into a single style element; the
 //     babel-hmr mode repeats those checks on a dev server forced to
 //     `compiler: 'babel'`,
-//   - the `ssr.document` escape hatch swaps the document shell and the
+//   - the `start.document` escape hatch swaps the document shell and the
 //     `serverFunctions.endpoint` option threads through middleware and
 //     runtime configure calls (separate dev servers, no browser),
 //   - `serverFunctions.configure` pins src/serverConfig.ts into the handler
@@ -81,7 +82,7 @@
 //     path-keyed surfaces): httpStatus(404)/httpHeader reach the wire, a
 //     pre-flush Location is a real 3xx with no body, a post-flush Location
 //     emits the script-redirect fallback on the streamed 200,
-//   - `ssr.middleware` (SSR_MIDDLEWARE=1, src/middleware.ts): composition
+//   - `start.middleware` (SSR_MIDDLEWARE=1, src/middleware.ts): composition
 //     order, locals decoration visible to the page and to a server function
 //     over /_server (one request event fronts both), short-circuiting —
 //     with the handler edge's commitEventResponse fold carrying an
@@ -884,7 +885,7 @@ async function runProdMode() {
   }
 }
 
-// Document escape hatch: a separate dev server with `ssr.document` pointing
+// Document escape hatch: a separate dev server with `start.document` pointing
 // at src/CustomDocument.tsx (via SSR_DOCUMENT in vite.config.ts); the custom
 // shell's <title> must show up in the SSR output. No browser needed.
 async function runDocumentMode() {
@@ -1533,7 +1534,7 @@ async function runBuilderPrepareMode() {
 // Frames: server components (`use server` functions returning a function)
 // enabled by the single config line `serverFunctions: { components: true }`
 // (via SOLID_SERVER_COMPONENTS in vite.config.ts, which also points
-// `ssr.app` at the server-components page). Everything else is the stock
+// `start.app` at the server-components page). Everything else is the stock
 // turnkey surface: generated entries carry the wiring the plugin emits for
 // the option — the render plugin + direct-call transform in the server
 // entry, installServerComponents() in the client entry (the _$SC registry
@@ -1817,7 +1818,7 @@ async function runFramesMode() {
   const devPort = 3166;
   const prodPort = 3167;
   // The one-line enablement under test: the env flag flips
-  // `serverFunctions: { components: true }` + `ssr.app` in vite.config.ts.
+  // `serverFunctions: { components: true }` + `start.app` in vite.config.ts.
   // No entry files — the plugin's generated entries carry all the wiring.
   const env = { ...process.env, SOLID_SERVER_COMPONENTS: '1' };
 
@@ -1919,7 +1920,7 @@ async function runFramesMode() {
   }
 }
 
-// `ssr.middleware`: SSR_MIDDLEWARE=1 wires src/middleware.ts (two fetch-style
+// `start.middleware`: SSR_MIDDLEWARE=1 wires src/middleware.ts (two fetch-style
 // functions, composed in order) through the generated handler. Asserted over
 // plain HTTP in dev and prod (the same chain fronts both):
 // - composition + the post-next() window: the streamed page carries headers

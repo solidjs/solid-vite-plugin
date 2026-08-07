@@ -129,15 +129,30 @@ If set to false, it won't inject the runtime in dev.
 
 #### options.ssr
 
-- Type: Boolean | Object
+- Type: Boolean
 - Default: false
 
-`ssr: true` enables the SSR transforms (hydratable client code, SSR server
-code); you provide the entries and the server yourself, as before.
+Whether the app is server-rendered — one meaning everywhere.
 
-The object form — even empty, `ssr: {}` — additionally turns on **turnkey
-SSR**: a plain Vite app gets streaming server-side rendering with zero
-wiring. No entry files, no `index.html`, no dev server script.
+Without [`start`](#optionsstart), `ssr: true` enables the SSR transforms
+(hydratable client code, SSR server code); you provide the entries and the
+server yourself, as before. With `start`, the boolean selects the turnkey
+mode: `ssr: true` is turnkey SSR, `ssr: false`/omitted is turnkey client
+mode — see below.
+
+Objects are no longer accepted (config-time error): the turnkey options
+that used to live on `ssr: { ... }` moved to `start: { ... }`, with
+`ssr: true` set alongside.
+
+#### options.start
+
+- Type: Boolean | Object
+- Default: undefined
+
+**Start is now a mode of the plugin**: the turnkey serving layer that
+replaces SolidStart. The plugin owns entries, dev serving, and the build —
+no entry files, no `index.html`, no dev server script. `start: true` is the
+zero-config spelling; add `ssr: true` for streaming SSR:
 
 ```ts
 // vite.config.ts
@@ -145,9 +160,21 @@ import { defineConfig } from 'vite';
 import solidPlugin from 'vite-plugin-solid';
 
 export default defineConfig({
-  plugins: [solidPlugin({ ssr: {} })],
+  plugins: [solidPlugin({ start: true, ssr: true })],
 });
 ```
+
+One set of conventions serves both rendering modes, and the
+[`ssr`](#optionsssr) boolean picks between them: `ssr: true` streams
+server-side rendering with zero wiring; without it the same app is
+client-rendered onto a prerendered static shell. Flipping a project between
+SPA and SSR is toggling that one boolean — same `App`, same `Document`,
+same server functions.
+
+The object form carries the options (`start: true` is pure sugar for
+`start: {}` — both mean the identical turnkey mode with defaults, and
+`false`/absent means off): `app`, `document`, `entryServer`, `entryClient`,
+`middleware`, `external`, all documented below.
 
 ```tsx
 // src/App.tsx — the entire app: a plain content component
@@ -155,6 +182,8 @@ export default function App() {
   return <h1>Hello SSR</h1>;
 }
 ```
+
+With `ssr: true` — **turnkey SSR**:
 
 - **Dev**: `vite` just works — a middleware on the dev server streams the
   rendered app for HTML-accepting GET requests through the SSR environment,
@@ -205,7 +234,7 @@ fetch-style middleware — `(request, next) => Response | Promise<Response>`
 
 ```ts
 // vite.config.ts
-solid({ ssr: { middleware: './src/middleware.ts' } });
+solid({ start: { middleware: './src/middleware.ts' }, ssr: true });
 
 // src/middleware.ts
 import { getRequestEvent } from '@solidjs/web';
@@ -232,7 +261,7 @@ until the outermost middleware returns: headers stay mutable after
 
 **Entry resolution** (all paths relative to the Vite root):
 
-1. Explicit `ssr.entryServer` / `ssr.entryClient` options.
+1. Explicit `start.entryServer` / `start.entryClient` options.
 2. Conventional files: `src/entry-server.{tsx,jsx,ts,js,mjs}` and
    `src/entry-client.{tsx,jsx,ts,js,mjs}`. Entry files come in pairs —
    providing only one is an error. The server entry must export
@@ -242,9 +271,9 @@ until the outermost middleware returns: headers stay mutable after
    `"/src/entry-client.tsx"` reference in the rendered HTML is rewritten to
    the hashed asset (the classic harness convention keeps working).
 3. Generated entries (the zero-config path): when no entry files exist, both
-   are generated from a root component — `ssr.app`, defaulting to
+   are generated from a root component — `start.app`, defaulting to
    `src/App.{tsx,jsx,ts,js}` (or lowercase `src/app.*`) — wrapped in a
-   document shell: `ssr.document`, defaulting to `src/Document.{tsx,jsx}`,
+   document shell: `start.document`, defaulting to `src/Document.{tsx,jsx}`,
    else a built-in minimal shell. A custom document receives the app as
    `props.children` and must render the full `<html>` document including
    `<HydrationScript />`; the client entry script is injected into `<head>`
@@ -276,7 +305,7 @@ Three switches cover host-owned setups, broadest first:
    its own non-runnable one, the plugin detects that and stands the dev
    middlewares down automatically; the handler self-serves as above. Zero
    config.
-2. **`ssr.external: true`** — the explicit whole-server switch: everything
+2. **`start.external: true`** — the explicit whole-server switch: everything
    detection does, plus skipping the server-build wiring. Also needed when
    the provider owns a _differently named_ environment (not `ssr`), which
    detection can't see.
@@ -285,10 +314,50 @@ Three switches cover host-owned setups, broadest first:
    serving, hands only server-function dispatch in dev to the host. For
    non-turnkey setups, or when only the endpoint should move.
 
-Turnkey serving is opt-in via the object form, so existing `ssr: true` setups
-are unaffected. See `examples/turnkey` for a complete app (including a
-one-file production server and server functions) and `examples/ssr` for the
-manual `ssr: true` wiring.
+Without `ssr: true` — **client mode** (experimental), the same conventions
+with client-only rendering:
+
+```js
+export default defineConfig({
+  plugins: [solidPlugin({ start: true })],
+});
+```
+
+- **Dev**: every HTML-accepting GET streams the rendered document shell —
+  without the app, which never renders on the server — with the entry
+  graph's CSS inlined; deep links get the same shell (history-fallback
+  semantics). The generated client entry `render()`s (not hydrates) the app
+  into `document.body`.
+- **Build**: `vite build` emits a purely static `dist/client` — the shell is
+  prerendered once through the built handler into `dist/client/index.html`,
+  with the hashed entry script and the entry graph's CSS links — deployable
+  to any static host. No server bundle remains unless `serverFunctions` is
+  enabled, in which case `dist/server` is kept and its `handleRequest`
+  serves the endpoint (pages stay static).
+- **Transforms**: client code compiles exactly like a plain SPA today
+  (`generate: 'dom'`, non-hydratable); only the document shell goes through
+  the SSR transforms.
+- **`vite preview`** serves the static build with history fallback (and
+  dispatches the server-function endpoint through the kept handler).
+- Server-only options are inert here rather than errors, so a config
+  survives the flip untouched: `start.entryServer` (and conventional
+  `src/entry-server.*` files) are ignored — the shell render is always
+  generated — and so is `start.external`. An authored `src/entry-client.*`
+  stands alone and owns the mount.
+
+The point is the migration story: an app born with `start: true` moves to
+server rendering by setting `ssr: true` — same `App`, same `Document`,
+same routes, same server functions; the plugin swaps render for hydrate,
+turns the hydratable transforms on, and ships the server bundle. (A
+`Document` authored for SSR carries `<HydrationScript />`; in client mode
+the plugin strips its script from the served shell — nothing hydrates, so
+a shared `Document` costs nothing — and the built-in shell omits it.)
+
+Turnkey serving is opt-in via `start`, so bare `ssr: true` setups keep the
+transform-only behavior. See `examples/turnkey` for a complete SSR app
+(including a one-file production server and server functions),
+`examples/start-client` for client mode (whose test flips the same app
+between the modes), and `examples/ssr` for the manual `ssr: true` wiring.
 
 #### options.serverFunctions
 
@@ -302,8 +371,8 @@ endpoint `/_server`) or an options object (`runtime`, `endpoint`, `filter`,
 
 The setup is turnkey: in dev a middleware on the Vite server handles the
 endpoint end to end — no server-function code needed in your server entry.
-For production SSR builds, either use turnkey SSR (the object form of
-[`ssr`](#optionsssr), whose handler serves the endpoint automatically) or
+For production SSR builds, either use turnkey SSR ([`start`](#optionsstart)
+with `ssr: true`, whose handler serves the endpoint automatically) or
 import `virtual:solid-server-function-handler` in your server entry and
 mount its `handleServerFunctionRequest(request)` export on the endpoint.
 
@@ -321,8 +390,8 @@ side-effect import `virtual:solid-server-function-manifest` in its server
 entry so functions referenced only by client code still register. (When a
 provider owns the `ssr` environment outright — it isn't runnable — the
 middleware already stands down automatically; see the `external` option
-under [`ssr`](#optionsssr) for the whole-server switch and how the three
-options relate.)
+under [`start`](#optionsstart) for the whole-server switch and how the
+three options relate.)
 
 **`configure: './src/server-config.ts'`** pins a server-only module (path
 resolved against the Vite root) into the handler graph: the generated
@@ -354,9 +423,10 @@ server functions — same endpoint, same compilation — with zero extra plugin
 config: responses for component-returning functions are served as streamed
 HTML that the client applies in place (client state and DOM identity inside
 survive updates), and the plugin's dev middleware and production handler
-handle that automatically. Combined with turnkey SSR (the object form of
-[`ssr`](#optionsssr)) and generated entries, the document wiring is emitted
-too: server components render inline in the SSR'd document and are adopted
+handle that automatically. Combined with turnkey SSR
+([`start`](#optionsstart) with `ssr: true`) and generated entries, the
+document wiring is emitted too: server components render inline in the
+SSR'd document and are adopted
 at boot with zero endpoint requests. With authored entries, the app-side
 pieces (the render plugin, the bootstrap script, and the client's
 `installServerComponents()` call, all from `@solidjs/web/frames`) live in
