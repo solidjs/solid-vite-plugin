@@ -1,5 +1,22 @@
 # Changelog
 
+## 3.0.0-next.23
+
+### Patch Changes
+
+- 906ef2a: update to solid 2.0.0-beta.32 and @dom-expressions/compiler 0.50.0-next.40 — `commitEventResponse` now ships in `@solidjs/web`, so the turnkey SSR handler imports it by name and the namespace-import fallback for pre-.40 runtimes is deleted; the solid floor moves to beta.32 accordingly
+- b6af42f: Turnkey SSR closes the middleware early-return gap with the runtime's `commitEventResponse`: a middleware that answers without calling `next()` (an API handler) bypasses `createSSRResponse`, so its request-scope stub writes — cookies appended to `event.response.headers`, status — never reached the wire. The generated handler now applies `commitEventResponse(response, event)` unconditionally at the handler edge, strictly after the outermost middleware returns: headers stay mutable through the whole unwind, committed page responses pass through untouched (the fold is idempotent), and the inner per-path folds (`applyResponseStub` on raw `entry.render` Responses and server-function responses) collapse into the one edge fold.
+
+  Until the next `@solidjs/web` repin ships `commitEventResponse` (TODO(.40-repin) in the codegen), the handler resolves it off a namespace import with a local fallback that preserves the previous partial fold semantics — a named import of a missing export would be fatal in ESM — so generated modules keep working against the current beta.31 line and upgrade to the runtime's fold (protocol-header denylist, committed-stub loudness) automatically at the repin.
+
+- 65d6b51: Remove the unreleased `virtual:solid-manifest/client` module (and the `ClientAssetMap` type export). Its purpose was a route-CSS acquire/release lifecycle, which the head-management design has since ruled out: ambient, bundler-injected CSS is never lifecycle-managed — only head-registry-mounted stylesheets follow their owner — so the module had no remaining consumer. The server-side `virtual:solid-manifest` (SSR asset streaming) is untouched.
+- 398044f: Turnkey SSR adopts the runtime's response-head lifecycle, gains fetch-style middleware, and serves `vite preview` (requires `@solidjs/web` > 2.0.0-beta.31 for `createRequestEvent` / `createSSRResponse` / `composeMiddleware`):
+
+  - Every dispatch runs under a stub-backed request event (`createRequestEvent`) and page responses go through `createSSRResponse`: `httpStatus()` / `httpHeader()` writes land on the wire at shell flush, a pre-flush `Location` becomes a real 3xx redirect, and a post-flush one (streamed responses) falls back to a nonce-aware `<script>window.location=...</script>` tail. Raw `Response` results and server-function responses get uncommitted stub headers merged (set-cookie appended) so cookie/header writes made before they were produced still land.
+  - `ssr.middleware`: a server-only module default-exporting one `(request, next) => Response | Promise<Response>` function or an array, composed in order. The chain fronts every dispatch path — page SSR, the server-function endpoint, dev, external-dev, production, preview — and runs inside the request-event scope, so `getRequestEvent()` works exactly as in app code; the endpoint shares the chain's event, so `locals` decoration is visible to server functions. Nothing hits the wire until the outermost middleware returns (post-`next()` header mutation works on streamed responses), and error middleware is a plain `try { await next() } catch`.
+  - `vite build && vite preview` now works with no server file: `configurePreviewServer` serves `dist/client` statically through Vite's preview statics and dispatches everything else through the built handler — middleware and lifecycle included, HTML opted out of preview compression so streaming stays observable.
+  - With `serverFunctions` enabled, the runnable-dev endpoint middleware now dispatches through the SSR handler (after pre-loading the referenced module), so one middleware chain and one request event front pages and server functions identically on every surface.
+
 ## 3.0.0-next.22
 
 ### Patch Changes
