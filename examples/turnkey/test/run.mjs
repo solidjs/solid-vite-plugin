@@ -2035,10 +2035,10 @@ async function runMiddlewareMode() {
     // ---- Codegen: the generated handler folds at the edge ----------------
     // String assertions on the handler module the plugin generates (no
     // execution): every response leaves through commitEventResponse —
-    // resolved off the runtime with a local fallback until the .40 repin
-    // ships the export in @solidjs/web — strictly AFTER the middleware
-    // chain unwinds, so early-return Responses get their stub writes and
-    // post-next() header mutation stays possible through the whole unwind.
+    // a plain named import from @solidjs/web since the .40 repin collapsed
+    // the local fallback — strictly AFTER the middleware chain unwinds, so
+    // early-return Responses get their stub writes and post-next() header
+    // mutation stays possible through the whole unwind.
     process.env.SSR_MIDDLEWARE = '1';
     let probe;
     try {
@@ -2046,14 +2046,15 @@ async function runMiddlewareMode() {
       const transformed = await probe.environments.ssr.transformRequest('virtual:solid-ssr-handler');
       const code = transformed?.code || '';
       const unwind = code.indexOf('runMiddleware(request');
-      const fold = code.indexOf('return commitEventResponse(response, event)');
+      // The SSR transform rewrites the imported binding to a member access
+      // on the vite import handle (`(0, handle.commitEventResponse)(...)`),
+      // so match the rewritten call site rather than the source text.
+      const fold = code.search(/\.commitEventResponse\s*\)?\s*\(\s*response,\s*event\s*\)/);
       record(
         'mw-codegen',
         'gen',
-        'handler resolves commitEventResponse from @solidjs/web (fallback until .40 repin)',
-        // `.commitEventResponse ??` survives the SSR transform (the
-        // namespace binding itself is rewritten to a vite import handle).
-        code.includes('.commitEventResponse ??'),
+        'handler imports commitEventResponse from @solidjs/web (fallback collapsed by the .40 repin)',
+        fold !== -1 && !code.includes('.commitEventResponse ??'),
       );
       record(
         'mw-codegen',

@@ -397,11 +397,7 @@ export function ssrServe(
     const composeServerFunctions = internal.serverFunctions;
 
     const lines = [
-      `import { createRequestEvent, createSSRResponse${middlewarePath ? ', composeMiddleware' : ''} } from '@solidjs/web';`,
-      // Namespace import so the handler also loads against runtimes that
-      // predate `commitEventResponse` (a named import of a missing export
-      // is fatal in ESM) — see the resolution + fallback below.
-      `import * as _webRuntime from '@solidjs/web';`,
+      `import { createRequestEvent, createSSRResponse, commitEventResponse${middlewarePath ? ', composeMiddleware' : ''} } from '@solidjs/web';`,
       `import { provideRequestEvent } from ${JSON.stringify(STORAGE_SOURCE)};`,
       `import * as entry from ${JSON.stringify(entryServerSpec())};`,
       ...(middlewarePath
@@ -518,43 +514,16 @@ export function ssrServe(
       `}`,
     );
 
-    lines.push(
-      ``,
-      // The handler-edge commit fold — the runtime's `commitEventResponse`,
-      // the second of the response lifecycle's two exits: page results
-      // leave through `createSSRResponse`, any other Response (a middleware
-      // early return, a raw Response from entry.render, a server-function
-      // response) leaves through `commitEventResponse`, which folds the
-      // event's response stub onto it (cookies append entry-by-entry, other
-      // headers gap-fill, status stays the response's own) and commits the
-      // stub. Committed stubs pass through untouched, so the edge applies
-      // it unconditionally.
-      //
-      // TODO(.40-repin): collapse to the named import above and delete the
-      // fallback — `commitEventResponse` ships in @solidjs/web after the
-      // .40 repin. Until then the fallback preserves this handler's
-      // previous partial fold (no protocol denylist, no commit loudness) so
-      // the generated module keeps working against the published beta.31
-      // line, and middleware early returns get their stub writes onto the
-      // wire on both runtimes.
-      `const commitEventResponse =`,
-      `  _webRuntime.commitEventResponse ??`,
-      `  ((response, event) => {`,
-      `    const stub = event && event.response;`,
-      `    if (!stub || stub.committed) return response;`,
-      `    stub.committed = true;`,
-      `    try {`,
-      `      stub.headers.forEach((value, key) => {`,
-      `        if (key !== 'set-cookie' && !response.headers.has(key)) response.headers.set(key, value);`,
-      `      });`,
-      `      const cookies = stub.headers.getSetCookie ? stub.headers.getSetCookie() : [];`,
-      `      for (const cookie of cookies) response.headers.append('set-cookie', cookie);`,
-      `    } catch {}`,
-      `    return response;`,
-      `  });`,
-      ``,
-      `async function dispatchRequest(request, event, options) {`,
-    );
+    // The handler-edge commit fold — the runtime's `commitEventResponse`
+    // (named import above), the second of the response lifecycle's two
+    // exits: page results leave through `createSSRResponse`, any other
+    // Response (a middleware early return, a raw Response from
+    // entry.render, a server-function response) leaves through
+    // `commitEventResponse`, which folds the event's response stub onto it
+    // (cookies append entry-by-entry, other headers gap-fill, status stays
+    // the response's own) and commits the stub. Committed stubs pass
+    // through untouched, so the edge applies it unconditionally.
+    lines.push(``, `async function dispatchRequest(request, event, options) {`);
     if (composeServerFunctions) {
       lines.push(
         `  if (new URL(request.url).pathname === endpoint) {`,
