@@ -5,7 +5,9 @@
 // - runs inside the request-event scope: getRequestEvent() answers, locals
 //   decoration is visible to the page render and to server functions,
 // - composition order (first → second → dispatch, unwinding in reverse),
-// - short-circuiting (/blocked never reaches the render),
+// - short-circuiting (/blocked never reaches the render), with a stub
+//   cookie set inside the request scope that only the handler edge's
+//   commit fold can carry onto the early-return Response,
 // - error middleware (try/catch around next() turns a render throw into a
 //   controlled 500),
 // - the post-next() mutation window: headers set after `await next()` land
@@ -20,6 +22,11 @@ async function first(request: Request, next: Next): Promise<Response> {
   event.locals.order = ['first'];
   event.locals.user = 'mw-user';
   if (new URL(request.url).pathname === '/blocked') {
+    // Early return: this Response never goes through createSSRResponse, so
+    // the stub write below only reaches the wire through the handler
+    // edge's commitEventResponse fold after the chain unwinds — the e2e
+    // asserts the cookie arrives exactly once (fold ran, and only once).
+    event.response.headers.append('set-cookie', 'mw-blocked=1; Path=/');
     return new Response('blocked-by-middleware', { status: 403 });
   }
   try {

@@ -83,9 +83,13 @@
 //     emits the script-redirect fallback on the streamed 200,
 //   - `ssr.middleware` (SSR_MIDDLEWARE=1, src/middleware.ts): composition
 //     order, locals decoration visible to the page and to a server function
-//     over /_server (one request event fronts both), short-circuiting,
-//     error middleware catching a render throw, and the post-next()
+//     over /_server (one request event fronts both), short-circuiting —
+//     with the handler edge's commitEventResponse fold carrying an
+//     early-return's stub cookie onto the wire exactly once — error
+//     middleware catching a render throw, and the post-next()
 //     header-mutation window on a streamed response — in dev and prod,
+//     plus codegen string assertions that the generated handler resolves
+//     commitEventResponse from @solidjs/web and folds after the unwind,
 //   - `vite preview` serves the production artifact with no server file:
 //     dist/client statically, everything else (pages, /_server, middleware,
 //     the lifecycle) through the built handler.
@@ -1924,7 +1928,9 @@ async function runFramesMode() {
 //   hit the wire before the chain unwound,
 // - locals decoration visible to the page render (/whoami) and to a server
 //   function over /_server (the endpoint shares the chain's request event),
-// - short-circuit (/blocked never reaches the render),
+// - short-circuit (/blocked never reaches the render), and the handler
+//   edge's commit fold: the stub cookie the middleware appended inside the
+//   request scope arrives on the early-return Response exactly once,
 // - error middleware (/boom: a render throw becomes the middleware's 500).
 async function runMiddlewareChecksOverHttp(mode, origin, functionId) {
   const page = await fetchStreamed(origin + '/');
@@ -1963,6 +1969,20 @@ async function runMiddlewareChecksOverHttp(mode, origin, functionId) {
     'middleware short-circuits before the render',
     blocked.status === 403 && blockedBody === 'blocked-by-middleware',
     `status ${blocked.status}, body ${JSON.stringify(blockedBody.slice(0, 60))}`,
+  );
+  // The early return skipped createSSRResponse, so the stub cookie the
+  // middleware appended inside the request scope can only arrive through
+  // the handler edge's commitEventResponse fold — and exactly once (the
+  // fold is idempotent; nothing double-applies it).
+  const blockedCookies = (blocked.headers.getSetCookie ? blocked.headers.getSetCookie() : []).filter(
+    (cookie) => cookie.startsWith('mw-blocked='),
+  );
+  record(
+    mode,
+    'mw',
+    'early-return stub cookie arrives exactly once (edge commit fold)',
+    blockedCookies.length === 1 && blockedCookies[0].startsWith('mw-blocked=1'),
+    `set-cookie: ${JSON.stringify(blockedCookies)}`,
   );
 
   const boom = await fetch(origin + '/boom', { headers: { accept: 'text/html' } });
@@ -2012,6 +2032,41 @@ async function runMiddlewareMode() {
   };
   let functionId = null;
   try {
+    // ---- Codegen: the generated handler folds at the edge ----------------
+    // String assertions on the handler module the plugin generates (no
+    // execution): every response leaves through commitEventResponse —
+    // resolved off the runtime with a local fallback until the .40 repin
+    // ships the export in @solidjs/web — strictly AFTER the middleware
+    // chain unwinds, so early-return Responses get their stub writes and
+    // post-next() header mutation stays possible through the whole unwind.
+    process.env.SSR_MIDDLEWARE = '1';
+    let probe;
+    try {
+      probe = await createServer({ root: exampleDir, server: { middlewareMode: true } });
+      const transformed = await probe.environments.ssr.transformRequest('virtual:solid-ssr-handler');
+      const code = transformed?.code || '';
+      const unwind = code.indexOf('runMiddleware(request');
+      const fold = code.indexOf('return commitEventResponse(response, event)');
+      record(
+        'mw-codegen',
+        'gen',
+        'handler resolves commitEventResponse from @solidjs/web (fallback until .40 repin)',
+        // `.commitEventResponse ??` survives the SSR transform (the
+        // namespace binding itself is rewritten to a vite import handle).
+        code.includes('.commitEventResponse ??'),
+      );
+      record(
+        'mw-codegen',
+        'gen',
+        'edge fold runs after the middleware chain unwinds',
+        unwind !== -1 && fold !== -1 && fold > unwind,
+        `runMiddleware @ ${unwind}, fold @ ${fold}`,
+      );
+    } finally {
+      await probe?.close();
+      delete process.env.SSR_MIDDLEWARE;
+    }
+
     // ---- Dev: the chain fronts the dev middlewares -----------------------
     const devOrigin = `http://localhost:${devPort}`;
     server = startProcess('pnpm', ['exec', 'vite', '--port', String(devPort), '--strictPort'], {

@@ -381,10 +381,14 @@ export function ssrServe(
   // they differ in how the client entry URL is known (baked dev URL vs a
   // manifest scan) and what gets injected into <head> (Vite client + style
   // patch in dev). The response-head lifecycle is the runtime's
-  // (`createRequestEvent`/`createSSRResponse` from @solidjs/web): every
-  // request runs under a stub-backed event, `httpStatus`/`httpHeader`
-  // writes land on the wire at shell flush, a pre-flush redirect becomes a
-  // real 3xx and a post-flush one the script fallback. When
+  // (`createRequestEvent`/`createSSRResponse`/`commitEventResponse` from
+  // @solidjs/web): every request runs under a stub-backed event,
+  // `httpStatus`/`httpHeader` writes land on the wire at shell flush, a
+  // pre-flush redirect becomes a real 3xx and a post-flush one the script
+  // fallback, and a Response that skipped the render lifecycle (middleware
+  // early return, raw entry.render Response, server functions) has the
+  // stub folded on at the handler edge after the middleware chain fully
+  // unwinds. When
   // `serverFunctions` is enabled the endpoint is dispatched here on every
   // surface (the runnable-dev middleware routes through this module), so
   // user middleware and the shared request event front it identically.
@@ -394,6 +398,10 @@ export function ssrServe(
 
     const lines = [
       `import { createRequestEvent, createSSRResponse${middlewarePath ? ', composeMiddleware' : ''} } from '@solidjs/web';`,
+      // Namespace import so the handler also loads against runtimes that
+      // predate `commitEventResponse` (a named import of a missing export
+      // is fatal in ESM) — see the resolution + fallback below.
+      `import * as _webRuntime from '@solidjs/web';`,
       `import { provideRequestEvent } from ${JSON.stringify(STORAGE_SOURCE)};`,
       `import * as entry from ${JSON.stringify(entryServerSpec())};`,
       ...(middlewarePath
@@ -512,23 +520,38 @@ export function ssrServe(
 
     lines.push(
       ``,
-      // Responses that don't run the render lifecycle (raw Responses from
-      // entry.render, server-function responses) still honor stub header
-      // writes made before they were produced — matching what an
-      // h3/framework layer merging `event.response` would do. Status stays
-      // the response's own; `set-cookie` values append entry by entry.
-      `function applyResponseStub(response, stub) {`,
-      `  if (!stub || stub.committed) return response;`,
-      `  stub.committed = true;`,
-      `  try {`,
-      `    stub.headers.forEach((value, key) => {`,
-      `      if (key !== 'set-cookie' && !response.headers.has(key)) response.headers.set(key, value);`,
-      `    });`,
-      `    const cookies = stub.headers.getSetCookie ? stub.headers.getSetCookie() : [];`,
-      `    for (const cookie of cookies) response.headers.append('set-cookie', cookie);`,
-      `  } catch {}`,
-      `  return response;`,
-      `}`,
+      // The handler-edge commit fold — the runtime's `commitEventResponse`,
+      // the second of the response lifecycle's two exits: page results
+      // leave through `createSSRResponse`, any other Response (a middleware
+      // early return, a raw Response from entry.render, a server-function
+      // response) leaves through `commitEventResponse`, which folds the
+      // event's response stub onto it (cookies append entry-by-entry, other
+      // headers gap-fill, status stays the response's own) and commits the
+      // stub. Committed stubs pass through untouched, so the edge applies
+      // it unconditionally.
+      //
+      // TODO(.40-repin): collapse to the named import above and delete the
+      // fallback — `commitEventResponse` ships in @solidjs/web after the
+      // .40 repin. Until then the fallback preserves this handler's
+      // previous partial fold (no protocol denylist, no commit loudness) so
+      // the generated module keeps working against the published beta.31
+      // line, and middleware early returns get their stub writes onto the
+      // wire on both runtimes.
+      `const commitEventResponse =`,
+      `  _webRuntime.commitEventResponse ??`,
+      `  ((response, event) => {`,
+      `    const stub = event && event.response;`,
+      `    if (!stub || stub.committed) return response;`,
+      `    stub.committed = true;`,
+      `    try {`,
+      `      stub.headers.forEach((value, key) => {`,
+      `        if (key !== 'set-cookie' && !response.headers.has(key)) response.headers.set(key, value);`,
+      `      });`,
+      `      const cookies = stub.headers.getSetCookie ? stub.headers.getSetCookie() : [];`,
+      `      for (const cookie of cookies) response.headers.append('set-cookie', cookie);`,
+      `    } catch {}`,
+      `    return response;`,
+      `  });`,
       ``,
       `async function dispatchRequest(request, event, options) {`,
     );
@@ -537,11 +560,13 @@ export function ssrServe(
         `  if (new URL(request.url).pathname === endpoint) {`,
         // The call shares the middleware chain's event (locals decoration,
         // the response stub); an explicit host-provided createEvent wins.
-        `    const response = await handleServerFunctionRequest(request, {`,
+        // No fold here: the runtime's server-function handler runs the
+        // commit seam itself, and anything it left uncommitted is caught by
+        // the unconditional edge fold in handleRequest.
+        `    return handleServerFunctionRequest(request, {`,
         `      createEvent: () => event,`,
         `      ...options.serverFunctions,`,
         `    });`,
-        `    return applyResponseStub(response, event.response);`,
         `  }`,
       );
     }
@@ -556,7 +581,10 @@ export function ssrServe(
       `  if (result && typeof result.pipe !== 'function' && typeof result.then === 'function') {`,
       `    result = await result;`,
       `  }`,
-      `  if (result instanceof Response) return applyResponseStub(result, event.response);`,
+      // Raw Responses fold at the handler edge (handleRequest), after the
+      // middleware chain unwinds — not here, where middleware above this
+      // frame could still legitimately mutate headers.
+      `  if (result instanceof Response) return result;`,
       // The runtime's response-head lifecycle: commit at shell flush,
       // pre-flush Location as a real redirect, post-flush Location as the
       // script fallback; the transform injects the doctype/head pieces.
@@ -572,9 +600,16 @@ export function ssrServe(
       // Middleware runs inside the request scope, after event creation —
       // getRequestEvent() answers in middleware exactly as in app code, and
       // nothing reaches the wire until the outermost middleware returns.
-      `  return provideRequestEvent(event, () =>`,
+      `  const response = await provideRequestEvent(event, () =>`,
       `    runMiddleware(request, (req) => dispatchRequest(req || request, event, options)),`,
       `  );`,
+      // The fold runs strictly AFTER the outermost middleware returned:
+      // headers stay mutable through the whole unwind, and a middleware
+      // early return (an API handler that never called next()) gets its
+      // stub writes — cookies set inside the request scope, status — onto
+      // the wire. Unconditional: page responses come back from
+      // createSSRResponse committed and pass through untouched.
+      `  return commitEventResponse(response, event);`,
       `}`,
     );
 
