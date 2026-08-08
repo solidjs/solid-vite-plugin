@@ -128,6 +128,31 @@ export interface StartOptions {
    */
   middleware?: string;
   /**
+   * Typed, validated environment variables. A schema file — conventionally
+   * `env.ts` (or `env.js`) at the project root, probed automatically —
+   * default-exports `{ server?, client? }` maps of Standard Schema
+   * validators (zod, valibot, arktype, mixable per key), and the plugin
+   * exposes the validated values through `virtual:env/server` (all vars,
+   * server module graphs only — a client-graph import is a hard error) and
+   * `virtual:env/client` (the `VITE_`-prefixed `client` side; the prefix is
+   * enforced at config time). Validation runs at config/build time in node
+   * only against Vite's `loadEnv` merge of the `.env*` files (with
+   * `process.env` winning), which the plugin also folds into `process.env`
+   * itself — no `loadEnv` boilerplate in vite.config. Failures fail the
+   * build / render the dev error overlay with the per-key report, and a
+   * `solid-env.d.ts` is generated next to the schema so both virtual
+   * modules are fully typed by inference. The validated values are baked
+   * as plain JSON — no validator ships in any bundle, and a client-build
+   * leak scan errors when a server value shows up in a client chunk.
+   *
+   * `true` requires the conventional file (error when missing); a string
+   * is an explicit schema path; `false` disables even the probing.
+   * Env is a turnkey feature: without `start` there is no env layer.
+   *
+   * @default undefined (probe env.ts / env.js; off when absent)
+   */
+  env?: boolean | string;
+  /**
    * Let a host integration own the server environment — build wiring and
    * HTTP serving alike. The plugin skips its turnkey server-build config and
    * stands its dev middlewares down (SSR serving and the server-function

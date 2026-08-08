@@ -16,6 +16,7 @@ import { boundaryModules } from './boundary-modules.js';
 
 import { serverFunctions, type ServerFunctionsOptions } from './server-functions/index.js';
 import { SSR_HANDLER_ID, startServe, type StartOptions } from './ssr/index.js';
+import { startEnv } from './start-env.js';
 
 export { devStylePatch } from './dev-manifest.js';
 export { serverFunctions };
@@ -1044,6 +1045,10 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
   // historical transform-only behavior).
   if (turnkey) {
     plugins.push(
+      // Typed env (`start.env`) rides both turnkey modes: config-time
+      // validation, the virtual:env/{server,client} modules, generated
+      // types, and the client-bundle leak scan.
+      ...startEnv(turnkey.env),
       ...startServe(turnkey, {
         serverFunctions: !!options.serverFunctions,
         serverComponents,
