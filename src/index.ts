@@ -73,36 +73,64 @@ const devManifestCode = (root: string, bridgeUrl: string | null) => `const regis
 const jsOnly = key => ({ js: ["/" + key], css: [] });
 const bridgeUrl = ${JSON.stringify(bridgeUrl)};
 function createBridgeResolver() {
+  // Convergence cache, mirroring the in-process resolver: server-side lazy()
+  // re-requests assets on every retry of a suspended render pass, and only a
+  // synchronous answer lets the pass converge (a fresh promise per call
+  // suspends every retry anew — nested routes then loop until the render
+  // stack overflows). Cached entries can go stale after a CSS edit (no
+  // watcher reaches this side of the bridge); the HMR client replaces SSR'd
+  // dev styles on load, so staleness self-heals at hydration.
+  const cache = new Map();
+  const inFlight = new Map();
   return {
-    async resolve(key) {
-      const url = new URL(bridgeUrl);
-      url.searchParams.set("key", key);
-      let response;
-      try {
-        response = await fetch(url);
-      } catch (error) {
-        console.error(
-          '[vite-plugin-solid] Dev manifest bridge request failed for module key "' + key +
-            '" (' + url.href + '): ' + ((error && error.message) || error) +
-            ". SSR will render without this module's client assets, so its hydration preload entry will be missing.",
+    resolve(key) {
+      if (cache.has(key)) return cache.get(key);
+      let request = inFlight.get(key);
+      if (!request) {
+        request = fetchAssets(key).then(
+          (assets) => {
+            cache.set(key, assets);
+            inFlight.delete(key);
+            return assets;
+          },
+          (error) => {
+            inFlight.delete(key);
+            throw error;
+          },
         );
-        return null;
+        inFlight.set(key, request);
       }
-      if (!response.ok) {
-        // A silent null here strips the module's client assets from the
-        // SSR'd hydration asset map and hydration fails much later with a
-        // cryptic client-side error — report the miss where it happens.
-        console.error(
-          '[vite-plugin-solid] Dev manifest bridge request failed with status ' + response.status +
-            ' for module key "' + key + '" (' + url.href +
-            "). SSR will render without this module's client assets, so its hydration preload entry will be missing.",
-        );
-        return null;
-      }
-      return response.json();
+      return request;
     },
-    resolveSync: jsOnly,
+    resolveSync: (key) => cache.get(key) || jsOnly(key),
   };
+}
+async function fetchAssets(key) {
+  const url = new URL(bridgeUrl);
+  url.searchParams.set("key", key);
+  let response;
+  try {
+    response = await fetch(url);
+  } catch (error) {
+    console.error(
+      '[vite-plugin-solid] Dev manifest bridge request failed for module key "' + key +
+        '" (' + url.href + '): ' + ((error && error.message) || error) +
+        ". SSR will render without this module's client assets, so its hydration preload entry will be missing.",
+    );
+    return null;
+  }
+  if (!response.ok) {
+    // A silent null here strips the module's client assets from the
+    // SSR'd hydration asset map and hydration fails much later with a
+    // cryptic client-side error — report the miss where it happens.
+    console.error(
+      '[vite-plugin-solid] Dev manifest bridge request failed with status ' + response.status +
+        ' for module key "' + key + '" (' + url.href +
+        "). SSR will render without this module's client assets, so its hydration preload entry will be missing.",
+    );
+    return null;
+  }
+  return response.json();
 }
 export default (registry && registry[${JSON.stringify(root)}]) ||
   (bridgeUrl ? createBridgeResolver() : { resolve: jsOnly, resolveSync: jsOnly });`;

@@ -327,6 +327,30 @@ async function runSsrChecks(mode, origin) {
     'clientOnly SSRs its fallback only',
     html.includes('client-only-fallback') && !html.includes('CLIENT-ONLY-WIDGET'),
   );
+
+  // Router-style nested lazy components (src/NestedLazy.tsx): a provider
+  // whose children re-create lazy() components on every retry of the
+  // suspended render pass. Convergence regressed when the dev asset resolver
+  // answered every call with a fresh pending promise — each retry then
+  // suspended anew and the pass never converged (any nested fs-route hung
+  // dev, or overflowed the render stack and killed the server). Time-bounded
+  // so a regression fails fast instead of hanging the suite.
+  const nested = await Promise.race([
+    fetchStreamed(origin + '/nested-lazy'),
+    new Promise((resolve) => setTimeout(() => resolve(null), 15000)),
+  ]);
+  record(
+    mode,
+    'ssr',
+    'nested lazy components converge (layout + leaf rendered)',
+    !!nested &&
+      nested.status === 200 &&
+      nested.html.includes('NESTED-LAZY-LEAF') &&
+      nested.html.includes('nested-layout'),
+    nested
+      ? `status ${nested.status}`
+      : 'timed out after 15s (render pass never converged)',
+  );
   return html;
 }
 

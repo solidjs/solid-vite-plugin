@@ -26,7 +26,15 @@ export type ResolvedAssets = {
 };
 
 export type DevAssetResolver = {
-  resolve: (key: string) => Promise<ResolvedAssets | null>;
+  /**
+   * Answers synchronously (a plain object) once the key's assets are known.
+   * The sync answer is load-bearing for SSR convergence: the runtime retries
+   * a suspended render pass by re-creating the lazy component, which
+   * re-requests its assets — if every answer is a fresh pending promise the
+   * pass suspends again on a promise that did not exist when the retry
+   * began, and never converges (see `createDevAssetResolver`).
+   */
+  resolve: (key: string) => ResolvedAssets | null | Promise<ResolvedAssets | null>;
   /**
    * Synchronous fast path used by sync consumers (a lazy component's
    * `moduleUrl` getter for islands): the module's dev URL is knowable
@@ -320,15 +328,59 @@ export function renderDevStyleTag(desc: DevStyleDescriptor): string {
 }
 
 export function createDevAssetResolver(server: ViteDevServer): DevAssetResolver {
-  const resolve = async function resolveDevAssets(key: string): Promise<ResolvedAssets | null> {
-    // The module's dev URL doubles as its client entry: modulepreload hint
-    // and hydration module-map value.
-    const js = ['/' + key];
-    const css = await collectDevStyles(server, [key]);
-    return { js, css };
+  // Server-side lazy() re-requests a module's assets on every retry of a
+  // suspended render pass (retries re-create the component). The build
+  // manifest answers those repeats synchronously and the pass converges; an
+  // always-async resolver instead suspends every retry on a brand-new
+  // promise, so a pass whose retry path re-creates the lazy component (a
+  // nested route's outlet does) loops forever — each cycle nests one resume
+  // closure until the render stack overflows and the escaped rejection kills
+  // the dev server. So: dedupe in-flight walks per key and answer
+  // synchronously once a key's assets are known. Any watcher event drops the
+  // cache — the next request re-walks the updated module graph, keeping dev
+  // CSS fresh.
+  const resolved = new Map<string, ResolvedAssets>();
+  const pending = new Map<string, Promise<ResolvedAssets | null>>();
+  let generation = 0;
+  server.watcher.on('all', () => {
+    generation++;
+    resolved.clear();
+    pending.clear();
+  });
+
+  const resolve = function resolveDevAssets(
+    key: string,
+  ): ResolvedAssets | Promise<ResolvedAssets | null> {
+    const cached = resolved.get(key);
+    if (cached) return cached;
+    let walk = pending.get(key);
+    if (!walk) {
+      const startedAt = generation;
+      walk = (async (): Promise<ResolvedAssets> => {
+        // The module's dev URL doubles as its client entry: modulepreload
+        // hint and hydration module-map value.
+        const js = ['/' + key];
+        const css = await collectDevStyles(server, [key]);
+        return { js, css };
+      })().then(
+        (assets) => {
+          if (generation === startedAt) {
+            resolved.set(key, assets);
+            pending.delete(key);
+          }
+          return assets;
+        },
+        (error) => {
+          if (generation === startedAt) pending.delete(key);
+          throw error;
+        },
+      );
+      pending.set(key, walk);
+    }
+    return walk;
   };
   return {
     resolve,
-    resolveSync: (key: string) => ({ js: ['/' + key], css: [] }),
+    resolveSync: (key: string) => resolved.get(key) ?? { js: ['/' + key], css: [] },
   };
 }

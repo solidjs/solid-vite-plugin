@@ -19,6 +19,7 @@ import { createMemo, createSignal, Loading } from 'solid-js';
 import { clientOnly, getRequestEvent, httpHeader, httpStatus, isServer } from '@solidjs/web';
 import { getServerMessage, greet, hasSecret, requestMethod } from './api';
 import HmrTarget from './HmrTarget';
+import NestedLazySection from './NestedLazy';
 import './App.css';
 
 const OnlyClient = clientOnly(() => import('./ClientOnlyWidget'));
@@ -75,6 +76,9 @@ export default function App() {
     // A render throw the error middleware must be able to catch.
     throw new Error('boom-page');
   }
+  // Router-style nested lazy components: the SSR pass must converge (see
+  // src/NestedLazy.tsx for the overflow this regresses against).
+  if (pathname === '/nested-lazy') return <NestedLazySection />;
 
   const [count, setCount] = createSignal(0);
   const [message, setMessage] = createSignal('');
