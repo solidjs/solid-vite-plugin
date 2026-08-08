@@ -518,7 +518,7 @@ runtime registration — e.g. a router's single-flight collector:
 
 ```ts
 // src/server-config.ts
-import { configureServerFunctionsServer } from '@solidjs/web/server-functions';
+import { configureServerFunctionsServer } from '@solidjs/web/server-functions/server';
 configureServerFunctionsServer({ collectFlightData: createFlightDataCollector(router) });
 ```
 

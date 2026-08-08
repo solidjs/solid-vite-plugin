@@ -8,7 +8,10 @@
 // This is where a router would register its single-flight collector; the
 // test uses a `transformResult` hook instead because its effect (a header +
 // a transformed value on the probe call) is observable over plain HTTP.
-import { configureServerFunctionsServer } from '@solidjs/web/server-functions';
+// The /server subpath is the type-correct import for server-only modules:
+// the base subpath's types are the client surface, which doesn't declare
+// configureServerFunctionsServer.
+import { configureServerFunctionsServer } from '@solidjs/web/server-functions/server';
 import { respond } from '@solidjs/web';
 
 configureServerFunctionsServer({

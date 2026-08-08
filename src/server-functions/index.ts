@@ -111,7 +111,7 @@ export interface ServerFunctionsOptions {
    *
    * ```ts
    * // src/server-config.ts
-   * import { configureServerFunctionsServer } from '@solidjs/web/server-functions';
+   * import { configureServerFunctionsServer } from '@solidjs/web/server-functions/server';
    * configureServerFunctionsServer({ collectFlightData: createFlightDataCollector(router) });
    * ```
    *
