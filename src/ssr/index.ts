@@ -134,6 +134,28 @@ export interface StartOptions {
    */
   middleware?: string;
   /**
+   * Path to a server-only module (resolved relative to the Vite root) whose
+   * default export runs once per request in the generated server entry,
+   * after the middleware chain has dispatched to the page render and
+   * immediately before `renderToStream`: `(event, App) => Component | void |
+   * Promise<Component | void>`. The per-request seam for routers that must
+   * prepare an app instance before SSR begins (create a router bound to the
+   * request, `await router.load()`, then render): return a component and the
+   * generated entry renders it in the app's place inside the Document;
+   * return nothing and `<App />` renders unchanged. `event` is the shared
+   * request event — the same one the middleware chain decorated (`locals`
+   * are visible) — and the hook runs inside the request scope, so
+   * `getRequestEvent()` answers in anything it calls.
+   *
+   * Only meaningful with generated entries: an authored `entry-server`
+   * already owns its render function, so configuring both is an error.
+   * Server mode only — ignored in client mode (there is no per-request app
+   * render to prepare), so the config survives the `ssr` boolean flip.
+   *
+   * @default undefined
+   */
+  setup?: string;
+  /**
    * Typed, validated environment variables. A schema file — conventionally
    * `env.ts` (or `env.js`) at the project root, probed automatically —
    * default-exports `{ server?, client? }` maps of Standard Schema
@@ -205,6 +227,11 @@ const HANDLER_ID = SSR_HANDLER_ID;
 // such seam — every unhandled request renders — but production also has no
 // Vite pipeline to fall back to.
 const DEV_FALLTHROUGH_HEADER = 'x-solid-dev-fallthrough';
+// Private protocol between the two generated modules when `start.setup` is
+// async: the entry hands the handler the renderToStream result under this
+// key, because a promise resolving to the stream BARE would adopt the
+// stream's thenable (which waits for the complete render) and buffer it.
+const STREAM_BOX = '__solidSetupStream';
 const DEV_STYLES_ID = 'virtual:solid-ssr-dev-styles';
 const RESOLVED_DEV_STYLES_ID = '\0' + DEV_STYLES_ID;
 // Generated default entries / document shell. The `.tsx` suffix routes them
@@ -375,6 +402,8 @@ export function startServe(
   let entries: ResolvedEntries | undefined;
   /** Absolute path of the user's middleware module, when configured. */
   let middlewarePath: string | null = null;
+  /** Absolute path of the per-request setup module, when configured (server mode). */
+  let setupPath: string | null = null;
 
   function requireEntries(): ResolvedEntries {
     // config() always runs before resolveId/load/configureServer.
@@ -456,8 +485,9 @@ export function startServe(
       ].join('\n');
     }
     const { app } = requireEntries();
+    const streamOptions = `{ manifest${serverComponents ? ', plugins: [ServerComponentPlugin]' : ''} }`;
     return [
-      `import { renderToStream } from '@solidjs/web';`,
+      `import { renderToStream${setupPath ? ', getRequestEvent' : ''} } from '@solidjs/web';`,
       ...(serverComponents
         ? [
             `import { configureServerFunctionsServer } from '@solidjs/web/server-functions';`,
@@ -467,7 +497,17 @@ export function startServe(
       `import manifest from ${JSON.stringify(MANIFEST_ID)};`,
       `import Document from ${JSON.stringify(documentSpec())};`,
       `import App from ${JSON.stringify(app)};`,
+      ...(setupPath ? [`import setup from ${JSON.stringify(setupPath)};`] : []),
       ``,
+      ...(setupPath
+        ? [
+            `if (typeof setup !== 'function') {`,
+            `  throw new Error('[vite-plugin-solid] start.setup must default-export a function ' +`,
+            `    '((event, App) => Component | void | Promise<...>): ' + ${JSON.stringify(options.setup)});`,
+            `}`,
+            ``,
+          ]
+        : []),
       ...(serverComponents
         ? [
             // Direct (in-process) server-function calls made during document
@@ -478,13 +518,41 @@ export function startServe(
             ``,
           ]
         : []),
-      `export function render(request, context) {`,
-      `  return renderToStream(() => (`,
-      `    <Document>`,
-      `      <App />`,
-      `    </Document>`,
-      `  ), { manifest${serverComponents ? ', plugins: [ServerComponentPlugin]' : ''} });`,
-      `}`,
+      ...(setupPath
+        ? [
+            // The per-request seam: the hook sees the same event the
+            // middleware chain decorated and finishes before renderToStream
+            // starts. When it is async, the stream must NOT cross the
+            // promise boundary bare — a promise resolving to a
+            // renderToStream result adopts its thenable (which waits for
+            // the *complete* render) and buffers the stream — so it crosses
+            // boxed under a private key the generated handler unboxes
+            // (both modules are ours).
+            `export function render(request, context) {`,
+            `  const prepared = setup(getRequestEvent(), App);`,
+            `  if (prepared && typeof prepared.then === 'function') {`,
+            `    return prepared.then((component) => ({ ${STREAM_BOX}: renderApp(component || App) }));`,
+            `  }`,
+            `  return renderApp(prepared || App);`,
+            `}`,
+            ``,
+            `function renderApp(Root) {`,
+            `  return renderToStream(() => (`,
+            `    <Document>`,
+            `      <Root />`,
+            `    </Document>`,
+            `  ), ${streamOptions});`,
+            `}`,
+          ]
+        : [
+            `export function render(request, context) {`,
+            `  return renderToStream(() => (`,
+            `    <Document>`,
+            `      <App />`,
+            `    </Document>`,
+            `  ), ${streamOptions});`,
+            `}`,
+          ]),
     ].join('\n');
   }
 
@@ -757,6 +825,14 @@ export function startServe(
       `  if (result && typeof result.pipe !== 'function' && typeof result.then === 'function') {`,
       `    result = await result;`,
       `  }`,
+      ...(setupPath
+        ? [
+            // start.setup's async path boxes the stream (see the generated
+            // entry): a bare promise resolution would adopt the stream's
+            // thenable and buffer the whole render.
+            `  if (result && result.${STREAM_BOX}) result = result.${STREAM_BOX};`,
+          ]
+        : []),
       // Raw Responses fold at the handler edge (handleRequest), after the
       // middleware chain unwinds — not here, where middleware above this
       // frame could still legitimately mutate headers.
@@ -802,6 +878,21 @@ export function startServe(
         middlewarePath = options.middleware
           ? path.resolve(root, normalizeUserPath(root, options.middleware, 'middleware'))
           : null;
+        // Server-mode only, like `entryServer`/`external` (a documented
+        // no-op in client mode so configs survive the `ssr` boolean flip).
+        setupPath =
+          !clientMode && options.setup
+            ? path.resolve(root, normalizeUserPath(root, options.setup, 'setup'))
+            : null;
+        if (setupPath && !entries.generated) {
+          // An authored entry-server owns its render function — the seam the
+          // hook needs does not exist there.
+          throw new Error(
+            '[vite-plugin-solid] start.setup only applies to generated entries: your ' +
+              'entry-server owns render() already, so call your setup step there instead ' +
+              `(remove start.setup or the authored entry): ${options.setup}`,
+          );
+        }
         if (env.isPreview) {
           if (clientMode) {
             // Client-mode builds emit a real dist/client/index.html (the

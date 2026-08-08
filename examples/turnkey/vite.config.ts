@@ -21,6 +21,9 @@ import solidPlugin from 'vite-plugin-solid';
 // - SSR_MIDDLEWARE=1 wires src/middleware.ts through `start.middleware`
 //   (middleware and preview modes): a fetch-style chain fronting every
 //   dispatch path with getRequestEvent() live inside it.
+// - SSR_SETUP=1 wires src/setup.tsx through `start.setup` (middleware mode):
+//   the per-request app-setup hook, awaited between the middleware chain and
+//   renderToStream with the shared request event in hand.
 // - SERVER_FN_DEV_MIDDLEWARE=0 disables the turnkey dev middleware via
 //   `serverFunctions.devMiddleware` (no-middleware mode) — endpoint dispatch
 //   becomes the host's job, like a Cloudflare-style environment plugin.
@@ -72,6 +75,11 @@ export default defineConfig({
               // chain fronting every dispatch path — page SSR, /_server,
               // preview — with getRequestEvent() live inside it.
               ...(process.env.SSR_MIDDLEWARE ? { middleware: './src/middleware.ts' } : {}),
+              // SSR_SETUP=1 (middleware mode): the per-request app-setup
+              // hook — src/setup.tsx runs between the middleware chain and
+              // renderToStream, receiving the event and returning the
+              // component to render (the TanStack-style async router seam).
+              ...(process.env.SSR_SETUP ? { setup: './src/setup.tsx' } : {}),
             },
       serverFunctions: serverComponents
         ? { components: true }

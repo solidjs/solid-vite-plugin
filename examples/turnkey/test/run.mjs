@@ -2085,13 +2085,56 @@ async function runMiddlewareChecksOverHttp(mode, origin, functionId) {
       `x-mw-order: ${JSON.stringify(fn.headers.get('x-mw-order'))}`,
     );
   }
+
+  // ---- Per-request app setup (start.setup, src/setup.tsx) ----------------
+  // The hook runs between the middleware chain and renderToStream: its
+  // marker carries the request pathname, the locals the middleware
+  // decorated (ordering), and an invocation counter. It must land in the
+  // FIRST chunk — the hook is awaited before the shell streams.
+  const setupFirst = await fetchStreamed(origin + '/');
+  const setupMarker = (html) => {
+    const match = html.match(/setup:([^:<]*):([^:<]*):(\d+)/);
+    return match && { pathname: match[1], user: match[2], seq: Number(match[3]) };
+  };
+  const first = setupMarker(setupFirst.html);
+  record(
+    mode,
+    'setup',
+    'setup hook ran with the event and middleware locals (marker in shell)',
+    !!first && first.pathname === '/' && first.user === 'mw-user',
+    first ? JSON.stringify(first) : 'no marker in html',
+  );
+  record(
+    mode,
+    'setup',
+    'async setup completes before the shell flushes (marker in first chunk)',
+    setupFirst.chunks.length > 0 && !!setupMarker(setupFirst.chunks[0]),
+  );
+  record(
+    mode,
+    'setup',
+    'app still renders inside the setup-provided root',
+    setupFirst.html.includes('Turnkey SSR'),
+  );
+  const setupSecond = await fetchStreamed(origin + '/');
+  const second = setupMarker(setupSecond.html);
+  record(
+    mode,
+    'setup',
+    'setup runs per request (invocation counter advances)',
+    !!first && !!second && second.seq > first.seq,
+    `seq ${first?.seq} then ${second?.seq}`,
+  );
 }
 
 async function runMiddlewareMode() {
   console.log(`\n=== MIDDLEWARE ===`);
   const devPort = 3172;
   const prodPort = 3173;
-  const env = { ...process.env, SSR_MIDDLEWARE: '1' };
+  // SSR_SETUP rides the middleware mode: the hook's contract (ordering
+  // after the chain, shared locals) is only observable with a middleware
+  // in front anyway.
+  const env = { ...process.env, SSR_MIDDLEWARE: '1', SSR_SETUP: '1' };
 
   let server;
   let serverLog = '';
@@ -2109,6 +2152,7 @@ async function runMiddlewareMode() {
     // early-return Responses get their stub writes and post-next() header
     // mutation stays possible through the whole unwind.
     process.env.SSR_MIDDLEWARE = '1';
+    process.env.SSR_SETUP = '1';
     let probe;
     try {
       probe = await createServer({ root: exampleDir, server: { middlewareMode: true } });
@@ -2132,9 +2176,28 @@ async function runMiddlewareMode() {
         unwind !== -1 && fold !== -1 && fold > unwind,
         `runMiddleware @ ${unwind}, fold @ ${fold}`,
       );
+      // The generated entry-server threads start.setup: awaited with the
+      // request event before renderToStream, its result (or App) rendered.
+      const entry = await probe.environments.ssr.transformRequest(
+        'virtual:solid-ssr-entry-server.tsx',
+      );
+      const entryCode = entry?.code || '';
+      // The SSR transform rewrites imported bindings (`setup` becomes a
+      // member access on the import handle), so match the surviving locals:
+      // the prepared setup result, and the boxed-stream protocol that keeps
+      // an async setup from buffering the render (a promise resolving to
+      // the stream bare would adopt its thenable).
+      record(
+        'mw-codegen',
+        'gen',
+        'generated entry threads start.setup and boxes the async stream',
+        entryCode.includes('const prepared = ') &&
+          entryCode.includes('__solidSetupStream'),
+      );
     } finally {
       await probe?.close();
       delete process.env.SSR_MIDDLEWARE;
+      delete process.env.SSR_SETUP;
     }
 
     // ---- Dev: the chain fronts the dev middlewares -----------------------
@@ -2224,7 +2287,10 @@ async function runPreviewMode() {
   console.log(`\n=== ${mode.toUpperCase()} ===`);
   const port = 3174;
   const origin = `http://localhost:${port}`;
-  const env = { ...process.env, SSR_MIDDLEWARE: '1' };
+  // SSR_SETUP rides along like in middleware mode: the shared chain checks
+  // assert the per-request setup hook, and preview must serve the built
+  // entry that threads it exactly like dev and prod.
+  const env = { ...process.env, SSR_MIDDLEWARE: '1', SSR_SETUP: '1' };
 
   let server;
   let serverLog = '';

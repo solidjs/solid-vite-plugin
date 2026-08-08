@@ -259,6 +259,46 @@ decoration is visible to server functions too). Nothing reaches the wire
 until the outermost middleware returns: headers stay mutable after
 `next()` even for streamed responses.
 
+**`setup`** points at a server-only module default-exporting a per-request
+app-setup hook: `(event, App) => Component | void | Promise<Component |
+void>`. The generated server entry awaits it after the middleware chain has
+dispatched to the page render and immediately before `renderToStream` — the
+seam for routers that must prepare an app instance per request before SSR
+can begin (create a router bound to the request, `await router.load()`,
+then render):
+
+```ts
+// vite.config.ts
+solid({ start: { setup: './src/setup.tsx' }, ssr: true });
+
+// src/setup.tsx
+import type { Component } from 'solid-js';
+import type { RequestEvent } from '@solidjs/web';
+
+export default async function setup(event: RequestEvent, App: Component) {
+  const router = createRouter({ url: event.request.url });
+  await router.load(); // async work completes before the shell streams
+  return () => <App router={router} />; // rendered in the app's place
+}
+```
+
+`event` is the shared request event — the same one the middleware chain
+decorated, so `locals` are visible — and the hook runs inside the request
+scope (`getRequestEvent()` answers in anything it calls). Return a
+component and the generated entry renders it inside the Document where
+`<App />` would have been; return nothing and `<App />` renders unchanged,
+so a pure side-effect setup (seeding a per-request cache) needs no return.
+Zero-config apps are untouched: without the option the generated entry is
+byte-identical to before.
+
+Two boundaries to know: the hook is a page-render seam — the middleware
+chain and the server-function endpoint run without it — and it only exists
+in generated entries (an authored `entry-server` owns `render()` already;
+configuring both is an error). And as with any server-side tree shaping,
+whatever the hook renders must be matched client-side for hydration —
+routers that own both sides (their client entry re-creates the router and
+hydrates the same tree) fit naturally.
+
 **`env`** — first-party typed environment variables. A schema file at the
 project root — `env.ts` (or `env.js`), probed automatically; point
 elsewhere with `start: { env: './path' }`, disable with `env: false` —
