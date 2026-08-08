@@ -9,12 +9,18 @@
 //     revalidates live (invalid -> error overlay 500, restored -> 200),
 //   - guards: a client-graph import of virtual:env/server fails the build
 //     with the server-only error; a hand-inlined secret literal trips the
-//     client-chunk leak scan; a missing required var fails validation with
-//     the per-key report; a non-VITE_ client key is a config-time error,
+//     client-chunk leak scan; a missing SERVER var only warns at build
+//     time (runtime env — deferred to boot) while a missing CLIENT var
+//     (baked) fails the build; a non-VITE_ client key is a config-time
+//     error,
 //   - prod (ssr mode): client chunks carry the client values and neither
 //     the secret, the server key names, nor any '~standard' validator
-//     machinery; dist/server bakes the validated values (build-time env);
-//     preview serves with the middleware headers live,
+//     machinery; dist/server bakes NO server values — it reads process.env
+//     at boot through the user's schema (validator is server-only), so the
+//     same artifact serves a rotated secret without a rebuild and fails
+//     boot with the per-key report when the runtime env is invalid;
+//     preview folds .env into process.env (turnkey smoke test) and serves
+//     with the middleware headers live,
 //   - client mode: the same env layer on a static build — index.html shell,
 //     no dist/server, no secret anywhere in dist/client, and the app boots
 //     in a browser reading virtual:env/client.
@@ -89,6 +95,21 @@ function runCommandExpectFailure(cmd, args, opts) {
       code === 0
         ? reject(new Error(`${cmd} ${args.join(' ')} unexpectedly succeeded:\n${output}`))
         : resolve(output);
+    });
+  });
+}
+
+/** Runs a command capturing its combined output and exit code. */
+function runCommandCapture(cmd, args, opts) {
+  return new Promise((resolve) => {
+    const child = spawn(cmd, args, { ...opts, stdio: ['ignore', 'pipe', 'pipe'] });
+    children.add(child);
+    let output = '';
+    child.stdout.on('data', (d) => (output += d));
+    child.stderr.on('data', (d) => (output += d));
+    child.on('exit', (code) => {
+      children.delete(child);
+      resolve({ code, output });
     });
   });
 }
@@ -237,9 +258,9 @@ function record(mode, phase, name, ok, detail = '') {
   console.log(`  [${mode}/${phase}] ${status} ${name}${detail && !ok ? ` — ${detail}` : ''}`);
 }
 
-function checkEnvHeaders(mode, phase, headers) {
-  record(mode, phase, 'middleware sees the server secret (length only)', headers.get('x-env-secret-len') === String(SECRET.length), `got ${headers.get('x-env-secret-len')}`);
-  record(mode, phase, 'validated output baked (defaulted number, not raw string)', headers.get('x-env-port') === '8080' && headers.get('x-env-port-type') === 'number', `port ${headers.get('x-env-port')} type ${headers.get('x-env-port-type')}`);
+function checkEnvHeaders(mode, phase, headers, secretLen = SECRET.length) {
+  record(mode, phase, 'middleware sees the server secret (length only)', headers.get('x-env-secret-len') === String(secretLen), `got ${headers.get('x-env-secret-len')}, want ${secretLen}`);
+  record(mode, phase, 'validated output served (defaulted number, not raw string)', headers.get('x-env-port') === '8080' && headers.get('x-env-port-type') === 'number', `port ${headers.get('x-env-port')} type ${headers.get('x-env-port-type')}`);
   record(mode, phase, 'client vars visible server-side too', headers.get('x-env-app-name') === 'EnvApp');
 }
 
@@ -326,8 +347,19 @@ async function guardsMode() {
   out = await build({ ENV_APP: 'src/LeakApp.tsx' }).catch((e) => e.message);
   record('guards', 'leak-scan', 'hand-inlined secret literal trips the client-chunk scan', /leaked into client chunks/.test(out) && /SESSION_SECRET/.test(out), out.slice(0, 400));
 
-  out = await build({ ENV_SCHEMA: './env.fail.ts' }).catch((e) => e.message);
-  record('guards', 'validation', 'missing required var fails the build with the report', /env validation failed/.test(out) && /MISSING_REQUIRED_VAR/.test(out), out.slice(0, 400));
+  // Server env is runtime env: a missing required SERVER var must NOT fail
+  // the build (platform-injected vars may not exist on the build machine)
+  // — it warns and defers to boot validation instead.
+  const deferred = await runCommandCapture('pnpm', ['exec', 'vite', 'build'], {
+    cwd: exampleDir,
+    env: { ...process.env, ENV_SCHEMA: './env.fail.ts' },
+  });
+  record('guards', 'deferred', 'missing SERVER var builds anyway (deferred to boot)', deferred.code === 0, deferred.output.slice(-400));
+  record('guards', 'deferred', 'build warns with the deferred report', /deferred to boot/.test(deferred.output) && /MISSING_REQUIRED_VAR/.test(deferred.output), deferred.output.slice(-400));
+
+  // Client values are baked, so a missing CLIENT var still fails the build.
+  out = await build({ ENV_SCHEMA: './env.failclient.ts' }).catch((e) => e.message);
+  record('guards', 'validation', 'missing client var fails the build with the report', /env validation failed/.test(out) && /VITE_MISSING_CLIENT/.test(out), out.slice(0, 400));
 
   out = await build({ ENV_SCHEMA: './env.badprefix.ts' }).catch((e) => e.message);
   record('guards', 'prefix', 'non-VITE_ client key is a config-time error', /must carry the public env prefix/.test(out) && /APP_NAME/.test(out), out.slice(0, 400));
@@ -348,28 +380,64 @@ async function prodMode() {
   record('prod', 'client-bundle', 'server key names absent from client chunks', !clientJs.includes('SESSION_SECRET'));
   record('prod', 'client-bundle', 'no validator machinery in client chunks (~standard)', !clientJs.includes('~standard'));
 
+  // Server values are RUNTIME env: nothing baked into the server bundle —
+  // it imports the schema (validator is server-only, so that's fine) and
+  // reads process.env at boot, so secrets rotate without a rebuild and no
+  // secret exists in any dist artifact.
   const serverJs = readFileSync(path.join(exampleDir, 'dist/server/server.js'), 'utf-8');
-  record('prod', 'server-bundle', 'server bundle bakes the validated values (build-time env)', serverJs.includes(SECRET) && /ENV_CHECK_PORT"?\s*:\s*8080/.test(serverJs));
-  record('prod', 'server-bundle', 'no validator machinery in the server bundle either', !serverJs.includes('~standard'));
+  record('prod', 'server-bundle', 'server secret NOT baked into the server bundle', !serverJs.includes(SECRET));
+  record('prod', 'server-bundle', 'server bundle validates process.env at boot (schema shipped server-side)', serverJs.includes('~standard') && serverJs.includes('validation failed at boot') && /process\.env/.test(serverJs));
 
-  const server = startProcess(
-    'pnpm',
-    ['exec', 'vite', 'preview', '--port', String(PREVIEW_PORT), '--strictPort'],
-    { cwd: exampleDir },
-  );
-  server.stderr.on('data', (d) => process.stderr.write(d));
+  const preview = (env) => {
+    const child = startProcess(
+      'pnpm',
+      ['exec', 'vite', 'preview', '--port', String(PREVIEW_PORT), '--strictPort'],
+      { cwd: exampleDir, env: { ...process.env, ...env } },
+    );
+    let log = '';
+    child.stdout.on('data', (d) => (log += d));
+    child.stderr.on('data', (d) => (log += d));
+    return { child, getLog: () => log };
+  };
+  const stop = (child) => {
+    try {
+      process.kill(-child.pid, 'SIGTERM');
+    } catch {}
+  };
   const origin = `http://localhost:${PREVIEW_PORT}`;
-  await waitForHttp(origin + '/', 30000, { headers: { accept: 'text/html' } });
 
+  // 1. Plain preview: the plugin folds .env into process.env (preview
+  //    smoke-tests the artifact as turnkey as dev), boot validation passes.
+  let server = preview({}).child;
+  await waitForHttp(origin + '/', 30000, { headers: { accept: 'text/html' } });
   const { status, html, headers } = await fetchPage(origin + '/');
   record('prod', 'preview', 'responds 200 through the built handler', status === 200);
   record('prod', 'preview', 'app SSRs with the client env value', html.includes('EnvApp'));
   record('prod', 'preview', 'server secret never in HTML', !html.includes(SECRET));
   checkEnvHeaders('prod', 'preview', headers);
+  stop(server);
 
-  try {
-    process.kill(-server.pid, 'SIGTERM');
-  } catch {}
+  // 2. Rotation without rebuild: the same artifact, a different secret in
+  //    the process environment (real env wins over the .env fold) — the
+  //    middleware must see the ROTATED value.
+  const ROTATED = 'rotated-secret-after-deploy-0123456789abcdef';
+  server = preview({ SESSION_SECRET: ROTATED }).child;
+  await waitForHttp(origin + '/', 30000, { headers: { accept: 'text/html' } });
+  const rotated = await fetchPage(origin + '/');
+  record('prod', 'rotation', 'rotated secret visible without a rebuild (runtime env)', rotated.headers.get('x-env-secret-len') === String(ROTATED.length), `len ${rotated.headers.get('x-env-secret-len')}, want ${ROTATED.length}`);
+  stop(server);
+
+  // 3. Boot validation: the same artifact with an invalid environment (no
+  //    SESSION_SECRET anywhere) must fail at boot with the per-key report.
+  writeFileSync(ENV_FILE, ENV_CONTENT.replace(/^SESSION_SECRET=.*$/m, ''));
+  const failing = preview({});
+  await waitForHttp(origin + '/', 30000, { headers: { accept: 'text/html' } });
+  const boot = await fetchPage(origin + '/');
+  const bootReport = boot.html + failing.getLog();
+  record('prod', 'boot', 'invalid runtime env fails boot (no page served)', boot.status !== 200, `status ${boot.status}`);
+  record('prod', 'boot', 'boot failure carries the per-key report', /server env validation failed at boot/.test(bootReport) && /SESSION_SECRET/.test(bootReport), bootReport.slice(0, 300));
+  stop(failing.child);
+  writeFileSync(ENV_FILE, ENV_CONTENT);
 }
 
 async function clientMode() {

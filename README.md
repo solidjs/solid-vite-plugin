@@ -291,19 +291,26 @@ import { env } from 'virtual:env/server'; // every var
 import { env } from 'virtual:env/client'; // the VITE_-prefixed client vars
 ```
 
-- **Validation is build/dev-time, node-only.** The plugin loads the `.env*`
+- **Validation is node-only and layered.** The plugin loads the `.env*`
   files through Vite's `loadEnv` (with `process.env` winning, so CI
   secrets take precedence), folds them into `process.env` itself — no
   `loadEnv` one-liner in vite.config, and server code reading
   `process.env` directly sees the file-loaded vars too — and validates
-  before anything builds. A failure fails the build with the per-key
-  report; in dev it renders the error overlay instead, and `.env*`/schema
-  edits revalidate live.
-- **The validator never ships.** The virtual modules bake the *validated
-  output values* as plain JSON (defaults applied, coercions done): client
-  bundles carry only the `client` subset and zero schema-library bytes.
-  The values are build-time env by design — the server bundle bakes its
-  values too; rebuild to change them.
+  before anything builds. In dev every failure renders the error overlay
+  with the per-key report, and `.env*`/schema edits revalidate live. In a
+  build, `client` failures fail the build (those values are baked);
+  `server` failures only warn — a build machine may legitimately not have
+  the production secrets — and boot validation enforces them.
+- **Client values are baked, server values are runtime.** That's what the
+  public `VITE_` prefix means: `virtual:env/client` is the validated
+  output serialized as plain JSON (defaults applied, coercions done) with
+  zero schema-library bytes. `virtual:env/server` is not baked — it reads
+  `process.env` when the server boots and validates through your own
+  schema (imported into the server bundle, where shipping the validator
+  is fine). Platform-injected vars that don't exist at build time work,
+  secrets rotate without a rebuild, and no secret value exists in any
+  dist artifact; an invalid server environment fails boot with the same
+  per-key report.
 - **Leaks are errors.** Importing `virtual:env/server` from a client
   module graph is a hard error naming the importer (the app root and
   everything it imports hydrate — they are client code; keep server env
@@ -323,11 +330,11 @@ there is no env layer. See `examples/start-env` for the full story,
 including the failure modes.
 
 Design credit: the shape of this feature — the schema-file convention,
-the `virtual:env/*` module names (kept identical on purpose), build-time
-validation with baked values, the leak scan — follows
+the `virtual:env/*` module names (kept identical on purpose), baked
+client values, the leak scan — follows
 [@vite-env/core](https://github.com/pyyupsk/vite-env) (MIT), the
 design-correct prior art, reimplemented on this plugin's machinery with
-Standard Schema as the only contract.
+Standard Schema as the only contract (and runtime-read server values).
 
 **Entry resolution** (all paths relative to the Vite root):
 
