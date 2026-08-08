@@ -12,10 +12,38 @@
 //   controlled 500),
 // - the post-next() mutation window: headers set after `await next()` land
 //   on the wire even for streamed responses (nothing is sent until the
-//   outermost middleware returns).
+//   outermost middleware returns),
+// - API-style dispatch (the createAPIHandler shape): non-HTML GETs, POSTs
+//   with bodies, and no-JS form POSTs must all reach the chain — in dev
+//   exactly as in production — while non-page requests the chain does NOT
+//   handle fall back to Vite's own pipeline in dev.
 import { getRequestEvent } from '@solidjs/web';
 
 type Next = (request?: Request) => Promise<Response>;
+
+// A minimal filesystem-routing/createAPIHandler stand-in: owns /api/* and
+// the no-JS form endpoint, passes everything else down the chain.
+async function api(request: Request, next: Next): Promise<Response> {
+  const { pathname } = new URL(request.url);
+  if (request.method === 'GET' && pathname === '/api/info') {
+    const event = getRequestEvent()!;
+    return Response.json({ user: event.locals.user, order: event.locals.order });
+  }
+  if (request.method === 'POST' && pathname === '/api/echo') {
+    // The request body must arrive intact through the node -> web bridge.
+    return Response.json({ method: request.method, echoed: await request.json() });
+  }
+  if (request.method === 'POST' && pathname === '/form') {
+    // The no-JS form pattern: read urlencoded fields, answer with a
+    // post-redirect-get.
+    const form = await request.formData();
+    return new Response(null, {
+      status: 303,
+      headers: { location: `/?submitted=${encodeURIComponent(String(form.get('name')))}` },
+    });
+  }
+  return next();
+}
 
 async function first(request: Request, next: Next): Promise<Response> {
   const event = getRequestEvent()!;
@@ -49,4 +77,4 @@ function second(request: Request, next: Next): Promise<Response> {
   return next();
 }
 
-export default [first, second];
+export default [first, second, api];

@@ -124,6 +124,12 @@ export interface StartOptions {
    * after `next()` — streamed bodies included — and error middleware is a
    * plain `try { return await next(); } catch { ... }`.
    *
+   * All methods and accept types dispatch through the chain — API routes
+   * and no-JS form POSTs included, in dev exactly as in production. A
+   * non-page request (anything but an HTML-accepting GET) that no
+   * middleware handled falls back to Vite's own pipeline in dev instead of
+   * rendering the page at it.
+   *
    * @default undefined
    */
   middleware?: string;
@@ -185,6 +191,13 @@ export interface StartOptions {
 // chain and one request event across both dispatch paths).
 export const SSR_HANDLER_ID = 'virtual:solid-ssr-handler';
 const HANDLER_ID = SSR_HANDLER_ID;
+// Dev-only response marker: the generated dev handler answers non-page
+// requests that fell through the whole middleware chain to the terminal
+// page dispatch with a marked 404 instead of rendering HTML at them, and
+// the dev middleware hands those back to Vite's pipeline. Production has no
+// such seam — every unhandled request renders — but production also has no
+// Vite pipeline to fall back to.
+const DEV_FALLTHROUGH_HEADER = 'x-solid-dev-fallthrough';
 const DEV_STYLES_ID = 'virtual:solid-ssr-dev-styles';
 const RESOLVED_DEV_STYLES_ID = '\0' + DEV_STYLES_ID;
 // Generated default entries / document shell. The `.tsx` suffix routes them
@@ -710,6 +723,22 @@ export function startServe(
         `  }`,
       );
     }
+    if (!isBuild) {
+      // Dev terminal gate: the dev middleware dispatches every request the
+      // middleware chain might handle (API routes, no-JS form POSTs — all
+      // methods and accept types, matching production), passing
+      // `pageRequest: false` for the non-page ones. When such a request
+      // falls through the whole chain to this terminal dispatch, nothing
+      // owns it — answer with the marked 404 so the dev middleware hands
+      // it back to Vite's pipeline instead of rendering HTML at it. The
+      // gate reflects the wire request: only the dev middleware sets the
+      // flag, so external-host dispatch and preview stay render-always.
+      lines.push(
+        `  if (options.pageRequest === false) {`,
+        `    return new Response(null, { status: 404, headers: { ${JSON.stringify(DEV_FALLTHROUGH_HEADER)}: '1' } });`,
+        `  }`,
+      );
+    }
     lines.push(
       isBuild
         ? `  const clientEntry = options.clientEntry || resolveClientEntry();`
@@ -933,20 +962,31 @@ export function startServe(
             return;
           }
           server.middlewares.use((req, res, next) => {
-            if (req.method !== 'GET') return next();
-            const accept = req.headers.accept || '';
-            if (!accept.includes('text/html')) return next();
             const url = new URL(req.url || '/', 'http://localhost');
             if (url.pathname.startsWith('/@')) return next();
+            const accept = req.headers.accept || '';
+            const pageRequest = req.method === 'GET' && accept.includes('text/html');
+            // Production dispatches every request through the handler, so
+            // dev must too or API routes and no-JS form POSTs served by
+            // `start.middleware` are unreachable under `vite dev`. Without
+            // a middleware chain, non-page requests have nothing to reach —
+            // they stay on Vite's pipeline (404s) instead of rendering HTML.
+            if (!pageRequest && !middlewarePath) return next();
             (async () => {
               // Loaded through the SSR environment so the app, the request
               // event storage, and the handler share one module registry.
               const handler = await server.ssrLoadModule(HANDLER_ID);
-              const styles = await collectDevStyles(server, styleRoots());
+              const styles = pageRequest ? await collectDevStyles(server, styleRoots()) : [];
               const devHead = styles.map(renderDevStyleTag).join('');
               const response: Response = await handler.handleRequest(webRequestFromNode(req), {
                 devHead,
+                pageRequest,
               });
+              // A non-page request the chain never handled: the terminal
+              // dispatch answered with the marked 404 — hand it back to
+              // Vite (its 404, other post middlewares) rather than sending
+              // a rendered page at a fetch()/form client.
+              if (response.headers.has(DEV_FALLTHROUGH_HEADER)) return next();
               await sendWebResponse(res, response);
             })().catch((error) => {
               if (error instanceof Error) server.ssrFixStacktrace(error);

@@ -1996,6 +1996,50 @@ async function runMiddlewareChecksOverHttp(mode, origin, functionId) {
     `status ${boom.status}, body ${JSON.stringify(boomBody.slice(0, 60))}`,
   );
 
+  // ---- API-style dispatch (dev must match prod: these run in both) -------
+  // A fetch() client: non-HTML GET reaches the chain and sees the locals the
+  // earlier middleware decorated.
+  const info = await fetch(origin + '/api/info', { headers: { accept: 'application/json' } });
+  const infoBody = info.ok ? await info.json() : null;
+  record(
+    mode,
+    'mw',
+    'API GET (non-HTML accept) dispatches through the chain',
+    info.status === 200 && infoBody?.user === 'mw-user' && infoBody?.order?.join(',') === 'first,second',
+    `status ${info.status}, body ${JSON.stringify(infoBody)}`,
+  );
+
+  // POST with a JSON body: the node->web request bridge must carry the body.
+  const echo = await fetch(origin + '/api/echo', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ ping: 'pong' }),
+  });
+  const echoBody = echo.ok ? await echo.json() : null;
+  record(
+    mode,
+    'mw',
+    'API POST body round-trips through the chain',
+    echo.status === 200 && echoBody?.method === 'POST' && echoBody?.echoed?.ping === 'pong',
+    `status ${echo.status}, body ${JSON.stringify(echoBody)}`,
+  );
+
+  // The no-JS form pattern: an HTML-accepting POST answered with a
+  // post-redirect-get by the middleware.
+  const form = await fetch(origin + '/form', {
+    method: 'POST',
+    redirect: 'manual',
+    headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'text/html' },
+    body: new URLSearchParams({ name: 'solid' }).toString(),
+  });
+  record(
+    mode,
+    'mw',
+    'no-JS form POST reaches the chain (303 redirect)',
+    form.status === 303 && form.headers.get('location') === '/?submitted=solid',
+    `status ${form.status}, location ${JSON.stringify(form.headers.get('location'))}`,
+  );
+
   if (functionId) {
     const fn = await fetch(
       `${origin}/_server?id=${encodeURIComponent(functionId)}&args=${encodeURIComponent('[]')}`,
@@ -2080,6 +2124,31 @@ async function runMiddlewareMode() {
     const clientModule = await (await fetch(devOrigin + '/src/api.ts')).text();
     functionId = extractFunctionId(clientModule, 'whoAmI');
     await runMiddlewareChecksOverHttp('mw-dev', devOrigin, functionId);
+    // Dev-only: a non-page request the chain does NOT handle falls back to
+    // Vite's pipeline (its 404) instead of getting the page rendered at it.
+    const unhandledPost = await fetch(devOrigin + '/no-such-route', { method: 'POST' });
+    const unhandledPostBody = await unhandledPost.text();
+    record(
+      'mw-dev',
+      'mw',
+      'unhandled non-page POST falls back to Vite (404, no rendered page)',
+      // Connect's final handler answers ("Cannot POST ..."); a rendered dev
+      // page would carry the vite client script instead.
+      unhandledPost.status === 404 &&
+        unhandledPostBody.includes('Cannot POST') &&
+        !unhandledPostBody.includes('/@vite/client'),
+      `status ${unhandledPost.status}, body ${JSON.stringify(unhandledPostBody.slice(0, 60))}`,
+    );
+    const unhandledGet = await fetch(devOrigin + '/no-such.json', {
+      headers: { accept: 'application/json' },
+    });
+    record(
+      'mw-dev',
+      'mw',
+      'unhandled non-HTML GET falls back to Vite (404)',
+      unhandledGet.status === 404,
+      `status ${unhandledGet.status}`,
+    );
     // The lifecycle keeps working with middleware in front.
     await runHttpChecks('mw-dev', devOrigin);
     try {
@@ -2189,6 +2258,9 @@ async function runPreviewMode() {
         page.headers.get('x-after-next') === 'set-after-next',
       `x-mw-order: ${JSON.stringify(page.headers.get('x-mw-order'))}`,
     );
+    // The full chain contract — API GETs/POSTs and no-JS form POSTs
+    // included — holds under preview like dev and prod.
+    await runMiddlewareChecksOverHttp(mode, origin, null);
 
     await runHttpChecks(mode, origin);
   } catch (e) {
