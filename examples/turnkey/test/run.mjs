@@ -2589,6 +2589,38 @@ async function runVitestMode() {
     ok && /3 passed/.test(out),
     ok ? undefined : out.slice(-2000),
   );
+
+  // Both postures in ONE workspace (VITEST_PROJECTS=1 adds test.projects to
+  // the config): the jsdom project keeps the client posture while the node
+  // project gets the server posture end to end just by writing
+  // `environment: 'node'` — server conditions (isServer true), ssr codegen,
+  // and the framework inlined so the shared worker pool's root-derived
+  // native `--conditions` (which carry 'browser') never decide a resolution.
+  // src/server-posture.test.tsx carries the server assertions, including the
+  // request-event storage round-trip the fullstack session suite lives on.
+  let projectsOut = '';
+  let projectsOk = false;
+  try {
+    projectsOut = execSync('pnpm exec vitest run', {
+      cwd: exampleDir,
+      stdio: 'pipe',
+      timeout: 180000,
+      env: { ...process.env, VITEST_PROJECTS: '1' },
+    }).toString();
+    projectsOk = true;
+  } catch (e) {
+    projectsOut = String(e.stdout || '') + String(e.stderr || '');
+  }
+  record(
+    mode,
+    'projects',
+    'DOM (jsdom) and server (node) posture projects coexist in one workspace',
+    projectsOk &&
+      /\|client\|.*posture\.test\.tsx \(3 tests\)/.test(projectsOut) &&
+      /\|server\|.*server-posture\.test\.tsx \(3 tests\)/.test(projectsOut) &&
+      /6 passed/.test(projectsOut),
+    projectsOk ? undefined : projectsOut.slice(-2000),
+  );
 }
 
 const ALL_MODES = [

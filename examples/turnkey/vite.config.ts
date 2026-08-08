@@ -1,6 +1,9 @@
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { defineConfig, type Plugin } from 'vite';
+import { type Plugin } from 'vite';
+// vitest/config's defineConfig passes straight through to Vite and types the
+// `test` block the VITEST_PROJECTS knob adds.
+import { defineConfig } from 'vitest/config';
 import solidPlugin from 'vite-plugin-solid';
 
 // Turnkey kitchen sink: `start: {}` + `ssr: true` adds the serving layer on
@@ -51,6 +54,37 @@ export default defineConfig({
   define: {
     __JSX_COMPILER__: JSON.stringify(jsxCompiler),
   },
+  // VITEST_PROJECTS=1 (vitest mode): both test postures in ONE workspace —
+  // DOM component tests under jsdom get the client posture (browser
+  // conditions, dom codegen), while the node project gets the server
+  // posture end to end (server conditions, isServer true, ssr codegen)
+  // just by writing `environment: 'node'`. Without the knob the config has
+  // no `test` block at all: the zero-config client-posture default stays
+  // under test too.
+  ...(process.env.VITEST_PROJECTS
+    ? {
+        test: {
+          projects: [
+            {
+              extends: true as const,
+              test: {
+                name: 'client',
+                environment: 'jsdom',
+                include: ['src/posture.test.tsx'],
+              },
+            },
+            {
+              extends: true as const,
+              test: {
+                name: 'server',
+                environment: 'node',
+                include: ['src/server-posture.test.tsx'],
+              },
+            },
+          ],
+        },
+      }
+    : {}),
   ...(process.env.BUILD_SSR_FIRST
     ? {
         builder: {

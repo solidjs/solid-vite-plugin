@@ -537,6 +537,7 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
   let devServer: ViteDevServer | null = null;
   let projectRoot = process.cwd();
   let isTestMode = false;
+  let serverTestPosture = false;
   let isBuild = false;
   let isSsrBuild = false;
   let base = '/';
@@ -632,6 +633,20 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
       replaceDev = options.dev === true || (options.dev !== false && command === 'serve');
       projectRoot = userConfig.root || projectRoot;
       isTestMode = userConfig.mode === 'test';
+      // Per-vitest-project posture: the client posture (browser conditions,
+      // dom codegen, jsdom default) is right for DOM component tests but
+      // wrong for server-runtime unit tests. A project that explicitly opts
+      // into a server runtime — `test: { environment: 'node' }` (or
+      // 'edge-runtime') — gets the server posture end to end: no browser
+      // condition injection, so the framework resolves its real server
+      // build (isServer true) with no inline/alias workarounds. DOM
+      // environments (the jsdom default, happy-dom, browser mode) keep the
+      // client posture. Each vitest project resolves its own config, so the
+      // hooks below see the posture of the project they serve.
+      serverTestPosture =
+        isTestMode &&
+        ((userConfig as any).test?.environment === 'node' ||
+          (userConfig as any).test?.environment === 'edge-runtime');
 
       solidPkgsConfig = await crawlFrameworkPkgs({
         viteUserConfig: userConfig,
@@ -661,16 +676,27 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
           test.environment = 'jsdom';
         }
 
-        if (
+        if (serverTestPosture) {
+          // The worker pool is shared across the whole vitest workspace and
+          // imports externalized deps natively with `--conditions` derived
+          // from the ROOT config — which carries the client posture's
+          // 'browser'. Inline the framework so every resolution goes through
+          // THIS project's (server) conditions instead: one server-build
+          // instance end to end (request-event storage included).
+          if (!userTest.server?.deps?.inline) {
+            test.server = { deps: { inline: [/solid-js/, /@solidjs[+/]web/] } };
+          }
+        } else if (
           !userTest.server?.deps?.external?.find((item: string | RegExp) =>
             /solid-js/.test(item.toString()),
           )
         ) {
           test.server = { deps: { external: [/solid-js/] } };
         }
-        if (!userTest.browser?.enabled) {
-          // vitest browser mode already has bundled jest-dom assertions
-          // https://main.vitest.dev/guide/browser/assertion-api.html#assertion-api
+        // jest-dom's DOM matchers have no place in a server-posture project;
+        // vitest browser mode already has bundled jest-dom assertions
+        // https://main.vitest.dev/guide/browser/assertion-api.html#assertion-api
+        if (!userTest.browser?.enabled && !serverTestPosture) {
           const jestDomImport = getJestDomExport(userSetupFiles);
           if (jestDomImport) {
             test.setupFiles = [jestDomImport];
@@ -738,8 +764,11 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
         ...(replaceDev ? ['development'] : []),
         // Tests resolve the browser builds even when the app is
         // server-rendered — the client posture applies to the whole test
-        // pipeline, not just the codegen.
-        ...(isTestMode && !opts.isSsrTargetWebworker ? ['browser'] : []),
+        // pipeline, not just the codegen. Projects that explicitly opt into
+        // a server runtime (`test.environment: 'node'` / 'edge-runtime')
+        // keep the default server conditions instead, so the framework's
+        // real server build resolves (isServer true).
+        ...(isTestMode && !serverTestPosture && !opts.isSsrTargetWebworker ? ['browser'] : []),
         ...config.resolve.conditions,
       ];
 

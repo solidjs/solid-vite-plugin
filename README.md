@@ -682,7 +682,25 @@ For other breaking changes, check [the migration guide of vite](https://vitejs.d
 
 If you are using [vitest](https://vitest.dev/), this plugin already injects the necessary configuration for you. It even automatically detects if you have `@testing-library/jest-dom` installed in your project and automatically adds it to the `setupFiles`. All you need to add (if you want) is `globals`, `coverage`, and other testing configuration of your choice. If you can live without those, enjoy using vitest without the need to configure it yourself.
 
-Tests always compile with the client posture, regardless of the app's `ssr` flag: DOM codegen, non-hydratable (nothing hydrates in a test), browser export conditions, and a `jsdom` default `test.environment`. A server-rendered app needs no `ssr: mode !== 'test'` workaround — DOM component tests just work. Set `test.environment` explicitly (for example to `'node'`) for server-side tests such as `renderToString`.
+Tests default to the client posture, regardless of the app's `ssr` flag: DOM codegen, non-hydratable (nothing hydrates in a test), browser export conditions, and a `jsdom` default `test.environment`. A server-rendered app needs no `ssr: mode !== 'test'` workaround — DOM component tests just work.
+
+Server-runtime unit tests (server functions, sessions, `renderToString` — anything that needs `isServer` to be `true` and the real server build of the framework) opt out per [vitest project](https://vitest.dev/guide/projects) by setting `test.environment: 'node'` (or `'edge-runtime'`) explicitly. That project gets the server posture end to end: server export conditions, ssr codegen, and the framework inlined so the whole graph — request-event storage included — resolves into one server-build instance. No inline/alias configuration needed. Both postures coexist in one workspace:
+
+```ts
+// vite.config.ts
+test: {
+  projects: [
+    {
+      extends: true,
+      test: { name: 'client', environment: 'jsdom', include: ['src/**/*.test.tsx'] },
+    },
+    {
+      extends: true,
+      test: { name: 'server', environment: 'node', include: ['src/server/**/*.test.ts'] },
+    },
+  ],
+},
+```
 
 # Credits
 
