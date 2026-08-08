@@ -635,6 +635,8 @@ For other breaking changes, check [the migration guide of vite](https://vitejs.d
 
 If you are using [vitest](https://vitest.dev/), this plugin already injects the necessary configuration for you. It even automatically detects if you have `@testing-library/jest-dom` installed in your project and automatically adds it to the `setupFiles`. All you need to add (if you want) is `globals`, `coverage`, and other testing configuration of your choice. If you can live without those, enjoy using vitest without the need to configure it yourself.
 
+Tests always compile with the client posture, regardless of the app's `ssr` flag: DOM codegen, non-hydratable (nothing hydrates in a test), browser export conditions, and a `jsdom` default `test.environment`. A server-rendered app needs no `ssr: mode !== 'test'` workaround — DOM component tests just work. Set `test.environment` explicitly (for example to `'node'`) for server-side tests such as `renderToString`.
+
 # Credits
 
 - [solid-js](https://github.com/solidjs/solid)

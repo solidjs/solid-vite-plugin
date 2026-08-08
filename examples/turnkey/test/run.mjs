@@ -2470,6 +2470,37 @@ async function runDetectMode() {
   }
 }
 
+// Vitest posture: even though this app is `ssr: true`, tests compile and
+// resolve with the client posture — dom codegen, non-hydratable, browser
+// conditions, jsdom default — with no `test` block and no
+// `ssr: mode !== 'test'` workaround in the config. src/posture.test.tsx
+// carries the actual assertions (isServer false, non-hydratable codegen, a
+// DOM component rendering and updating under jsdom); this mode just runs it.
+async function runVitestMode() {
+  const mode = 'vitest';
+  console.log(`\n=== ${mode.toUpperCase()} ===`);
+  let out = '';
+  let ok = false;
+  try {
+    out = execSync('pnpm exec vitest run src/posture.test.tsx', {
+      cwd: exampleDir,
+      stdio: 'pipe',
+      timeout: 180000,
+      env: process.env,
+    }).toString();
+    ok = true;
+  } catch (e) {
+    out = String(e.stdout || '') + String(e.stderr || '');
+  }
+  record(
+    mode,
+    'test',
+    'DOM component tests pass with the client posture under ssr: true',
+    ok && /3 passed/.test(out),
+    ok ? undefined : out.slice(-2000),
+  );
+}
+
 const ALL_MODES = [
   'dev',
   'prod',
@@ -2486,6 +2517,7 @@ const ALL_MODES = [
   'babel-hmr',
   'external',
   'detect',
+  'vitest',
 ];
 const arg = process.argv[2];
 const modes = ALL_MODES.includes(arg) ? [arg] : ALL_MODES;
@@ -2504,6 +2536,7 @@ for (const mode of modes) {
   else if (mode === 'frames') await runFramesMode();
   else if (mode === 'babel-hmr') await runBabelHmrMode();
   else if (mode === 'external') await runExternalMode();
+  else if (mode === 'vitest') await runVitestMode();
   else await runDetectMode();
 }
 

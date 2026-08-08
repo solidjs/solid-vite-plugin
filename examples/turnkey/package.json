@@ -9,8 +9,10 @@
     "test": "node test/run.mjs"
   },
   "devDependencies": {
+    "jsdom": "^26.1.0",
     "vite": "^7.0.0",
-    "vite-plugin-solid": "workspace:*"
+    "vite-plugin-solid": "workspace:*",
+    "vitest": "^3.2.4"
   },
   "dependencies": {
     "solid-js": "catalog:",

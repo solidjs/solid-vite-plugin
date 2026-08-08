@@ -378,10 +378,22 @@ function getJestDomExport(setupFiles: string[]) {
       );
 }
 
-function getSolidOptions(options: Partial<Options>, isSsr: boolean, dev: boolean): SolidOptions {
+function getSolidOptions(
+  options: Partial<Options>,
+  isSsr: boolean,
+  dev: boolean,
+  isTestMode = false,
+): SolidOptions {
   let solidOptions: Pick<SolidOptions, 'generate' | 'hydratable'>;
 
-  if (options.start && !options.ssr) {
+  if (isTestMode) {
+    // Vitest compiles with the client posture regardless of the app's `ssr`
+    // flag: component tests exercise DOM code and nothing hydrates in a
+    // test, so hydratable output would look for markers that aren't there.
+    // `generate` still follows the transform's own ssr flag, so explicit
+    // node-environment tests (renderToString) keep their server codegen.
+    solidOptions = { generate: isSsr ? 'ssr' : 'dom', hydratable: false };
+  } else if (options.start && !options.ssr) {
     // Turnkey client mode: client code compiles exactly like a plain SPA
     // (dom, non-hydratable — nothing hydrates); only the document shell
     // render goes through the SSR transforms, also non-hydratable since
@@ -614,7 +626,10 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
             ? [userTest.setupFiles]
             : userTest.setupFiles || [];
 
-        if (!userTest.environment && !options.ssr) {
+        // Regardless of the app's `ssr` flag: tests run with the client
+        // posture (DOM component tests are the norm), so the default test
+        // environment is a DOM. Node-environment tests opt in explicitly.
+        if (!userTest.environment) {
           test.environment = 'jsdom';
         }
 
@@ -673,7 +688,7 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
           // this plugin handles JSX transformation via babel-preset-solid.
           ...(isVite8 ? { rolldownOptions: { transform: { jsx: 'preserve' as const } } } : {}),
         },
-        ...(test.server ? { test } : {}),
+        ...(Object.keys(test).length ? { test } : {}),
       };
     },
 
@@ -693,7 +708,10 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
       config.resolve.conditions = [
         'solid',
         ...(replaceDev ? ['development'] : []),
-        ...(isTestMode && !opts.isSsrTargetWebworker && !options.ssr ? ['browser'] : []),
+        // Tests resolve the browser builds even when the app is
+        // server-rendered — the client posture applies to the whole test
+        // pipeline, not just the codegen.
+        ...(isTestMode && !opts.isSsrTargetWebworker ? ['browser'] : []),
         ...config.resolve.conditions,
       ];
 
@@ -883,7 +901,7 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
       }
 
       const inNodeModules = /node_modules/.test(id);
-      const solidOptions = getSolidOptions(options, !!isSsr, replaceDev);
+      const solidOptions = getSolidOptions(options, !!isSsr, replaceDev, isTestMode);
 
       // We need to know if the current file extension has a typescript options tied to it
       const shouldBeProcessedWithTypescript =
