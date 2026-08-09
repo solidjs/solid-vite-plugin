@@ -10,7 +10,7 @@
 
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
-import { build } from 'vite';
+import { build, createServer } from 'vite';
 import solidPlugin from 'vite-plugin-solid';
 
 const exampleDir = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
@@ -79,6 +79,65 @@ async function runBuild({ entry, ssr }) {
   );
   const client = await runBuild({ entry: fixture('client-only-import.ts'), ssr: false });
   record("client import of 'client-only' builds cleanly", client.ok, client.message);
+}
+
+// Dev graph vs dep-scan pass: the guard fires on a real client-graph
+// resolve of 'server-only' (a dev transform of the importing module rejects
+// with our error), but NOT on the dependency scanner's pass — the scanner
+// crawls the raw, untransformed graph straight through 'use server' modules
+// into server-only code, a legal graph once transforms split it. Vite marks
+// scanner resolves with `scan: true` on the plugin-container options (both
+// the esbuild scanner in v6/7 and the rolldown one in v8); resolving there
+// must succeed quietly (still claiming the specifier, so the scanner does
+// not chase it as a missing bare dependency, which would abort the scan all
+// the same). Regression: cold-start "Failed to run dependency scan" banners
+// on apps whose 'use server' modules reach server-only code (the turnkey
+// suite's dev mode covers the end-to-end cold start).
+{
+  const server = await createServer({
+    root: exampleDir,
+    configFile: false,
+    logLevel: 'silent',
+    plugins: [solidPlugin({ ssr: true })],
+    server: { middlewareMode: true },
+    optimizeDeps: { noDiscovery: true },
+  });
+  try {
+    const importer = fixture('server-only-import.ts');
+
+    let devError = null;
+    try {
+      await server.environments.client.transformRequest('/test/boundary-fixtures/server-only-import.ts');
+    } catch (error) {
+      devError = error;
+    }
+    record(
+      "dev client transform of a 'server-only' importer errors",
+      !!devError &&
+        String(devError.message).includes('[vite-plugin-solid]') &&
+        String(devError.message).includes("'server-only'"),
+      devError ? String(devError.message) : 'transform unexpectedly succeeded',
+    );
+
+    let scanError = null;
+    let scanResolved = null;
+    try {
+      scanResolved = await server.environments.client.pluginContainer.resolveId(
+        'server-only',
+        importer,
+        { scan: true },
+      );
+    } catch (error) {
+      scanError = error;
+    }
+    record(
+      "dep-scan resolve of 'server-only' passes quietly (scan flag)",
+      !scanError && !!scanResolved,
+      scanError ? String(scanError.message) : 'resolved to nothing',
+    );
+  } finally {
+    await server.close();
+  }
 }
 
 const failed = results.filter((r) => !r.ok);

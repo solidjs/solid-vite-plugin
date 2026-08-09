@@ -23,8 +23,20 @@ export function boundaryModules(): Plugin {
     name: 'solid:boundary-modules',
     enforce: 'pre',
     resolveId(id, importer, options) {
+      // The dep scanner (`vite:dep-scan`) crawls the client entries' RAW
+      // import graph — no directive transforms have run, so it walks
+      // straight through 'use server' modules into genuinely server-only
+      // code. That graph is legal once transforms split it, so the guard
+      // must not fire on the scan pass (`options.scan`, the flag Vite's
+      // scanner sets on plugin-container resolves in v6/7 and the rolldown
+      // scanner in v8). Still claim the specifier: resolving to the empty
+      // virtual module keeps the scanner from chasing `server-only` /
+      // `client-only` as missing bare dependencies, which would abort the
+      // scan all the same. Real dev/build module graphs resolve without
+      // the flag and stay fully guarded.
+      const scan = !!(options as { scan?: boolean } | undefined)?.scan;
       if (id === 'server-only') {
-        if (!options?.ssr)
+        if (!options?.ssr && !scan)
           this.error(
             `[vite-plugin-solid] Attempt to import 'server-only' in a client module: ${importer}. ` +
               `Code that uses this module must run only on the server — make sure it is only ` +
@@ -32,7 +44,7 @@ export function boundaryModules(): Plugin {
               `reached exclusively from them).`,
           );
       } else if (id === 'client-only') {
-        if (options?.ssr)
+        if (options?.ssr && !scan)
           this.error(
             `[vite-plugin-solid] Attempt to import 'client-only' in a server module: ${importer}. ` +
               `Code that uses this module must run only in the browser — make sure it is only ` +

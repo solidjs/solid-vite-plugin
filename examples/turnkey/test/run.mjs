@@ -658,6 +658,15 @@ async function runDevMode() {
   const port = 3160;
   const origin = `http://localhost:${port}`;
 
+  // Cold start: clear Vite's dep cache so the dependency scanner actually
+  // runs. The scanner crawls the RAW graph from the plugin's injected scan
+  // entries (App.tsx) straight through the 'use server' module into
+  // src/db.ts's `server-only` import — the boundary guard must not treat
+  // that as a client-graph violation (it aborts the whole scan with a
+  // "Failed to run dependency scan" banner), asserted below once the mode's
+  // requests have let the optimizer finish.
+  rmSync(path.join(exampleDir, 'node_modules/.vite'), { recursive: true, force: true });
+
   // The turnkey promise: the dev server is the plain `vite` CLI.
   const server = startProcess('pnpm', ['exec', 'vite', '--port', String(port), '--strictPort'], {
     cwd: exampleDir,
@@ -756,6 +765,23 @@ async function runDevMode() {
     await runHttpChecks(mode, origin);
 
     await runBrowserChecks(mode, origin, { hmr: true, devCss: true, expectCompiler: 'native' });
+
+    // ---- Cold-start dep scan (boundary-guard false positive) -------------
+    // Counterpart: the ssr example's boundary.mjs proves the guard still
+    // errors on real client-graph imports of 'server-only'.
+    record(
+      mode,
+      'scan',
+      'dep scan completed (no failure banner)',
+      !serverLog.includes('Failed to run dependency scan'),
+      serverLog.slice(-1000),
+    );
+    record(
+      mode,
+      'scan',
+      'dependency pre-bundling wrote its metadata',
+      existsSync(path.join(exampleDir, 'node_modules/.vite/deps/_metadata.json')),
+    );
   } catch (e) {
     record(
       mode,

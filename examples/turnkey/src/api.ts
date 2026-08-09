@@ -4,6 +4,10 @@
 // (and the @solidjs/web import) must never appear in any client asset, which
 // test/run.mjs asserts.
 import { getRequestEvent, respond } from '@solidjs/web';
+// A server-only-marked module (see db.ts): reachable from the client scan
+// entries only through this 'use server' module — the dep-scan false-positive
+// shape.
+import { dbSecretLength } from './db';
 
 const SERVER_ONLY_SECRET = 'SERVER-ONLY-SECRET-c81d';
 
@@ -20,7 +24,7 @@ export async function greet(name: string) {
 }
 
 export async function hasSecret() {
-  return SERVER_ONLY_SECRET.length > 0;
+  return SERVER_ONLY_SECRET.length > 0 && dbSecretLength() > 0;
 }
 
 export async function requestMethod() {
