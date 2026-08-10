@@ -95,7 +95,8 @@ async function fetchHtml(url) {
 // ---------------------------------------------------------------------------
 async function connectChrome() {
   let target;
-  for (let i = 0; i < 40; i++) {
+  // 30s: the first headless Chrome launch on a cold CI runner can exceed 10s.
+  for (let i = 0; i < 120; i++) {
     try {
       const res = await fetch(`http://127.0.0.1:${CDP_PORT}/json/list`);
       target = (await res.json()).find((t) => t.type === 'page');
