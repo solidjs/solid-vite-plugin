@@ -30,7 +30,8 @@ import path from 'node:path';
 import { existsSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 
 const exampleDir = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
-const CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+const CHROME =
+  process.env.CHROME_BIN || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 const CDP_PORT = 9341;
 const DEV_PORT = 5191;
 const PREVIEW_PORT = 5192;

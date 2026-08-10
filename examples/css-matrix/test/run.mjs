@@ -13,7 +13,8 @@ import path from 'node:path';
 import { rmSync } from 'node:fs';
 
 const exampleDir = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
-const CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+const CHROME =
+  process.env.CHROME_BIN || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 const CDP_PORT = 9334;
 
 const COLORS = {

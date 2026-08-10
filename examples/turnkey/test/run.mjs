@@ -127,7 +127,8 @@ const exampleDir = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 // cwd stays wherever it was invoked from — regression coverage for the
 // plugin resolving relative filter globs against process.cwd() instead of
 // the Vite root (spawned modes pass explicit cwds either way).
-const CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+const CHROME =
+  process.env.CHROME_BIN || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 const CDP_PORT = 9337;
 
 const SECRET = 'SERVER-ONLY-SECRET';

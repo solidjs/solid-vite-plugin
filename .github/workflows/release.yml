@@ -14,8 +14,58 @@ permissions:
   id-token: write
 
 jobs:
+  # Publish gate: release.yml is the only workflow that runs on pushes to
+  # next, so without this job a push publishes to npm with zero tests run.
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    env:
+      # Preinstalled Chrome on GitHub's ubuntu images; the example suites
+      # default to the macOS app path when unset.
+      CHROME_BIN: /usr/bin/google-chrome
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v3
+
+      - uses: pnpm/action-setup@v3
+        with:
+          # https://github.com/pnpm/pnpm/issues/8953
+          version: 9.15.3
+
+      - name: Setup Node.js 24.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24.x
+
+      - name: Install Dependencies
+        run: pnpm i --frozen-lockfile
+
+      - name: Build plugin
+        run: pnpm run build
+
+      - name: SSR suite
+        working-directory: examples/ssr
+        run: pnpm run test
+
+      - name: CSS matrix suite
+        working-directory: examples/css-matrix
+        run: pnpm run test
+
+      - name: Turnkey suite
+        working-directory: examples/turnkey
+        run: pnpm run test
+
+      - name: Start client suite
+        working-directory: examples/start-client
+        run: pnpm run test
+
+      - name: Start env suite
+        working-directory: examples/start-env
+        run: pnpm run test
+
   release:
     name: Release
+    needs: test
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Repo
