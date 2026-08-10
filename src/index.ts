@@ -100,17 +100,22 @@ function createBridgeResolver() {
   // suspends every retry anew — nested routes then loop until the render
   // stack overflows). Cached entries can go stale after a CSS edit (no
   // watcher reaches this side of the bridge); the HMR client replaces SSR'd
-  // dev styles on load, so staleness self-heals at hydration.
+  // dev styles on load, so staleness self-heals at hydration. Only successful
+  // answers are cached: a null (bridge failure) must stay retryable, or one
+  // transient miss would strip the module's client assets — silently — for
+  // the rest of the dev session. In-flight dedupe still gives retries of the
+  // same pass a stable promise, so convergence holds either way.
   const cache = new Map();
   const inFlight = new Map();
   return {
     resolve(key) {
-      if (cache.has(key)) return cache.get(key);
+      const cached = cache.get(key);
+      if (cached) return cached;
       let request = inFlight.get(key);
       if (!request) {
         request = fetchAssets(key).then(
           (assets) => {
-            cache.set(key, assets);
+            if (assets) cache.set(key, assets);
             inFlight.delete(key);
             return assets;
           },

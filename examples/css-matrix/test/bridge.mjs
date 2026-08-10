@@ -11,9 +11,13 @@
 //   - fallback consumer: with the registry entry removed, the dev flavor of
 //     virtual:solid-manifest evaluates to a bridge resolver that fetches
 //     the endpoint (simulating an isolated runner, where the module is
-//     evaluated without the shared global) — full assets round-trip,
+//     evaluated without the shared global) — full assets round-trip, and
+//     once a key's assets are known both resolve and resolveSync answer
+//     synchronously from the cache (the render-pass convergence contract:
+//     a fresh pending promise per retry suspends nested lazy SSR forever),
 //   - fetch-side hardening: a non-OK bridge response logs and resolves
-//     null; so does a network failure,
+//     null; so does a network failure — and neither poisons the cache
+//     (the key resolves fully once the bridge is reachable again),
 //   - short-circuit: with the registry intact the module exports the
 //     in-process resolver itself — no HTTP involved (fetch disabled hard).
 //
@@ -30,6 +34,11 @@ const ENDPOINT = '/@vite-plugin-solid/dev-manifest';
 const LAZY_KEY = 'src/routes/Lazy.tsx';
 // Distinctive rule from src/routes/lazy.css.
 const LAZY_CSS_COLOR = 'rgb(70, 80, 90)';
+// A second module key the bridge cache has not seen when the fetch-side
+// hardening runs (cached keys answer without touching fetch, by design).
+const GLOB_KEY = 'src/routes/LazyGlob.tsx';
+// Distinctive rule from src/routes/lazyGlob.css.
+const GLOB_CSS_COLOR = 'rgb(80, 90, 100)';
 
 const results = [];
 function record(name, ok, detail = '') {
@@ -112,6 +121,12 @@ try {
   const bridgeResolver = await loadManifestModule();
   registry[root] = registeredResolver;
   record('registry miss binds a bridge resolver (not the in-process one)', bridgeResolver !== registeredResolver);
+  const coldSync = bridgeResolver.resolveSync(LAZY_KEY);
+  record(
+    'bridge resolveSync before the cache warms stays js-only (no sync HTTP)',
+    coldSync?.js?.includes('/' + LAZY_KEY) && coldSync?.css?.length === 0,
+    JSON.stringify(coldSync),
+  );
   const bridged = await bridgeResolver.resolve(LAZY_KEY);
   record(
     'bridge resolver answers full assets over HTTP',
@@ -120,25 +135,37 @@ try {
       bridged.css?.some((c) => c.content?.includes(LAZY_CSS_COLOR)),
     JSON.stringify(bridged)?.slice(0, 200),
   );
-  const sync = bridgeResolver.resolveSync(LAZY_KEY);
+  // Render-pass convergence contract: the runtime retries a suspended SSR
+  // pass by re-creating the lazy component, which re-requests its assets —
+  // a fresh pending promise per call would suspend every retry anew until
+  // the render stack overflowed. Once cached, resolve must answer with a
+  // plain object, not a thenable.
+  const warm = bridgeResolver.resolve(LAZY_KEY);
   record(
-    'bridge resolveSync stays js-only (no sync HTTP)',
-    sync?.js?.includes('/' + LAZY_KEY) && sync?.css?.length === 0,
-    JSON.stringify(sync),
+    'cached key resolves synchronously (render-pass convergence)',
+    !!warm && typeof warm.then !== 'function' && warm.css?.some((c) => c.content?.includes(LAZY_CSS_COLOR)),
+    warm && typeof warm.then === 'function' ? 'answered a promise' : JSON.stringify(warm)?.slice(0, 200),
+  );
+  const warmSync = bridgeResolver.resolveSync(LAZY_KEY);
+  record(
+    'bridge resolveSync answers full assets once cached',
+    warmSync?.js?.includes('/' + LAZY_KEY) && warmSync?.css?.some((c) => c.content?.includes(LAZY_CSS_COLOR)),
+    JSON.stringify(warmSync)?.slice(0, 200),
   );
 
   // ---- Fetch-side hardening: non-OK response and network failure ----------
+  // Against a key the cache has not seen — cached keys never touch fetch.
   const realFetch = globalThis.fetch;
   {
     const spy = captureConsoleErrors();
     let nonOk, netFail;
     try {
       globalThis.fetch = async () => new Response('boom', { status: 500 });
-      nonOk = await bridgeResolver.resolve(LAZY_KEY);
+      nonOk = await bridgeResolver.resolve(GLOB_KEY);
       globalThis.fetch = async () => {
         throw new Error('connection refused');
       };
-      netFail = await bridgeResolver.resolve(LAZY_KEY);
+      netFail = await bridgeResolver.resolve(GLOB_KEY);
     } finally {
       globalThis.fetch = realFetch;
       spy.restore();
@@ -154,6 +181,15 @@ try {
       'bridge network failure logs a loud plugin error',
       spy.errors.some((e) => e.includes('[vite-plugin-solid]') && e.includes('connection refused')),
       spy.errors.join(' | '),
+    );
+    // A failure must stay retryable: caching the null would silently strip
+    // this module's client assets for the rest of the dev session.
+    const recovered = await bridgeResolver.resolve(GLOB_KEY);
+    record(
+      'bridge failure is not cached — key recovers once the bridge is back',
+      recovered?.js?.includes('/' + GLOB_KEY) &&
+        recovered.css?.some((c) => c.content?.includes(GLOB_CSS_COLOR)),
+      JSON.stringify(recovered)?.slice(0, 200),
     );
   }
 
