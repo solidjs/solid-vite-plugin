@@ -2910,12 +2910,15 @@ async function runVitestMode() {
   } catch (e) {
     out = String(e.stdout || '') + String(e.stderr || '');
   }
+  const testPass = ok && /3 passed/.test(out);
   record(
     mode,
     'test',
     'DOM component tests pass with the client posture under ssr: true',
-    ok && /3 passed/.test(out),
-    ok ? undefined : out.slice(-2000),
+    testPass,
+    // Attach output on ANY failure: exit 0 with unmatched output previously
+    // recorded an empty detail, leaving CI failures undiagnosable.
+    testPass ? undefined : out.slice(-2000),
   );
 
   // Both postures in ONE workspace (VITEST_PROJECTS=1 adds test.projects to
@@ -2939,15 +2942,17 @@ async function runVitestMode() {
   } catch (e) {
     projectsOut = String(e.stdout || '') + String(e.stderr || '');
   }
+  const projectsPass =
+    projectsOk &&
+    /\|client\|.*posture\.test\.tsx \(3 tests\)/.test(projectsOut) &&
+    /\|server\|.*server-posture\.test\.tsx \(3 tests\)/.test(projectsOut) &&
+    /6 passed/.test(projectsOut);
   record(
     mode,
     'projects',
     'DOM (jsdom) and server (node) posture projects coexist in one workspace',
-    projectsOk &&
-      /\|client\|.*posture\.test\.tsx \(3 tests\)/.test(projectsOut) &&
-      /\|server\|.*server-posture\.test\.tsx \(3 tests\)/.test(projectsOut) &&
-      /6 passed/.test(projectsOut),
-    projectsOk ? undefined : projectsOut.slice(-2000),
+    projectsPass,
+    projectsPass ? undefined : projectsOut.slice(-2000),
   );
 }
 
