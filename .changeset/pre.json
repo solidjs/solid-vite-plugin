@@ -5,6 +5,9 @@
     "vite-plugin-solid": "3.0.0-next.2"
   },
   "changesets": [
+    "base-and-lazy-asset-urls",
+    "boundary-guard-dep-scan",
+    "bridge-failure-not-cached",
     "bump-solid-beta-21",
     "bump-solid-beta-22",
     "bump-solid-beta-24",
@@ -19,8 +22,10 @@
     "client-manifest-outdir",
     "compiler-next-37",
     "compiler-package-rename",
+    "dev-asset-resolver-convergence",
     "dev-css-and-client-manifest",
     "dev-manifest-bridge-and-boundary-modules",
+    "dev-middleware-full-dispatch",
     "dev-ssr-entry-styles",
     "drop-sc-bootstrap-head-splice",
     "drop-vite-lt-6",
@@ -47,10 +52,16 @@
     "server-environments-reload",
     "server-functions-compiler",
     "server-functions-default-runtime",
+    "server-functions-server-subpath-docs",
     "server-functions-turnkey",
     "six-lions-joke",
+    "start-env-typed",
+    "start-setup-hook",
     "true-boxes-arrive",
     "turnkey-ssr",
-    "virtual-manifest-types-subpath"
+    "turnkey-start-option",
+    "virtual-manifest-types-subpath",
+    "vitest-client-posture",
+    "vitest-server-posture-opt-out"
   ]
 }
