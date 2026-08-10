@@ -2904,7 +2904,10 @@ async function runVitestMode() {
       cwd: exampleDir,
       stdio: 'pipe',
       timeout: 180000,
-      env: process.env,
+      // NO_COLOR: CI runners advertise color support, and colored vitest
+      // output renders project badges without the |name| pipes (and threads
+      // ANSI codes through "(3 tests)") that the assertions below match on.
+      env: { ...process.env, NO_COLOR: '1' },
     }).toString();
     ok = true;
   } catch (e) {
@@ -2936,7 +2939,7 @@ async function runVitestMode() {
       cwd: exampleDir,
       stdio: 'pipe',
       timeout: 180000,
-      env: { ...process.env, VITEST_PROJECTS: '1' },
+      env: { ...process.env, VITEST_PROJECTS: '1', NO_COLOR: '1' },
     }).toString();
     projectsOk = true;
   } catch (e) {
