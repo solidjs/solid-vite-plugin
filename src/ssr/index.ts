@@ -1030,7 +1030,15 @@ export function startServe(
                 pathToFileURL(path.resolve(root, 'dist/server/server.js')).href
               );
               const handler = await handlerPromise;
-              const response = await handler.handleRequest(webRequestFromNode(req));
+              // Preview's base middleware runs before this post hook and
+              // strips the configured `base` from req.url; the built handler
+              // compares pathnames against base-prefixed endpoints (the
+              // server-function endpoint) and hands the URL to application
+              // code, so restore the base — the deployed production handler
+              // receives base-prefixed URLs and preview must match it.
+              const response = await handler.handleRequest(
+                webRequestFromNode(req, joinBase(base, req.url || '/')),
+              );
               // Preview's compression middleware buffers whole responses;
               // opting HTML out keeps SSR streaming observable, matching
               // production behavior.
@@ -1076,10 +1084,17 @@ export function startServe(
               const handler = await server.ssrLoadModule(HANDLER_ID);
               const styles = pageRequest ? await collectDevStyles(server, styleRoots()) : [];
               const devHead = styles.map(renderDevStyleTag).join('');
-              const response: Response = await handler.handleRequest(webRequestFromNode(req), {
-                devHead,
-                pageRequest,
-              });
+              // Post middlewares run after Vite's base middleware stripped
+              // the configured `base` from req.url; restore it so the app
+              // sees the same URLs in dev as in production (where the
+              // deployed handler receives base-prefixed requests).
+              const response: Response = await handler.handleRequest(
+                webRequestFromNode(req, joinBase(base, req.url || '/')),
+                {
+                  devHead,
+                  pageRequest,
+                },
+              );
               // A non-page request the chain never handled: the terminal
               // dispatch answered with the marked 404 — hand it back to
               // Vite (its 404, other post middlewares) rather than sending

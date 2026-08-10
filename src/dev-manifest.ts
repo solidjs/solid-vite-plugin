@@ -1,5 +1,6 @@
 import path from 'path';
 import type { DevEnvironment, EnvironmentModuleNode, ViteDevServer } from 'vite';
+import { joinBase } from './http.js';
 
 /**
  * Dev-mode asset resolution: the `virtual:solid-manifest` module exports a
@@ -327,6 +328,26 @@ export function renderDevStyleTag(desc: DevStyleDescriptor): string {
   return `<style data-asset="${escapeAttr(desc.id)}"${attrs}>${content}</style>`;
 }
 
+/**
+ * Browser URL for a lazy module's dev asset key (a project-root-relative
+ * path, query included when the module identity carries one). Vite only
+ * serves module URLs under the configured `base`, so it is always applied;
+ * root-external keys (`../…`, e.g. sibling workspace packages) can't be
+ * expressed as root-relative URLs at all — they get Vite's `/@fs/` form on
+ * the resolved absolute path instead. Mirrored by the generated fallback in
+ * `devManifestCode` (src/index.ts) — keep the two in sync.
+ */
+export function devModuleUrl(root: string, base: string, key: string): string {
+  const queryIndex = key.indexOf('?');
+  const file = queryIndex === -1 ? key : key.slice(0, queryIndex);
+  const query = queryIndex === -1 ? '' : key.slice(queryIndex);
+  if (!file.startsWith('..')) return joinBase(base, '/' + key);
+  const absolute = path.resolve(root, file).split(path.sep).join('/');
+  // Vite's fs URLs collapse the leading slash: /@fs/Users/… (and keep the
+  // drive letter on Windows: /@fs/C:/…).
+  return joinBase(base, '/@fs/' + absolute.replace(/^\//, '') + query);
+}
+
 export function createDevAssetResolver(server: ViteDevServer): DevAssetResolver {
   // Server-side lazy() re-requests a module's assets on every retry of a
   // suspended render pass (retries re-create the component). The build
@@ -341,6 +362,7 @@ export function createDevAssetResolver(server: ViteDevServer): DevAssetResolver 
   // CSS fresh.
   const resolved = new Map<string, ResolvedAssets>();
   const pending = new Map<string, Promise<ResolvedAssets | null>>();
+  const { root, base } = server.config;
   let generation = 0;
   server.watcher.on('all', () => {
     generation++;
@@ -359,7 +381,7 @@ export function createDevAssetResolver(server: ViteDevServer): DevAssetResolver 
       walk = (async (): Promise<ResolvedAssets> => {
         // The module's dev URL doubles as its client entry: modulepreload
         // hint and hydration module-map value.
-        const js = ['/' + key];
+        const js = [devModuleUrl(root, base, key)];
         const css = await collectDevStyles(server, [key]);
         return { js, css };
       })().then(
@@ -381,6 +403,6 @@ export function createDevAssetResolver(server: ViteDevServer): DevAssetResolver 
   };
   return {
     resolve,
-    resolveSync: (key: string) => resolved.get(key) ?? { js: ['/' + key], css: [] },
+    resolveSync: (key: string) => resolved.get(key) ?? { js: [devModuleUrl(root, base, key)], css: [] },
   };
 }

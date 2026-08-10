@@ -93,11 +93,19 @@
 //     commitEventResponse from @solidjs/web and folds after the unwind,
 //   - `vite preview` serves the production artifact with no server file:
 //     dist/client statically, everything else (pages, /_server, middleware,
-//     the lifecycle) through the built handler.
+//     the lifecycle) through the built handler,
+//   - lazy asset keys survive module identities beyond plain root-relative
+//     paths (the /lazy-assets surface, dev and prod): a query-suffixed lazy
+//     import keeps its query through the manifest key / dev URL (#299), and
+//     a root-external module gets a /@fs/ dev URL (#298),
+//   - a non-root Vite `base` (base mode, SOLID_BASE=/app/) holds end to end:
+//     dev pages/assets/endpoint and preview pages/statics/endpoint all serve
+//     base-prefixed, the built handler receives base-restored URLs from the
+//     preview adapter (#300), and dev lazy asset URLs carry the base (#298).
 //
 // Requires the plugin built (pnpm build at the repo root) and Google Chrome.
 // Usage: node test/run.mjs
-// [dev|prod|document|entries|endpoint|configure|no-middleware|middleware|preview|builder-order|builder-prepare|babel-hmr|frames]
+// [dev|prod|document|entries|endpoint|configure|no-middleware|middleware|preview|base|builder-order|builder-prepare|babel-hmr|frames]
 // (default: all)
 
 import { spawn, execSync } from 'node:child_process';
@@ -409,6 +417,98 @@ async function runHttpChecks(mode, origin) {
     'post-flush redirect emits the script fallback',
     post.html.includes('window.location') && post.html.includes('/redirected-target'),
   );
+}
+
+// Lazy asset-key checks (the /lazy-assets surface, src/App.tsx): a
+// query-suffixed lazy import and a root-external one. Regression coverage
+// for #299 (the query is part of the module identity — manifest key, dev
+// URL — and must survive the SSR asset lookup) and #298 (dev URLs must be
+// base-prefixed, and root-external modules must resolve to /@fs/ URLs, not
+// "/../…"). `basePrefix` is the configured Vite base without its trailing
+// slash ('' for the default '/'), asserted on every emitted URL.
+async function runLazyAssetChecks(mode, origin, { dev, basePrefix = '' } = {}) {
+  const page = await fetchStreamed(origin + basePrefix + '/lazy-assets');
+  record(
+    mode,
+    'lazy',
+    'query-suffixed and root-external lazy components SSR',
+    page.status === 200 &&
+      page.html.includes('QUERY-LAZY-CONTENT') &&
+      page.html.includes('EXTERNAL-LAZY-CONTENT'),
+    `status ${page.status}`,
+  );
+  const preloads = [...page.html.matchAll(/<link rel="modulepreload" href="([^"]+)">/g)].map(
+    (m) => m[1],
+  );
+  const queryHref = preloads.find((href) => href.includes('QueryLazy'));
+  const externalHref = preloads.find((href) => href.includes('LazyOutside'));
+
+  if (dev) {
+    record(
+      mode,
+      'lazy',
+      'queried module preloaded by its queried dev URL (base applied)',
+      queryHref === `${basePrefix}/src/QueryLazy.tsx?variant=a`,
+      `modulepreloads: ${preloads.join(', ') || '(none)'}`,
+    );
+    record(
+      mode,
+      'lazy',
+      'root-external module preloaded via base-prefixed /@fs/ URL',
+      !!externalHref &&
+        externalHref.startsWith(`${basePrefix}/@fs/`) &&
+        externalHref.endsWith('turnkey-external/LazyOutside.tsx'),
+      `modulepreloads: ${preloads.join(', ') || '(none)'}`,
+    );
+  } else {
+    const clientManifest = JSON.parse(
+      readFileSync(path.join(exampleDir, 'dist/client/.vite/manifest.json'), 'utf-8'),
+    );
+    const queryEntry = clientManifest['src/QueryLazy.tsx?variant=a'];
+    record(
+      mode,
+      'lazy',
+      'queried module manifest-keyed with its query',
+      !!queryEntry?.file,
+      `manifest keys: ${Object.keys(clientManifest).join(', ')}`,
+    );
+    record(
+      mode,
+      'lazy',
+      'queried module preload resolved through the manifest',
+      !!queryEntry?.file && queryHref === `${basePrefix}/${queryEntry.file}`,
+      `modulepreloads: ${preloads.join(', ') || '(none)'}`,
+    );
+    const externalEntry = clientManifest['../turnkey-external/LazyOutside.tsx'];
+    record(
+      mode,
+      'lazy',
+      'root-external module preload resolved through the manifest',
+      !!externalEntry?.file && externalHref === `${basePrefix}/${externalEntry.file}`,
+      `modulepreloads: ${preloads.join(', ') || '(none)'}`,
+    );
+  }
+
+  // The emitted URLs must actually be servable — a wrong base or a mangled
+  // /@fs/ path 404s (dev) or misses the static handler (preview/prod).
+  for (const [name, href] of [
+    ['queried module', queryHref],
+    ['root-external module', externalHref],
+  ]) {
+    if (!href) {
+      record(mode, 'lazy', `${name} preload URL serves JS`, false, 'no modulepreload emitted');
+      continue;
+    }
+    const res = await fetch(origin + href);
+    const body = res.ok ? await res.text() : '';
+    record(
+      mode,
+      'lazy',
+      `${name} preload URL serves JS`,
+      res.ok && body.includes('LAZY-CONTENT'),
+      `GET ${href} → ${res.status}`,
+    );
+  }
 }
 
 // HMR checks against a running dev server: fresh page load (hydrated SSR),
@@ -764,6 +864,8 @@ async function runDevMode() {
 
     await runHttpChecks(mode, origin);
 
+    await runLazyAssetChecks(mode, origin, { dev: true });
+
     await runBrowserChecks(mode, origin, { hmr: true, devCss: true, expectCompiler: 'native' });
 
     // ---- Cold-start dep scan (boundary-guard false positive) -------------
@@ -918,6 +1020,8 @@ async function runProdMode() {
     );
 
     await runHttpChecks(mode, origin);
+
+    await runLazyAssetChecks(mode, origin, { dev: false });
 
     await runBrowserChecks(mode, origin);
   } catch (e) {
@@ -2400,6 +2504,202 @@ async function runPreviewMode() {
   }
 }
 
+// Non-root Vite `base` (SOLID_BASE=/app/): the base must hold end to end on
+// every turnkey surface. Regression coverage for the brenelz base cluster:
+// - #300: `vite preview` strips the base from req.url before the plugin's
+//   post middleware runs, so the built handler's base-prefixed endpoint
+//   comparison never matched — /app/_server fell through to page rendering
+//   (HTML instead of the server-function response). The preview adapter now
+//   restores the base before dispatch.
+// - #298: dev SSR lazy asset URLs were emitted as "/" + key, which Vite
+//   rejects outside the base; they must be base-prefixed (and root-external
+//   modules must use /@fs/ URLs — covered by runLazyAssetChecks here and in
+//   the default dev/prod modes).
+// - #299 rides along via the same lazy-assets surface under a base.
+// Also asserts the dev page dispatch restores the base (App sees
+// production-shaped, base-prefixed request URLs) and the dev /_server
+// endpoint round-trips under the base. No browser needed.
+async function runBaseMode() {
+  const mode = 'base';
+  console.log(`\n=== ${mode.toUpperCase()} ===`);
+  const basePrefix = '/app';
+  const env = { ...process.env, SOLID_BASE: '/app/' };
+
+  // ---- dev under base ------------------------------------------------
+  const devPort = 3176;
+  const devOrigin = `http://localhost:${devPort}`;
+  const devServer = startProcess(
+    'pnpm',
+    ['exec', 'vite', '--port', String(devPort), '--strictPort'],
+    { cwd: exampleDir, env },
+  );
+  let devLog = '';
+  devServer.stdout.on('data', (d) => (devLog += d));
+  devServer.stderr.on('data', (d) => (devLog += d));
+
+  try {
+    await waitForHttp(devOrigin + basePrefix + '/src/api.ts', 30000);
+
+    const page = await fetchStreamed(devOrigin + basePrefix + '/');
+    record(
+      mode,
+      'dev',
+      'SSR page served under the base',
+      page.status === 200 && page.html.includes('Turnkey SSR'),
+      `status ${page.status}`,
+    );
+    record(
+      mode,
+      'dev',
+      'generated client entry injected base-prefixed',
+      page.html.includes(`src="${basePrefix}/@id/virtual:solid-ssr-entry-client.tsx"`),
+    );
+    record(
+      mode,
+      'dev',
+      'Vite client injected base-prefixed',
+      page.html.includes(`${basePrefix}/@vite/client`),
+    );
+
+    // The dev page dispatch restores the base, so the app sees the same
+    // request URLs as the deployed production handler (App.tsx strips
+    // import.meta.env.BASE_URL before keying its path surfaces).
+    const missing = await fetchStreamed(devOrigin + basePrefix + '/missing');
+    record(
+      mode,
+      'dev',
+      'path-keyed surface works under the base (request URL restored)',
+      missing.status === 404 &&
+        missing.headers.get('x-page') === 'missing' &&
+        missing.html.includes('NOT-FOUND-PAGE'),
+      `status ${missing.status}, x-page: ${JSON.stringify(missing.headers.get('x-page'))}`,
+    );
+
+    // Dev server functions under the base: full round-trip over the
+    // base-prefixed endpoint.
+    const clientModule = await (await fetch(devOrigin + basePrefix + '/src/api.ts')).text();
+    const functionId = extractFunctionId(clientModule, 'getServerMessage');
+    const call = functionId
+      ? await fetch(
+          `${devOrigin}${basePrefix}/_server?id=${encodeURIComponent(functionId)}&args=${encodeURIComponent('["base"]')}`,
+          { method: 'POST' },
+        )
+      : null;
+    const callText = call ? await call.text() : '';
+    record(
+      mode,
+      'sf',
+      'dev server function round-trips over the based endpoint',
+      callText === 'hello base from the server',
+      functionId ? `got ${JSON.stringify(callText)}` : 'could not extract function id',
+    );
+
+    await runLazyAssetChecks(mode, devOrigin, { dev: true, basePrefix });
+  } catch (e) {
+    record(
+      mode,
+      'run',
+      'dev half completed',
+      false,
+      String(e) + (devLog ? `\nserver: ${devLog.slice(-2000)}` : ''),
+    );
+  } finally {
+    try {
+      process.kill(-devServer.pid, 'SIGTERM');
+    } catch {}
+  }
+
+  // ---- build + preview under base --------------------------------------
+  const previewPort = 3177;
+  const previewOrigin = `http://localhost:${previewPort}`;
+  let previewServer;
+  let previewLog = '';
+  try {
+    console.log('  building…');
+    execSync('pnpm run build', { cwd: exampleDir, stdio: 'pipe', env });
+    previewServer = startProcess(
+      'pnpm',
+      ['exec', 'vite', 'preview', '--port', String(previewPort), '--strictPort'],
+      { cwd: exampleDir, env },
+    );
+    previewServer.stdout.on('data', (d) => (previewLog += d));
+    previewServer.stderr.on('data', (d) => (previewLog += d));
+    await waitForHttp(previewOrigin + basePrefix + '/', 30000, {
+      headers: { accept: 'text/html' },
+    });
+
+    const page = await fetchStreamed(previewOrigin + basePrefix + '/');
+    record(
+      mode,
+      'preview',
+      'preview serves the SSR page under the base',
+      page.status === 200 && page.html.includes('Turnkey SSR'),
+      `status ${page.status}`,
+    );
+    const entryMatch = new RegExp(
+      `<script type="module" src="(${basePrefix}/assets/[^"]+\\.js)" async>`,
+    ).exec(page.html);
+    record(mode, 'preview', 'hashed client entry injected base-prefixed', !!entryMatch);
+
+    // #300: the server-function endpoint must dispatch through the built
+    // handler even though preview stripped the base from req.url. Under the
+    // bug this request fell through to page rendering (200 text/html).
+    const bogus = await fetch(previewOrigin + basePrefix + '/_server?id=bogus-0', {
+      method: 'POST',
+    });
+    record(
+      mode,
+      'sf',
+      'preview dispatches the based endpoint (unknown id rejected, not HTML)',
+      bogus.status === 404 && !(bogus.headers.get('content-type') || '').includes('text/html'),
+      `status ${bogus.status}, content-type ${bogus.headers.get('content-type')}`,
+    );
+    await bogus.arrayBuffer();
+
+    // Full round-trip: the (unminified) server bundle carries the function
+    // registrations (`registerServerReference("hash-n", async function name`),
+    // so the production function id can be read off it.
+    const serverBundle = readFileSync(path.join(exampleDir, 'dist/server/server.js'), 'utf-8');
+    const prodId = /registerServerReference\("([\w-]+)",\s*async function getServerMessage\b/.exec(
+      serverBundle,
+    )?.[1];
+    const call = prodId
+      ? await fetch(
+          `${previewOrigin}${basePrefix}/_server?id=${encodeURIComponent(prodId)}&args=${encodeURIComponent('["preview"]')}`,
+          { method: 'POST' },
+        )
+      : null;
+    const callText = call ? await call.text() : '';
+    record(
+      mode,
+      'sf',
+      'preview server function round-trips over the based endpoint',
+      callText === 'hello preview from the server',
+      prodId ? `got ${JSON.stringify(callText)}` : 'could not extract function id from server bundle',
+    );
+
+    await runLazyAssetChecks(mode, previewOrigin, { dev: false, basePrefix });
+  } catch (e) {
+    record(
+      mode,
+      'run',
+      'preview half completed',
+      false,
+      String(e) + (previewLog ? `\nserver: ${previewLog.slice(-2000)}` : ''),
+    );
+  } finally {
+    if (previewServer) {
+      try {
+        process.kill(-previewServer.pid, 'SIGTERM');
+      } catch {}
+    }
+    // Leave dist in the standard (base '/') state for anyone poking at it.
+    try {
+      execSync('pnpm run build', { cwd: exampleDir, stdio: 'pipe' });
+    } catch {}
+  }
+}
+
 // Babel-JSX HMR: a separate dev server forced to `compiler: 'babel'` via
 // SOLID_JSX_COMPILER, proving the native refresh pass and the
 // solid-js/refresh core runtime also work when the JSX transform runs
@@ -2659,6 +2959,7 @@ const ALL_MODES = [
   'no-middleware',
   'middleware',
   'preview',
+  'base',
   'builder-order',
   'builder-prepare',
   'frames',
@@ -2679,6 +2980,7 @@ for (const mode of modes) {
   else if (mode === 'no-middleware') await runNoMiddlewareMode();
   else if (mode === 'middleware') await runMiddlewareMode();
   else if (mode === 'preview') await runPreviewMode();
+  else if (mode === 'base') await runBaseMode();
   else if (mode === 'builder-order') await runBuilderOrderMode();
   else if (mode === 'builder-prepare') await runBuilderPrepareMode();
   else if (mode === 'frames') await runFramesMode();

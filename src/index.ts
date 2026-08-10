@@ -67,10 +67,31 @@ const RESOLVED_VIRTUAL_MANIFEST_ID = '\0' + VIRTUAL_MANIFEST_ID;
 // build fallback, where js-only resolution remains). Bridge failures log
 // loudly and resolve to null so the runtime's own no-assets warning stays
 // the final catch-all.
-const devManifestCode = (root: string, bridgeUrl: string | null) => `const registry = globalThis[Symbol.for(${JSON.stringify(
+//
+// The generated `moduleUrl` mirrors `devModuleUrl` (src/dev-manifest.ts) —
+// base-prefixed root-relative URLs, `/@fs/` for root-external keys — for the
+// degraded paths that can't reach the plugin-side resolver (no registry and
+// no bridge, or a resolveSync call before the bridge cache warms). Keep the
+// two in sync.
+const devManifestCode = (root: string, base: string, bridgeUrl: string | null) => `const registry = globalThis[Symbol.for(${JSON.stringify(
   DEV_MANIFEST_REGISTRY_KEY,
 )})];
-const jsOnly = key => ({ js: ["/" + key], css: [] });
+const projectRoot = ${JSON.stringify(root.split(path.sep).join('/'))};
+const base = ${JSON.stringify(base.startsWith('/') ? base.replace(/\/$/, '') : '')};
+function moduleUrl(key) {
+  const queryIndex = key.indexOf("?");
+  const file = queryIndex === -1 ? key : key.slice(0, queryIndex);
+  const query = queryIndex === -1 ? "" : key.slice(queryIndex);
+  if (file.slice(0, 2) !== "..") return base + "/" + key;
+  const segments = (projectRoot + "/" + file).split("/");
+  const resolved = [];
+  for (const segment of segments) {
+    if (segment === "..") resolved.pop();
+    else if (segment && segment !== ".") resolved.push(segment);
+  }
+  return base + "/@fs/" + resolved.join("/") + query;
+}
+const jsOnly = key => ({ js: [moduleUrl(key)], css: [] });
 const bridgeUrl = ${JSON.stringify(bridgeUrl)};
 function createBridgeResolver() {
   // Convergence cache, mirroring the in-process resolver: server-side lazy()
@@ -596,8 +617,14 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
       const specifier = match[1];
       const resolved = await ctx.resolve(specifier, importer);
       if (resolved) {
-        const cleanId = resolved.id.split('?')[0];
-        const relativeId = path.relative(projectRoot, cleanId).split(path.sep).join('/');
+        // The query is part of the module identity: Rollup keys the facade
+        // chunk (and thus the Vite manifest entry) by the queried module id,
+        // and in dev the queried URL can serve different plugin output than
+        // the bare one — stripping it here would break both lookups.
+        const queryIndex = resolved.id.indexOf('?');
+        const file = queryIndex === -1 ? resolved.id : resolved.id.slice(0, queryIndex);
+        const query = queryIndex === -1 ? '' : resolved.id.slice(queryIndex);
+        const relativeId = path.relative(projectRoot, file).split(path.sep).join('/') + query;
         resolutions.push({
           placeholder: match[0],
           resolved: '"' + relativeId + '"',
@@ -612,15 +639,20 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
 
   /**
    * SSR transforms append a `$$moduleUrl` export carrying the module's
-   * client-manifest key (project-relative source path). Server-side `lazy()`
-   * reads it off the resolved module when the callsite has no static import
-   * specifier to transform — e.g. `lazy` over an `import.meta.glob` entry —
-   * so asset resolution and hydration preloading still work. Client builds
-   * are untouched.
+   * client-manifest key (project-relative source path, module query
+   * included — a queried module is its own identity, with its own facade
+   * chunk and manifest entry). Server-side `lazy()` reads it off the
+   * resolved module when the callsite has no static import specifier to
+   * transform — e.g. `lazy` over an `import.meta.glob` entry — so asset
+   * resolution and hydration preloading still work. Client builds are
+   * untouched.
    */
   function injectSsrModuleId(code: string, id: string, isSsr: boolean): string {
     if (!isSsr || /node_modules/.test(id) || code.includes('$$moduleUrl')) return code;
-    const relativeId = path.relative(projectRoot, id).split(path.sep).join('/');
+    const queryIndex = id.indexOf('?');
+    const file = queryIndex === -1 ? id : id.slice(0, queryIndex);
+    const query = queryIndex === -1 ? '' : id.slice(queryIndex);
+    const relativeId = path.relative(projectRoot, file).split(path.sep).join('/') + query;
     return code + `\nexport const $$moduleUrl = ${JSON.stringify(relativeId)};\n`;
   }
 
@@ -897,7 +929,11 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
     load(id) {
       if (id === RESOLVED_VIRTUAL_MANIFEST_ID) {
         if (!isBuild) {
-          return devManifestCode(projectRoot, devServer ? devManifestBridgeUrl(devServer) : null);
+          return devManifestCode(
+            projectRoot,
+            base,
+            devServer ? devManifestBridgeUrl(devServer) : null,
+          );
         }
         const manifestPath = clientManifestPath();
         if (manifestPath) {
@@ -908,7 +944,7 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
         }
         // SSR build before the client build produced a manifest: bake in the
         // dev-shaped fallback (registry miss degrades to js-only resolution).
-        return devManifestCode(projectRoot, null);
+        return devManifestCode(projectRoot, base, null);
       }
     },
 
@@ -951,6 +987,10 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
         return null;
       }
 
+      // The queried id is the module's real identity (facade chunk /
+      // manifest key / dev URL); keep it for the `$$moduleUrl` injection
+      // while the transform pipeline below works on the clean file path.
+      const moduleId = id;
       id = id.replace(/\?.*$/, '');
 
       if (!(/\.[mc]?[tj]sx$/i.test(id) || allExtensions.includes(currentFileExtension))) {
@@ -1066,7 +1106,7 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
 
         const finalCode = injectSsrModuleId(
           await resolveLazyModuleUrls(this, result.code || '', id),
-          id,
+          moduleId,
           !!isSsr,
         );
 
@@ -1088,7 +1128,7 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
 
       const finalCode = injectSsrModuleId(
         await resolveLazyModuleUrls(this, result.code || '', id),
-        id,
+        moduleId,
         !!isSsr,
       );
 

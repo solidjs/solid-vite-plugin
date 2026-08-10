@@ -5,8 +5,14 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { Readable } from 'node:stream';
 
-export function webRequestFromNode(req: IncomingMessage): Request {
-  const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
+/**
+ * `urlPath` overrides `req.url` when the middleware needs to dispatch a
+ * different URL than the one node saw — the turnkey adapters use it to
+ * restore the configured Vite `base` that the dev/preview base middleware
+ * stripped, so the handler always sees production-shaped URLs.
+ */
+export function webRequestFromNode(req: IncomingMessage, urlPath?: string): Request {
+  const url = new URL(urlPath ?? req.url ?? '/', `http://${req.headers.host || 'localhost'}`);
   const headers = new Headers();
   for (const [key, value] of Object.entries(req.headers)) {
     if (value === undefined) continue;

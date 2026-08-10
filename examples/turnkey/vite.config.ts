@@ -51,6 +51,10 @@ const jsxCompiler =
 const serverComponents = !!process.env.SOLID_SERVER_COMPONENTS;
 
 export default defineConfig({
+  // SOLID_BASE (base mode) serves and builds the app under a non-root Vite
+  // `base` (e.g. /app/): preview endpoint mounting, dev lazy asset URLs, and
+  // request-URL shapes must all stay base-correct.
+  ...(process.env.SOLID_BASE ? { base: process.env.SOLID_BASE } : {}),
   define: {
     __JSX_COMPILER__: JSON.stringify(jsxCompiler),
   },

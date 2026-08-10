@@ -15,7 +15,7 @@
 // - the response-head lifecycle (paths under /missing, /redirect-pre,
 //   /redirect-post, /whoami, /boom — plain-HTTP surfaces for the http and
 //   middleware e2e checks; the default path is untouched).
-import { createMemo, createSignal, Loading } from 'solid-js';
+import { createMemo, createSignal, lazy, Loading } from 'solid-js';
 import { clientOnly, getRequestEvent, httpHeader, httpStatus, isServer } from '@solidjs/web';
 import { getServerMessage, greet, hasSecret, requestMethod } from './api';
 import HmrTarget from './HmrTarget';
@@ -23,6 +23,26 @@ import NestedLazySection from './NestedLazy';
 import './App.css';
 
 const OnlyClient = clientOnly(() => import('./ClientOnlyWidget'));
+
+// Lazy asset-key regression fixtures (the /lazy-assets surface):
+// - a query-suffixed import — the query is part of the module identity
+//   (facade chunk, manifest key, dev URL) and must survive the SSR asset
+//   lookup (#299),
+// - a module outside the Vite root — its dev URL must be a base-prefixed
+//   /@fs/ URL, not "/../…" (#298).
+const LazyQuery = lazy(() => import('./QueryLazy.tsx?variant=a'));
+const LazyOutside = lazy(() => import('../../turnkey-external/LazyOutside'));
+
+function LazyAssetsSection() {
+  return (
+    <section>
+      <Loading fallback={<p>lazy…</p>}>
+        <LazyQuery />
+        <LazyOutside />
+      </Loading>
+    </section>
+  );
+}
 
 // Injected by the vite config's `define`; names the active JSX backend so
 // the e2e can assert which compiler served the page.
@@ -53,9 +73,16 @@ function LateRedirect() {
 export default function App() {
   // Plain-HTTP test surfaces keyed off the path (isomorphic read so the
   // rendered tree can't mismatch if one of them were ever hydrated).
-  const pathname = isServer
+  // Request URLs carry the configured Vite `base` on every surface (dev,
+  // prod, preview — the base mode runs with base '/app/'), so strip it
+  // before keying.
+  const fullPathname = isServer
     ? new URL(getRequestEvent()!.request.url).pathname
     : window.location.pathname;
+  const basePrefix = import.meta.env.BASE_URL.replace(/\/$/, '');
+  const pathname = fullPathname.startsWith(basePrefix)
+    ? fullPathname.slice(basePrefix.length) || '/'
+    : fullPathname;
   if (pathname === '/missing') {
     httpStatus(404);
     httpHeader('x-page', 'missing');
@@ -79,6 +106,8 @@ export default function App() {
   // Router-style nested lazy components: the SSR pass must converge (see
   // src/NestedLazy.tsx for the overflow this regresses against).
   if (pathname === '/nested-lazy') return <NestedLazySection />;
+  // Lazy asset-key surfaces: query-suffixed and root-external modules (#298/#299).
+  if (pathname === '/lazy-assets') return <LazyAssetsSection />;
 
   const [count, setCount] = createSignal(0);
   const [message, setMessage] = createSignal('');

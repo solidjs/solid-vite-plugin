@@ -323,6 +323,7 @@ export function serverFunctions(
 
   let env: CompileOptions['env'];
   let root = process.cwd();
+  let base = '/';
   let isBuild = false;
   let isSsrBuild = false;
   let outDir = 'dist';
@@ -514,6 +515,12 @@ export function serverFunctions(
           if (url.pathname !== resolvedEndpoint && url.pathname !== endpoint) {
             return next();
           }
+          // When the stripped form matched, restore the base for dispatch:
+          // the turnkey handler compares the request pathname against the
+          // base-prefixed endpoint, and production handlers only ever see
+          // base-prefixed URLs.
+          const dispatchUrl =
+            url.pathname === resolvedEndpoint ? undefined : joinBase(base, req.url || '/');
           (async () => {
             // Make sure the referenced module has been evaluated in the SSR
             // environment so its registration exists — functions only client
@@ -534,8 +541,8 @@ export function serverFunctions(
             // endpoint exactly as they front page SSR.
             const handler = await server.ssrLoadModule(internal.ssrHandler ?? HANDLER_ID);
             const response: Response = internal.ssrHandler
-              ? await handler.handleRequest(webRequestFromNode(req))
-              : await handler.handleServerFunctionRequest(webRequestFromNode(req));
+              ? await handler.handleRequest(webRequestFromNode(req, dispatchUrl))
+              : await handler.handleServerFunctionRequest(webRequestFromNode(req, dispatchUrl));
             await sendWebResponse(res, response);
           })().catch((error) => {
             if (error instanceof Error) server.ssrFixStacktrace(error);
@@ -553,6 +560,7 @@ export function serverFunctions(
       configResolved(config) {
         env = config.mode !== 'production' ? 'development' : 'production';
         root = config.root;
+        base = config.base;
         filter = createFilter(filterInclude, filterExclude, { resolve: root });
         isBuild = config.command === 'build';
         isSsrBuild = !!config.build.ssr;
