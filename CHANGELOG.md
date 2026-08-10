@@ -1,5 +1,108 @@
 # Changelog
 
+## 3.0.0-next.24
+
+### Patch Changes
+
+- dea55b3: Base-path and lazy-asset URL handling fixed across the turnkey surfaces (#298, #299, #300). Vite's base middleware strips the configured `base` from `req.url` before post middlewares run, but the built handler compares the request pathname against the base-prefixed server-function endpoint and hands the URL to application code — so under a non-root `base`, `vite preview` never dispatched `/base/_server` (requests fell through to page rendering) and dev page SSR saw base-stripped URLs that production would never send. The plugin's node adapters (the preview middleware, the turnkey dev SSR middleware, and the server-function dev middleware when the stripped endpoint form matched) now restore the base before constructing the web `Request`, so the handler sees production-shaped URLs on every surface. The dev asset resolver's lazy module URLs get the same treatment: they were emitted as `"/" + key`, which Vite rejects outside a non-root base and which mis-normalizes for root-external modules — they are now base-prefixed, and keys outside the Vite root (`../…`, e.g. sibling workspace packages) resolve to `/@fs/` URLs; the generated `virtual:solid-manifest` dev fallback mirrors the same logic. Finally, module query strings survive the lazy asset lookup: `resolveLazyModuleUrls` and the SSR `$$moduleUrl` injection kept only the queryless path while Rollup keys the facade chunk (and the Vite manifest entry) by the queried module id, so `lazy(() => import('./Panel.tsx?variant=a'))` missed its production manifest entry and could load different plugin output in dev — the query is now part of the asset key end to end, matching the manifest and the dev URL.
+- 3e5d8ff: Boundary guard no longer aborts Vite's dependency scan. The dep scanner
+  (`vite:dep-scan`) crawls the raw import graph from the plugin's injected
+  scan entries before any directive transform runs, so it walks straight
+  through `'use server'` modules into genuinely server-only code — and the
+  `server-only` marker's client-graph guard treated that as a violation,
+  failing the whole scan on every cold `vite dev` start ("Failed to run
+  dependency scan. Skipping dependency pre-bundling.") for any app whose
+  server functions reach `server-only` code. The graph is legal once
+  transforms split it, so the guard now stands down on scanner resolves
+  (the `scan` flag Vite sets on plugin-container resolve options, both the
+  esbuild scanner in v6/7 and the rolldown one in v8) while still claiming
+  the specifier — the scanner must not chase `server-only`/`client-only` as
+  missing bare dependencies, which would abort the scan all the same. Real
+  dev and build module graphs resolve without the flag and stay fully
+  guarded: a client-side import of a `server-only` module is still a build
+  error naming the importer.
+- e180576: The dev-manifest bridge resolver no longer caches failed lookups. The convergence cache introduced for the nested-lazy render-pass fix stored the `null` a bridge failure resolves to, so one transient miss (dev server briefly unreachable, non-OK response) silently stripped that module's client assets — and its hydration preload entry — for the rest of the dev session. Only successful answers are cached now; failures keep logging loudly and stay retryable, while in-flight dedupe still hands retries of the same render pass a stable promise, so convergence is unaffected.
+- 23965a2: The dev asset resolver now caches per module key and answers synchronously once a key's assets are known (in-flight walks are deduped; any watcher event drops the cache so dev CSS stays fresh). Server-side `lazy()` re-requests a module's assets on every retry of a suspended render pass — the router's nested outlets re-create the component per retry — and an always-async resolver suspends every retry on a brand-new promise, so the pass never converges: any nested route hung `vite dev`, or overflowed the render stack (one resume closure nests per cycle) and the escaped rejection killed the dev server. The build manifest never looped because it answers synchronously; dev now matches it after the first resolution. The HTTP bridge resolver for isolated SSR runners (nitro dev worker, workerd) gets the same convergence cache.
+- a2bd979: Turnkey dev middleware dispatches every request through the `start.middleware` chain — all methods and accept types, matching production and preview — instead of only HTML-accepting GETs. API routes (GET/POST exports served by a middleware like filesystem-routing's `createAPIHandler`) and no-JS form POSTs now work under `vite dev`. Non-page requests the chain does not handle fall back to Vite's own pipeline (its 404) rather than getting a page rendered at them, and without a configured middleware nothing changes: non-page requests never leave Vite's pipeline.
+- ec7543f: Doc examples for `serverFunctions.configure` import `configureServerFunctionsServer` from the type-correct `@solidjs/web/server-functions/server` subpath (the base subpath's types are the client surface and don't declare it).
+- 6e2d526: Turnkey typed env (`start.env`): first-party typed, validated environment
+  variables for both turnkey modes. A schema file at the project root —
+  `env.ts`/`env.js`, probed automatically (explicit via `start.env: './path'`,
+  off via `false`) — default-exports `{ server, client }` maps of Standard
+  Schema validators (zod, valibot, arktype, mixable per key; nothing imported
+  from the plugin), and the validated values come back through two typed
+  virtual modules: `virtual:env/server` (every var, server module graphs only
+  — a client-graph import is a hard error naming the importer) and
+  `virtual:env/client` (the `VITE_`-prefixed client side; the prefix — or
+  `envPrefix` — is enforced at config time).
+
+  Validation is node-only and layered, against Vite's `loadEnv` merge of the
+  `.env*` files with `process.env` winning — and the plugin folds the
+  file-loaded vars into `process.env` itself, so templates drop the
+  `process.env = { ...process.env, ...loadEnv(mode, root, '') }` boilerplate.
+  In dev every failure renders the error overlay with a per-key report and
+  `.env*`/schema edits revalidate live (surviving Vite's own
+  restart-on-.env-change). In a build, `client` failures fail the build;
+  `server` failures only warn (a build machine may not have the production
+  secrets) and boot validation enforces them.
+
+  Client values are baked as validated plain JSON — defaults applied,
+  coercions done, zero validator bytes in a client bundle (the
+  runtime-library alternative ships its validator to the browser; t3-env
+  costs ~13 kB gz of zod) — that's what the `VITE_` prefix means. Server
+  values are NOT baked anywhere: `virtual:env/server` reads `process.env` at
+  server boot and validates through the user's own schema, imported into the
+  server bundle only. Platform-injected vars that don't exist at build time
+  work, secrets rotate without a rebuild, and no secret value exists in any
+  dist artifact; an invalid server environment fails boot with the same
+  per-key report. A client-build `generateBundle` scan additionally fails
+  the build when a server var's literal value appears quoted in a client
+  chunk, and a generated `solid-env.d.ts` (written next to the schema) types
+  both virtual modules by inference from the user's own schema via the
+  Standard Schema output type.
+
+  Design credit: the feature's shape — the env.ts convention, the
+  `virtual:env/*` names (kept identical deliberately), baked client values,
+  the leak-scan heuristics — follows @vite-env/core by pyyupsk (MIT,
+  https://github.com/pyyupsk/vite-env); the implementation is fresh on this
+  plugin's machinery (Standard Schema as the only contract, no zod/jiti
+  dependencies, consumer-based environment guarding, Vite's `runnerImport`
+  for schema loading, runtime-read server values). Env is a turnkey feature:
+  without `start` there is no env layer. See `examples/start-env`.
+
+- 1272d95: Turnkey per-request app setup: `start.setup` points at a server-only module default-exporting `(event, App) => Component | void | Promise<Component | void>`, awaited by the generated server entry after the middleware chain dispatches to the page render and immediately before `renderToStream`. The seam routers with async per-request preparation need for SSR (create a router bound to the request, `await router.load()`, then render) — return a component to render in the app's place, or nothing to render `<App />` unchanged. The hook sees the same request event middleware decorated and runs inside the request scope. Zero-config entries are byte-identical without the option; authored server entries own `render()` already, so combining them is a config error.
+- 8b36370: Breaking (turnkey config reshape): Start is now a mode of the plugin. The
+  turnkey options move from the object form of `ssr` to a new `start` option
+  (`start: true` is the zero-config spelling, pure sugar for `start: {}` —
+  both mean the identical turnkey mode with defaults), and `ssr` is a boolean
+  again with one meaning everywhere — "is the app server-rendered".
+  `ssr: { ... }` is now a config-time error with a migration message: write
+  `start: { ... }` (or `start: true`) and set `ssr: true`. Options are
+  otherwise unchanged (`start.document`, `start.entryServer`,
+  `start.entryClient`, `start.middleware`, `start.external`, `start.app` for
+  the root component); a bare `ssr: true` without `start` keeps the
+  transform-only behavior, and `serverFunctions` stays orthogonal. The
+  `SsrOptions` type is renamed to `StartOptions`.
+
+  The reason for the split is the new **turnkey client mode**: `start` without
+  `ssr: true` serves the same conventions client-only. Dev streams the
+  rendered document shell (without the app — history-fallback semantics,
+  entry CSS inlined) and the generated client entry `render()`s the app into
+  `document.body`; `vite build` prerenders the shell once through the built
+  handler into `dist/client/index.html` (hashed entry script + entry CSS
+  links) and emits a purely static `dist/client` — `dist/server` is kept only
+  when `serverFunctions` needs it for the endpoint, and pages stay static.
+  Client code compiles exactly like a plain SPA (`generate: 'dom'`,
+  non-hydratable); only the document shell goes through the SSR transforms.
+  Server-only options (`start.entryServer`, `start.external`, conventional
+  `src/entry-server.*` files) are documented no-ops in client mode, so
+  flipping a project between SPA and SSR is toggling the one `ssr` boolean —
+  same App, same Document, same server functions (see `examples/start-client`,
+  whose test flips the same app between the modes).
+
+- 410c95f: Vitest always gets the client posture, regardless of the app's `ssr` flag: test-mode transforms compile non-hydratable (dom codegen under a DOM environment — nothing hydrates in a test), the `browser` export condition applies so solid resolves its client builds, and `test.environment` defaults to `jsdom` for server-rendered apps too. DOM component tests in an `ssr: true` app work without the `ssr: mode !== 'test'` workaround; explicit `test.environment: 'node'` still gets server codegen for `renderToString`-style tests.
+- ad11469: Per-vitest-project server test posture: a project that sets `test.environment: 'node'` (or `'edge-runtime'`) explicitly gets the server posture end to end — server export conditions (`isServer` true), ssr codegen, and the framework inlined so the whole graph (request-event storage included) resolves into one server-build instance despite the workspace worker pool's root-derived native `--conditions`. Server-runtime unit suites (server functions, sessions) need no `deps.inline`/alias workarounds, and DOM (jsdom) and node projects coexist in one workspace.
+
 ## 3.0.0-next.23
 
 ### Patch Changes
