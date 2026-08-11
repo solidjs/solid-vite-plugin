@@ -1,5 +1,14 @@
 # Changelog
 
+## 3.0.0-next.25
+
+### Patch Changes
+
+- 11b87a1: Custom `extensions` work with the native compiler again. The native compiler picks its parser dialect from the file extension, so the transform builds a borrowed-extension filename (`foo.mdx` → `foo.mdx.jsx`, or `.tsx` when the extension is registered as TypeScript) for exactly this case — but only the lazy and refresh passes used it; the JSX transform itself still received the raw id, and `@dom-expressions/compiler` rejected it with "Unknown file extension" (#297). `compiler: 'babel'` was unaffected because that path names the parser plugins explicitly. The JSX transform now receives the same borrowed filename as the other native passes.
+- 74fb28b: `start.env` now rejects `server` schema keys that carry the public env prefix at config time. Vite bakes every `VITE_`-prefixed variable (or whatever `envPrefix` selects) into the browser's `import.meta.env` regardless of which side of the schema declares it, so `server: { VITE_API_SECRET: ... }` silently shipped the secret to every client through Vite's own channel — the build-time leak scan does flag server values that land in client chunks as literals, but dev has no scan at all, and short or colliding values can evade the literal match. The prefix rule was previously enforced one-way (client keys must have it); the reverse guard now fails fast with a rename message, mirroring the existing client-side guard.
+- 2e7b63c: `sendWebResponse` no longer hangs forever when a client disconnects during backpressure. The write loop's `'drain'` wait had no other way to settle, but a response whose client already went away never emits `'drain'` — so every streamed SSR response aborted mid-stream (closed tab, slow mobile client) parked the promise chain, the body reader, and the Response object permanently, accumulating leaks over a start mode dev/preview session. The backpressure wait now also settles on `'close'`/`'error'` and the loop bails out early once the response is destroyed, letting the existing close handler's reader cancellation finish cleanup.
+- 84a4cab: docs: "turnkey" is now "start mode" across user-facing language — the JSDoc on `ssr`/`start`/`serverFunctions` and on `StartOptions`/`ServerFunctionsOptions`, the READMEs, and the config-time error/warning strings all say start mode (SSR start mode / client start mode; the server-function dev middleware is "built-in", since it works without `start`). The components-without-start warning also names the right option (`start`, not `app`). Prose citing Solid 2.0 beta versions is reworded version-neutrally now that 2.0 is past beta — published dependency ranges are untouched.
+
 ## 3.0.0-next.24
 
 ### Patch Changes
