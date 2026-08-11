@@ -1104,7 +1104,7 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
 
         const result = await compiler.transformAsync(code, {
           ...solidOptions,
-          filename: id,
+          filename: nativeFilename,
           sourceMap: true,
         });
         maps.push(result.map);
