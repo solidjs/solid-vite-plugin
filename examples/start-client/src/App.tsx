@@ -10,7 +10,7 @@ export default function App() {
 
   return (
     <main>
-      <h1 id="title">Turnkey Client Mode</h1>
+      <h1 id="title">Client Start Mode</h1>
       <p id="marker">CLIENT-RENDERED-APP</p>
       <button id="increment" onClick={() => setCount(count() + 1)}>
         Increment

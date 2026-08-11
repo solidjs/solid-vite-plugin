@@ -1,4 +1,4 @@
-// The entire production server for a turnkey SSR app: static client assets
+// The entire production server for an SSR start-mode app: static client assets
 // plus one import — the built server bundle's `handleRequest`, an
 // adapter-agnostic web `Request -> Response` handler that streams the SSR
 // render, resolves hashed client assets through the build manifest, and

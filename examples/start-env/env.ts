@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import * as v from 'valibot';
 
-// The turnkey env schema: a plain object of Standard Schema validators —
+// The start-mode env schema: a plain object of Standard Schema validators —
 // nothing imported from the plugin, and the validator libraries are mixed
 // on purpose (zod for the server side, valibot for the client side) to
 // prove the Standard Schema seam: any compliant library works, per key.

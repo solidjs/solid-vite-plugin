@@ -5,7 +5,7 @@ you the SSR transforms (hydratable client code, SSR server code) and *you*
 own everything else — a middleware-mode Vite dev server embedded in your own
 `server.js`, your own production server, and manual manifest handling (the
 authored `/src/entry-client.tsx` script reference is rewritten to the hashed
-asset the classic way). This is the escape hatch the turnkey option
+asset the classic way). This is the escape hatch the `start` option
 (`start: true` + `ssr: true`, see `examples/turnkey`) is built on: if you are building a
 framework, or need to control the server, start here.
 

@@ -1,4 +1,4 @@
-// Typed, validated environment variables as a turnkey feature (`start.env`):
+// Typed, validated environment variables as a start-mode feature (`start.env`):
 // an `env.ts` at the project root default-exports `{ server, client }` maps
 // of Standard Schema validators (zod, valibot, arktype — mixable per key),
 // and the plugin exposes the validated values through two virtual modules:
@@ -307,9 +307,9 @@ function generateTypes(schema: EnvSchema, envFileAbs: string): void {
 }
 
 /**
- * Turnkey typed env (the `start.env` option). Returns no plugin when the
+ * Start-mode typed env (the `start.env` option). Returns no plugin when the
  * feature is off (`env: false`, or nothing to probe); the feature is
- * turnkey-only by construction — the option lives on `start`, so a bare
+ * start-only by construction — the option lives on `start`, so a bare
  * `ssr: true` setup has no env layer (documented).
  */
 export function startEnv(option: boolean | string | undefined): Plugin[] {
@@ -568,7 +568,7 @@ export function startEnv(option: boolean | string | undefined): Plugin[] {
         // Preview serves finished artifacts, so no schema loading or
         // validation happens there — but the built server module reads
         // process.env at boot, and `vite preview` should smoke-test the
-        // artifact as turnkey as dev runs it: fold the .env files into
+        // artifact as hands-off as dev runs it: fold the .env files into
         // process.env (real environment still wins). A production process
         // brings its own environment instead.
         if (isPreview && enabled) {

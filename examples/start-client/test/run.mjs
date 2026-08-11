@@ -1,6 +1,6 @@
-// Turnkey client-mode fixture test: proves `solid({ start: true })` (the
+// Client start-mode fixture test: proves `solid({ start: true })` (the
 // zero-config sugar for `start: {}`, without `ssr: true`) gives a plain
-// Vite app the turnkey conventions (src/App.tsx, optional src/Document.tsx,
+// Vite app the start-mode conventions (src/App.tsx, optional src/Document.tsx,
 // no index.html, no mount file) with client-only rendering:
 //   - dev: every HTML-accepting GET streams the rendered document shell —
 //     WITHOUT the app markup (nothing server-renders the app) — carrying the

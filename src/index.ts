@@ -230,16 +230,16 @@ export interface Options {
    * `true` enables the SSR transforms (hydratable client code, SSR server
    * code) — you provide the entries and the server yourself.
    *
-   * With {@link start}: selects the turnkey mode. `true` is turnkey SSR
+   * With {@link start}: selects the start mode. `true` is SSR start mode
    * (per-request streaming render + hydration); `false`/omitted is client
    * mode (a static document shell + client-side `render()`). Flipping a
-   * turnkey project between SPA and SSR is toggling this one boolean.
+   * start-mode project between SPA and SSR is toggling this one boolean.
    *
    * The flag describes the app's initial document, not the internal
    * pipelines — client mode still compiles the document shell through the
    * SSR transforms to serve/prerender it.
    *
-   * Objects are no longer accepted: turnkey options moved to {@link start}
+   * Objects are no longer accepted: start-mode options moved to {@link start}
    * (`ssr: { ... }` from 3.0.0-next.23 and earlier becomes
    * `start: { ... }, ssr: true`).
    *
@@ -248,10 +248,10 @@ export interface Options {
   ssr?: boolean;
 
   /**
-   * Turnkey serving — Start as a mode of the plugin: it owns entries, dev
+   * Start mode — Start as a mode of the plugin: it owns entries, dev
    * serving, and the build — no index.html, no mount file, no server
    * wiring. `start: true` is the zero-config spelling, sugar for the empty
-   * options bag `start: {}` (both mean the identical turnkey mode with
+   * options bag `start: {}` (both mean the identical start mode with
    * defaults; `false`/absent is off). Conventions (shared by both modes,
    * so projects flip between them by toggling {@link ssr}): `src/App.*`
    * (or `start.app`) is the root component; `src/Document.*` (or
@@ -259,7 +259,7 @@ export interface Options {
    * `src/entry-server.*` / `src/entry-client.*` (or `start.entryServer` /
    * `start.entryClient`) replace the generated entries.
    *
-   * With `ssr: true` — turnkey SSR:
+   * With `ssr: true` — SSR start mode:
    *
    * - Dev: a middleware on the Vite dev server streams the rendered app for
    *   HTML-accepting GET requests — `vite` just works, no server file.
@@ -349,7 +349,7 @@ export interface Options {
    * an options object to customize. The directive transform sub-plugins are
    * emitted ahead of the JSX transform in the returned plugin array.
    *
-   * Turnkey setup: in dev, a middleware on the Vite server handles the
+   * Zero-config setup: in dev, a middleware on the Vite server handles the
    * endpoint (default `/_server`, joined with `base`) end to end — no
    * server-function code needed in the server entry. For production SSR
    * builds, import `virtual:solid-server-function-handler` in the server
@@ -374,7 +374,7 @@ export interface Options {
    * components (experimental) — `"use server"` functions returning a
    * component, served over the same endpoint. They come essentially for
    * free: the endpoint transform is installed automatically, and with
-   * turnkey SSR (the `start` option with `ssr: true`) and generated entries
+   * SSR start mode (the `start` option with `ssr: true`) and generated entries
    * the document wiring is emitted too. See
    * {@link ServerFunctionsOptions.components}.
    *
@@ -448,7 +448,7 @@ function getSolidOptions(
     // node-environment tests (renderToString) keep their server codegen.
     solidOptions = { generate: isSsr ? 'ssr' : 'dom', hydratable: false };
   } else if (options.start && !options.ssr) {
-    // Turnkey client mode: client code compiles exactly like a plain SPA
+    // Client start mode: client code compiles exactly like a plain SPA
     // (dom, non-hydratable — nothing hydrates); only the document shell
     // render goes through the SSR transforms, also non-hydratable since
     // the shell is inert HTML the client never claims.
@@ -537,7 +537,7 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
   if (typeof options.ssr === 'object') {
     throw new Error(
       '[vite-plugin-solid] `ssr` now only accepts a boolean ("is the app server-rendered"); ' +
-        'move turnkey options to `start: {}` and set `ssr: true`. Example: ' +
+        'move start-mode options to `start: {}` and set `ssr: true`. Example: ' +
         '`solid({ ssr: { document: … } })` becomes `solid({ start: { document: … }, ssr: true })`.',
     );
   }
@@ -547,13 +547,13 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
   let filter = createFilter(options.include, options.exclude);
   const serverComponents =
     typeof options.serverFunctions === 'object' && !!options.serverFunctions.components;
-  // `start: true` is sugar for the empty options bag — one turnkey mode,
+  // `start: true` is sugar for the empty options bag — one start mode,
   // two spellings — so normalize here and let everything downstream see a
   // single shape (`false` behaves exactly like omission).
   const turnkey: StartOptions | null =
     options.start === true ? {} : options.start || null;
   // `start.external` only means something when a server side exists to hand
-  // over (turnkey SSR mode); in client mode it is a documented no-op.
+  // over (SSR start mode); in client mode it is a documented no-op.
   const externalDevServer = !!options.ssr && !!turnkey?.external;
 
   let needHmr = false;
@@ -833,11 +833,11 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
       filter = createFilter(options.include, options.exclude, { resolve: projectRoot });
       if (serverComponents && !(options.start && options.ssr)) {
         config.logger.warn(
-          '[vite-plugin-solid] serverFunctions.components is set without turnkey SSR (the `app` ' +
+          '[vite-plugin-solid] serverFunctions.components is set without SSR start mode (the `start` ' +
             'option with `ssr: true`), so the plugin only installs the endpoint response transform ' +
             '(server functions returning components stream correctly). The document wiring — render ' +
             'plugin, bootstrap script, and the client-side installServerComponents() call — is ' +
-            "emitted by turnkey SSR's generated entries; without it, server components only mount " +
+            "emitted by SSR start mode's generated entries; without it, server components only mount " +
             'from post-boot streams and your client code must call installServerComponents() itself.',
         );
       }
@@ -1151,7 +1151,7 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
         ...serverFunctions(options.serverFunctions === true ? {} : options.serverFunctions, {
           devMiddleware: true,
           externalDevServer,
-          // With turnkey on (either mode), the dev middleware dispatches
+          // With start mode on (either variant), the dev middleware dispatches
           // the endpoint through the SSR handler so user middleware and the
           // stub-backed request event front it exactly like page SSR.
           ...(turnkey ? { ssrHandler: SSR_HANDLER_ID } : {}),
@@ -1160,12 +1160,12 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
       ]
     : [boundaryModules(), mainPlugin];
 
-  // The `start` option opts into turnkey serving on top of the transforms;
+  // The `start` option opts into start-mode serving on top of the transforms;
   // the `ssr` boolean picks the mode (a bare `ssr: true` keeps the
   // historical transform-only behavior).
   if (turnkey) {
     plugins.push(
-      // Typed env (`start.env`) rides both turnkey modes: config-time
+      // Typed env (`start.env`) rides both start modes: config-time
       // validation, the virtual:env/{server,client} modules, generated
       // types, and the client-bundle leak scan.
       ...startEnv(turnkey.env),
@@ -1181,7 +1181,7 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
   // Server builds read the client manifest — `virtual:solid-manifest` bakes
   // dist/client/.vite/manifest.json in, and the persisted server-function
   // manifest merges the client build's discoveries — so the client
-  // environment must build first. Turnkey's own orchestration already
+  // environment must build first. Start mode's own orchestration already
   // orders it that way (environment definition order), but a composed setup
   // whose orchestrator builds server environments first (e.g.
   // @cloudflare/vite-plugin's buildApp, which builds workers before client)
@@ -1209,7 +1209,7 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
   //   exists either way when the server environments build).
   // - Building anything from a hook suppresses Vite's own
   //   build-all-environments fallback (it only runs when *no* environment
-  //   is built), so a setup with no real orchestrator — e.g. turnkey's
+  //   is built), so a setup with no real orchestrator — e.g. start mode's
   //   plain `builder: {}` — would end up with only the client built. The
   //   post-order hook reinstates exactly that fallback: when nothing but
   //   our own client build has happened and no other plugin stakes a claim

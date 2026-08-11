@@ -1,4 +1,4 @@
-// Node <-> web-standard request/response bridging shared by the turnkey dev
+// Node <-> web-standard request/response bridging shared by the plugin's dev
 // middlewares (server functions and SSR). The virtual production handlers
 // speak web Request/Response only; this is the node:http glue the dev server
 // needs to talk to them.
@@ -7,7 +7,7 @@ import { Readable } from 'node:stream';
 
 /**
  * `urlPath` overrides `req.url` when the middleware needs to dispatch a
- * different URL than the one node saw — the turnkey adapters use it to
+ * different URL than the one node saw — the dev middlewares use it to
  * restore the configured Vite `base` that the dev/preview base middleware
  * stripped, so the handler always sees production-shaped URLs.
  */

@@ -1,4 +1,4 @@
-// The entire app the user writes for turnkey SSR: a plain content component
+// The entire app the user writes for SSR start mode: a plain content component
 // (no <html>, no HydrationScript, no entries — the plugin's generated
 // document shell provides all of that). Exercises, for test/run.mjs:
 // - hydration + client interactivity (the counter),
@@ -134,7 +134,7 @@ export default function App() {
 
   return (
     <main>
-      <h1 id="title">Turnkey SSR</h1>
+      <h1 id="title">SSR Start Mode</h1>
       <button id="increment" onClick={() => setCount(count() + 1)}>
         count
       </button>
@@ -171,7 +171,7 @@ export default function App() {
       <p id="jsx-compiler">{__JSX_COMPILER__}</p>
       {/* Deliberately BEFORE <HmrTarget />: a hydrated clientOnly used to
           shift the hydration ids of every following sibling (fixed upstream
-          in @solidjs/web 2.0.0-beta.31, solidjs/solid @ edb3e36f), so a
+          in @solidjs/web 2.0, solidjs/solid @ edb3e36f), so a
           following sibling here keeps the e2e exercising the fixed path —
           the HMR swap of <HmrTarget /> must replace, not duplicate. */}
       <OnlyClient fallback={<p id="client-only-fallback">client-only-fallback</p>} />

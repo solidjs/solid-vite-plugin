@@ -3,7 +3,7 @@
 // server, see server.js) still works end to end. Deliberately lean — the
 // heavy assertions (streaming order, hydration, HMR, server functions, CSS
 // dedup) live in the turnkey suite; this one guards the escape hatch the
-// turnkey option is built on:
+// `start` option is built on:
 //   - dev: `node server.js` (Vite in middleware mode) serves the SSR'd
 //     document with the Vite client injected,
 //   - prod: the classic two-step `vite build` (client) + `vite build --ssr`

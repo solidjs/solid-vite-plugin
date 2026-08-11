@@ -1,4 +1,4 @@
-// Turnkey kitchen-sink fixture test: proves `solid({ start: {}, ssr: true,
+// Start-mode kitchen-sink fixture test: proves `solid({ start: {}, ssr: true,
 // serverFunctions: true })` gives a plain Vite app working streaming SSR
 // *and* "use server"
 // server functions with zero wiring — no entry files, no index.html, no dev
@@ -23,7 +23,7 @@
 //     the respond() envelope — all round-trip from the browser),
 //   - server-only module code (the secret) never reaches the SSR html, the
 //     transformed client module, or any client asset,
-//   - HMR works through the turnkey dev middleware under the native
+//   - HMR works through the start-mode dev middleware under the native
 //     (Babel-free) pipeline: the solid-js/refresh wrapper is active, an
 //     on-disk edit hot-applies without a reload, sibling client state
 //     survives, and a CSS edit hot-applies into a single style element; the
@@ -300,7 +300,7 @@ const APP_CSS_STYLE_SELECTOR = 'style[data-vite-dev-id$="App.css"]';
 async function runSsrChecks(mode, origin) {
   const { status, chunks, html } = await fetchStreamed(origin + '/');
   record(mode, 'ssr', 'responds 200 to HTML-accepting GET', status === 200);
-  record(mode, 'ssr', 'app server-rendered', html.includes('Turnkey SSR'));
+  record(mode, 'ssr', 'app server-rendered', html.includes('SSR Start Mode'));
   record(
     mode,
     'ssr',
@@ -769,7 +769,7 @@ async function runDevMode() {
   // requests have let the optimizer finish.
   rmSync(path.join(exampleDir, 'node_modules/.vite'), { recursive: true, force: true });
 
-  // The turnkey promise: the dev server is the plain `vite` CLI.
+  // The start-mode promise: the dev server is the plain `vite` CLI.
   const server = startProcess('pnpm', ['exec', 'vite', '--port', String(port), '--strictPort'], {
     cwd: exampleDir,
     env: { ...process.env },
@@ -780,7 +780,7 @@ async function runDevMode() {
 
   try {
     // Wait on a plain module transform instead of `/` so nothing has touched
-    // the SSR environment before the cold turnkey checks below.
+    // the SSR environment before the cold-dispatch checks below.
     await waitForHttp(origin + '/src/api.ts', 30000);
 
     // ---- Server functions first: cold dispatch, no wiring ---------------
@@ -796,7 +796,7 @@ async function runDevMode() {
     );
     record(mode, 'sf', 'secret absent from transformed module', !clientModule.includes(SECRET));
     const functionId = extractFunctionId(clientModule, 'getServerMessage');
-    // POST-only by default as of @solidjs/web 2.0.0-beta.21; args still come
+    // POST-only by default in @solidjs/web 2.0; args still come
     // from the query string when no instance header is present.
     const cold = functionId
       ? await fetch(
@@ -908,7 +908,7 @@ async function runProdMode() {
   const origin = `http://localhost:${port}`;
 
   console.log('  building…');
-  // The turnkey promise: one plain `vite build` produces both bundles.
+  // The start-mode promise: one plain `vite build` produces both bundles.
   execSync('pnpm run build', { cwd: exampleDir, stdio: 'pipe' });
   record(
     mode,
@@ -989,7 +989,7 @@ async function runProdMode() {
     record(mode, 'prod', 'no dev injections leaked', !html.includes('/@vite/client'));
 
     // clientOnly preload contract (compiler 0.50.0-next.35 + @solidjs/web
-    // 2.0.0-beta.30): the module-URL pass annotates the clientOnly() call,
+    // 2.0): the module-URL pass annotates the clientOnly() call,
     // the server half resolves the chunk through the client manifest and
     // emits a PLAIN modulepreload hint. The chunk URL must appear exactly
     // once in the document — the link only, never a hydration asset map
@@ -1067,7 +1067,7 @@ async function runDocumentMode() {
       'custom document shell rendered',
       html.includes('<title>Custom Document</title>'),
     );
-    record(mode, 'document', 'app rendered inside custom shell', html.includes('Turnkey SSR'));
+    record(mode, 'document', 'app rendered inside custom shell', html.includes('SSR Start Mode'));
   } catch (e) {
     record(
       mode,
@@ -1558,7 +1558,7 @@ async function runBuilderOrderMode() {
     server.stderr.on('data', (d) => (serverLog += d));
     await waitForHttp(origin + '/', 30000, { headers: { accept: 'text/html' } });
     const { html } = await fetchStreamed(origin + '/');
-    record(mode, 'prod', 'app server-rendered', html.includes('Turnkey SSR'));
+    record(mode, 'prod', 'app server-rendered', html.includes('SSR Start Mode'));
     record(
       mode,
       'prod',
@@ -1659,7 +1659,7 @@ async function runBuilderPrepareMode() {
     server.stderr.on('data', (d) => (serverLog += d));
     await waitForHttp(origin + '/', 30000, { headers: { accept: 'text/html' } });
     const { html } = await fetchStreamed(origin + '/');
-    record(mode, 'prod', 'app server-rendered', html.includes('Turnkey SSR'));
+    record(mode, 'prod', 'app server-rendered', html.includes('SSR Start Mode'));
     record(
       mode,
       'prod',
@@ -1691,7 +1691,7 @@ async function runBuilderPrepareMode() {
 // enabled by the single config line `serverFunctions: { components: true }`
 // (via SOLID_SERVER_COMPONENTS in vite.config.ts, which also points
 // `start.app` at the server-components page). Everything else is the stock
-// turnkey surface: generated entries carry the wiring the plugin emits for
+// start-mode surface: generated entries carry the wiring the plugin emits for
 // the option — the render plugin + direct-call transform in the server
 // entry, installServerComponents() in the client entry (the _$SC registry
 // self-bootstraps from serialized references; nothing is spliced into
@@ -1712,7 +1712,7 @@ async function runFramesChecks(mode, origin) {
   // ---- The document over plain HTTP ------------------------------------
   const html = await (await fetch(origin + '/', { headers: { accept: 'text/html' } })).text();
   // (`panel:` not `panel:alpha`: hydration comment markers split the text.)
-  // As of beta.26 a boundary SSRs as a real <dx-frame data-fid> element
+  // A boundary SSRs as a real <dx-frame data-fid> element
   // (display:contents); slot records remain comment markers.
   record(
     mode,
@@ -2246,7 +2246,7 @@ async function runMiddlewareChecksOverHttp(mode, origin, functionId) {
     mode,
     'setup',
     'app still renders inside the setup-provided root',
-    setupFirst.html.includes('Turnkey SSR'),
+    setupFirst.html.includes('SSR Start Mode'),
   );
   const setupSecond = await fetchStreamed(origin + '/');
   const second = setupMarker(setupSecond.html);
@@ -2444,7 +2444,7 @@ async function runPreviewMode() {
       mode,
       'ssr',
       'preview serves the SSR page through the built handler',
-      page.status === 200 && page.html.includes('Turnkey SSR'),
+      page.status === 200 && page.html.includes('SSR Start Mode'),
     );
     record(
       mode,
@@ -2507,7 +2507,7 @@ async function runPreviewMode() {
 }
 
 // Non-root Vite `base` (SOLID_BASE=/app/): the base must hold end to end on
-// every turnkey surface. Regression coverage for the brenelz base cluster:
+// every start-mode surface. Regression coverage for the brenelz base cluster:
 // - #300: `vite preview` strips the base from req.url before the plugin's
 //   post middleware runs, so the built handler's base-prefixed endpoint
 //   comparison never matched — /app/_server fell through to page rendering
@@ -2547,7 +2547,7 @@ async function runBaseMode() {
       mode,
       'dev',
       'SSR page served under the base',
-      page.status === 200 && page.html.includes('Turnkey SSR'),
+      page.status === 200 && page.html.includes('SSR Start Mode'),
       `status ${page.status}`,
     );
     record(
@@ -2635,7 +2635,7 @@ async function runBaseMode() {
       mode,
       'preview',
       'preview serves the SSR page under the base',
-      page.status === 200 && page.html.includes('Turnkey SSR'),
+      page.status === 200 && page.html.includes('SSR Start Mode'),
       `status ${page.status}`,
     );
     const entryMatch = new RegExp(
@@ -2777,7 +2777,7 @@ async function runExternalMode() {
       mode,
       'ssr',
       'external handler renders the app',
-      response.status === 200 && html.includes('Turnkey SSR'),
+      response.status === 200 && html.includes('SSR Start Mode'),
     );
     record(
       mode,
@@ -2871,7 +2871,7 @@ async function runDetectMode() {
       mode,
       'handler',
       'handler self-serves through the provider environment',
-      response.status === 200 && html.includes('Turnkey SSR'),
+      response.status === 200 && html.includes('SSR Start Mode'),
     );
     record(
       mode,

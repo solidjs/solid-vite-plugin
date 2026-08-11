@@ -1,4 +1,4 @@
-// Turnkey typed-env fixture test: proves `start.env` gives a turnkey app
+// Start-mode typed-env fixture test: proves `start.env` gives a start-mode app
 // first-party typed environment variables from a root env.ts of Standard
 // Schema validators (zod + valibot mixed per key), with the validator never
 // reaching any bundle:
@@ -19,7 +19,7 @@
 //     at boot through the user's schema (validator is server-only), so the
 //     same artifact serves a rotated secret without a rebuild and fails
 //     boot with the per-key report when the runtime env is invalid;
-//     preview folds .env into process.env (turnkey smoke test) and serves
+//     preview folds .env into process.env (zero-config smoke test) and serves
 //     with the middleware headers live,
 //   - client mode: the same env layer on a static build — index.html shell,
 //     no dist/server, no secret anywhere in dist/client, and the app boots
@@ -409,7 +409,7 @@ async function prodMode() {
   const origin = `http://localhost:${PREVIEW_PORT}`;
 
   // 1. Plain preview: the plugin folds .env into process.env (preview
-  //    smoke-tests the artifact as turnkey as dev), boot validation passes.
+  //    smoke-tests the artifact as hands-off as dev), boot validation passes.
   let server = preview({}).child;
   await waitForHttp(origin + '/', 30000, { headers: { accept: 'text/html' } });
   const { status, html, headers } = await fetchPage(origin + '/');
@@ -496,7 +496,7 @@ async function clientMode() {
 const requested = process.argv[2];
 const modes = requested ? [requested] : ['dev', 'guards', 'prod', 'client'];
 // Config-level: `start.env: false` removes the env plugin entirely; the
-// default (probe) includes it under turnkey; without `start` there is no
+// default (probe) includes it under start mode; without `start` there is no
 // env layer at all.
 {
   const { default: solid } = await import('vite-plugin-solid');

@@ -8,7 +8,7 @@ declare module "virtual:solid-manifest" {
 // functions so their registrations exist before requests are dispatched.
 declare module "virtual:solid-server-function-manifest" {}
 
-// Server-only turnkey handler (SSR builds). Importing it registers every
+// Server-only handler (SSR builds). Importing it registers every
 // server function (via the manifest above), scopes each request with
 // provideRequestEvent, and configures the endpoint; mount
 // `handleServerFunctionRequest` on the endpoint in your server.
@@ -21,7 +21,7 @@ declare module "virtual:solid-server-function-handler" {
   ): Promise<Response>;
 }
 
-// Server-only turnkey request handler (the `start` option). It is the SSR
+// Server-only start-mode request handler (the `start` option). It is the SSR
 // build's entry, so a production server imports it from the built bundle
 // (e.g. `./dist/server/server.js`) rather than by this id; importing the
 // id directly also works from custom server code in SSR builds.

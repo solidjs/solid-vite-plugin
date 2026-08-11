@@ -6,7 +6,7 @@ import { type Plugin } from 'vite';
 import { defineConfig } from 'vitest/config';
 import solidPlugin from 'vite-plugin-solid';
 
-// Turnkey kitchen sink: `start: {}` + `ssr: true` adds the serving layer on
+// Start-mode kitchen sink: `start: {}` + `ssr: true` adds the serving layer on
 // top of the SSR transforms, and `serverFunctions` composes with it. No
 // entry files, no index.html, no dev server script — the plugin generates
 // default entries around src/App.tsx, a dev middleware streams the render
@@ -27,7 +27,7 @@ import solidPlugin from 'vite-plugin-solid';
 // - SSR_SETUP=1 wires src/setup.tsx through `start.setup` (middleware mode):
 //   the per-request app-setup hook, awaited between the middleware chain and
 //   renderToStream with the shared request event in hand.
-// - SERVER_FN_DEV_MIDDLEWARE=0 disables the turnkey dev middleware via
+// - SERVER_FN_DEV_MIDDLEWARE=0 disables the built-in dev middleware via
 //   `serverFunctions.devMiddleware` (no-middleware mode) — endpoint dispatch
 //   becomes the host's job, like a Cloudflare-style environment plugin.
 // - BUILD_SSR_FIRST installs an adversarial `builder.buildApp` that builds

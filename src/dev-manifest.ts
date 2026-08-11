@@ -274,7 +274,7 @@ export async function collectDevStyleSources(
  * Walks the SSR module graph from `files` (root-relative or absolute) and
  * returns inline-style descriptors for every transitively imported CSS
  * module — the same shape the dev asset resolver answers with for lazy
- * modules. Used by the turnkey SSR dev middleware to inline the root entry's
+ * modules. Used by SSR start mode's dev middleware to inline the root entry's
  * CSS into `<head>` so server-painted content is styled from the first byte
  * (no FOUC while waiting for Vite's client-side style injection).
  */

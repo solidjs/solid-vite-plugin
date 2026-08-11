@@ -136,11 +136,11 @@ Whether the app is server-rendered — one meaning everywhere.
 
 Without [`start`](#optionsstart), `ssr: true` enables the SSR transforms
 (hydratable client code, SSR server code); you provide the entries and the
-server yourself, as before. With `start`, the boolean selects the turnkey
-mode: `ssr: true` is turnkey SSR, `ssr: false`/omitted is turnkey client
+server yourself, as before. With `start`, the boolean selects the start
+mode: `ssr: true` is SSR start mode, `ssr: false`/omitted is client start
 mode — see below.
 
-Objects are no longer accepted (config-time error): the turnkey options
+Objects are no longer accepted (config-time error): the start-mode options
 that used to live on `ssr: { ... }` moved to `start: { ... }`, with
 `ssr: true` set alongside.
 
@@ -149,7 +149,7 @@ that used to live on `ssr: { ... }` moved to `start: { ... }`, with
 - Type: Boolean | Object
 - Default: undefined
 
-**Start is now a mode of the plugin**: the turnkey serving layer that
+**Start is now a mode of the plugin**: the serving layer that
 replaces SolidStart. The plugin owns entries, dev serving, and the build —
 no entry files, no `index.html`, no dev server script. `start: true` is the
 zero-config spelling; add `ssr: true` for streaming SSR:
@@ -172,7 +172,7 @@ SPA and SSR is toggling that one boolean — same `App`, same `Document`,
 same server functions.
 
 The object form carries the options (`start: true` is pure sugar for
-`start: {}` — both mean the identical turnkey mode with defaults, and
+`start: {}` — both mean the identical start mode with defaults, and
 `false`/absent means off): `app`, `document`, `entryServer`, `entryClient`,
 `middleware`, `env`, `external`, all documented below.
 
@@ -183,7 +183,7 @@ export default function App() {
 }
 ```
 
-With `ssr: true` — **turnkey SSR**:
+With `ssr: true` — **SSR start mode**:
 
 - **Dev**: `vite` just works — a middleware on the dev server streams the
   rendered app for HTML-accepting GET requests through the SSR environment,
@@ -365,7 +365,7 @@ import { env } from 'virtual:env/client'; // the VITE_-prefixed client vars
   outputs — with any compliant library and no per-library plumbing.
 
 Env works identically in both `start` modes (a client-mode static build
-carries only the client vars); it is a turnkey feature, so without `start`
+carries only the client vars); it is a start-mode feature, so without `start`
 there is no env layer. See `examples/start-env` for the full story,
 including the failure modes.
 
@@ -402,12 +402,12 @@ server-function middleware pre-loads the referenced module, then dispatches
 through the same handler), so one middleware chain and one request event
 front pages and server functions identically.
 
-**`external: true`** hands the server side of turnkey to a host integration
+**`external: true`** hands the server side of start mode to a host integration
 that owns the server environment — build wiring and HTTP serving alike. The
-plugin skips its turnkey server-build config (no `dist/server` output or
+plugin skips its start-mode server-build config (no `dist/server` output or
 builder flag; the host's orchestrator drives the server build) and stands
 its dev middlewares down (SSR serving and the server-function endpoint
-both). Turnkey still provides everything the host loads through its own
+both). Start mode still provides everything the host loads through its own
 environment: the generated entries, the client manifest, and the
 `virtual:solid-ssr-handler` request handler — which self-serves in dev,
 inlining the entry graph's CSS through a virtual dev-styles module (HMR
@@ -427,9 +427,9 @@ Three switches cover host-owned setups, broadest first:
    the provider owns a _differently named_ environment (not `ssr`), which
    detection can't see.
 3. **[`serverFunctions.devMiddleware: false`](#optionsserverfunctions)** —
-   the narrow, endpoint-only switch: keeps turnkey's server build and SSR
+   the narrow, endpoint-only switch: keeps start mode's server build and SSR
    serving, hands only server-function dispatch in dev to the host. For
-   non-turnkey setups, or when only the endpoint should move.
+   setups without `start`, or when only the endpoint should move.
 
 Without `ssr: true` — **client mode** (experimental), the same conventions
 with client-only rendering:
@@ -470,7 +470,7 @@ turns the hydratable transforms on, and ships the server bundle. (A
 the plugin strips its script from the served shell — nothing hydrates, so
 a shared `Document` costs nothing — and the built-in shell omits it.)
 
-Turnkey serving is opt-in via `start`, so bare `ssr: true` setups keep the
+Start-mode serving is opt-in via `start`, so bare `ssr: true` setups keep the
 transform-only behavior. See `examples/turnkey` for a complete SSR app
 (including a one-file production server and server functions),
 `examples/start-client` for client mode (whose test flips the same app
@@ -486,9 +486,9 @@ Enables `"use server"` server function compilation (experimental). Pass
 endpoint `/_server`) or an options object (`runtime`, `endpoint`, `filter`,
 `directive`, `manifest`, `devMiddleware`, `configure`) to customize.
 
-The setup is turnkey: in dev a middleware on the Vite server handles the
+The setup is zero-config: in dev a middleware on the Vite server handles the
 endpoint end to end — no server-function code needed in your server entry.
-For production SSR builds, either use turnkey SSR ([`start`](#optionsstart)
+For production SSR builds, either use SSR start mode ([`start`](#optionsstart)
 with `ssr: true`, whose handler serves the endpoint automatically) or
 import `virtual:solid-server-function-handler` in your server entry and
 mount its `handleServerFunctionRequest(request)` export on the endpoint.
@@ -540,7 +540,7 @@ server functions — same endpoint, same compilation — with zero extra plugin
 config: responses for component-returning functions are served as streamed
 HTML that the client applies in place (client state and DOM identity inside
 survive updates), and the plugin's dev middleware and production handler
-handle that automatically. Combined with turnkey SSR
+handle that automatically. Combined with SSR start mode
 ([`start`](#optionsstart) with `ssr: true`) and generated entries, the
 document wiring is emitted too: server components render inline in the
 SSR'd document and are adopted

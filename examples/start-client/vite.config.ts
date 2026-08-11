@@ -1,9 +1,9 @@
 import { defineConfig } from 'vite';
 import solidPlugin from 'vite-plugin-solid';
 
-// Turnkey client mode, zero-config spelling: `start: true` (sugar for
-// `start: {}` — both mean the identical turnkey mode with defaults) opts
-// into the turnkey conventions, and the `ssr` boolean (false/omitted here)
+// Client start mode, zero-config spelling: `start: true` (sugar for
+// `start: {}` — both mean the identical start mode with defaults) opts
+// into the start-mode conventions, and the `ssr` boolean (false/omitted here)
 // makes the app client-rendered. No index.html, no mount file, no server
 // output: src/App.tsx is the app, src/Document.tsx (optional) is the shell.
 // Dev streams the rendered shell for every HTML GET (history-fallback

@@ -4,8 +4,8 @@ import { getFreshPanel, getPanel, incrementCounter } from './data';
 import Row from './Row';
 
 /**
- * Server-components page: a plain content component like any other turnkey
- * app root. `serverFunctions: { components: true }` + turnkey SSR's
+ * Server-components page: a plain content component like any other start-mode
+ * app root. `serverFunctions: { components: true }` + SSR start mode's
  * generated entries emit every bit of wiring (the render plugin, the
  * bootstrap script, the client-side installServerComponents() call) — this
  * file is only app code. The test's frames mode points `start.app` here.
@@ -17,7 +17,7 @@ import Row from './Row';
  * The root is deliberately a fragment with siblings, and the boundary lives
  * under a reactive page conditional: a frame insertable in an array insert
  * position used to be handed raw to insertBefore and crash
- * (dom-expressions#550, fixed in @solidjs/web 2.0.0-beta.26). Keep this
+ * (dom-expressions#550, fixed in @solidjs/web 2.0). Keep this
  * shape — it is the regression coverage, together with the frames test's
  * navigate-away-and-back cycle over `#nav-away` / `#nav-home`.
  */

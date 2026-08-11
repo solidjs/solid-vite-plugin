@@ -1,4 +1,4 @@
-// Turnkey serving for plain Vite apps: `solid({ start: {...} })` (or the
+// Start-mode serving for plain Vite apps: `solid({ start: {...} })` (or the
 // zero-config sugar `start: true`) adds a serving layer with conventional
 // entries so no hand-rolled wiring is needed, and the plugin's `ssr`
 // boolean picks the mode — `ssr: true` server-renders the app per request;
@@ -60,7 +60,7 @@ import {
 import { joinBase, sendWebResponse, webRequestFromNode } from '../http.js';
 
 /**
- * Options for the main plugin's turnkey `start` option (`start: true` is
+ * Options for the main plugin's `start` option (`start: true` is
  * sugar for the empty bag). One bag serves both modes — the plugin's `ssr`
  * boolean picks between them, so flipping a project between
  * client-rendered and server-rendered is toggling that boolean, never
@@ -182,14 +182,14 @@ export interface StartOptions {
    *
    * `true` requires the conventional file (error when missing); a string
    * is an explicit schema path; `false` disables even the probing.
-   * Env is a turnkey feature: without `start` there is no env layer.
+   * Env is a start-mode feature: without `start` there is no env layer.
    *
    * @default undefined (probe env.ts / env.js; off when absent)
    */
   env?: boolean | string;
   /**
    * Let a host integration own the server environment — build wiring and
-   * HTTP serving alike. The plugin skips its turnkey server-build config and
+   * HTTP serving alike. The plugin skips its start-mode server-build config and
    * stands its dev middlewares down (SSR serving and the server-function
    * endpoint); the generated `virtual:solid-ssr-handler` self-serves
    * instead, inlining dev styles through a virtual module and composing the
@@ -213,10 +213,10 @@ export interface StartOptions {
   external?: boolean;
 }
 
-// Server-only turnkey request handler; also the server bundle's entry so a
+// Server-only start-mode request handler; also the server bundle's entry so a
 // production server is one import away from `Request -> Response`. Exported
 // for the main plugin to thread into the server-function dev middleware,
-// which dispatches through it when turnkey SSR is active (one middleware
+// which dispatches through it when SSR start mode is active (one middleware
 // chain and one request event across both dispatch paths).
 export const SSR_HANDLER_ID = 'virtual:solid-ssr-handler';
 const HANDLER_ID = SSR_HANDLER_ID;
@@ -313,7 +313,7 @@ function resolveEntries(root: string, options: StartOptions, clientMode: boolean
       : (probe(root, 'src/App', APP_EXTENSIONS) ?? probe(root, 'src/app', APP_EXTENSIONS));
     if (!app) {
       throw new Error(
-        `[vite-plugin-solid] the turnkey \`start\` option needs an app root: add src/App.tsx ` +
+        `[vite-plugin-solid] the \`start\` option needs an app root: add src/App.tsx ` +
           `(or set start.app), or provide a src/entry-client.* entry.`,
       );
     }
@@ -353,7 +353,7 @@ function resolveEntries(root: string, options: StartOptions, clientMode: boolean
     : (probe(root, 'src/App', APP_EXTENSIONS) ?? probe(root, 'src/app', APP_EXTENSIONS));
   if (!app) {
     throw new Error(
-        `[vite-plugin-solid] the turnkey \`start\` option needs an app root: add src/App.tsx ` +
+        `[vite-plugin-solid] the \`start\` option needs an app root: add src/App.tsx ` +
           `(or set start.app), or provide src/entry-server.* and src/entry-client.* entries.`,
     );
   }

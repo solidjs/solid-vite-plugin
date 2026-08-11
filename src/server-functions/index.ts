@@ -63,7 +63,7 @@ export interface ServerFunctionsOptions {
   directive?: string;
   /**
    * Path the server-function transport posts to. Joined with Vite `base`.
-   * Threaded to the turnkey dev middleware, the
+   * Threaded to the built-in dev middleware, the
    * `virtual:solid-server-function-handler` module, and — whenever the
    * resolved path differs from the runtime default (`/_server`) — runtime
    * `configureServerFunctions{Client,Server}` calls appended to compiled
@@ -74,7 +74,7 @@ export interface ServerFunctionsOptions {
    */
   endpoint?: string;
   /**
-   * Whether the turnkey dev middleware owns the server-function endpoint on
+   * Whether the built-in dev middleware owns the server-function endpoint on
    * the Vite dev server. Only meaningful through the main plugin's
    * `serverFunctions` option (the standalone `serverFunctions()` export
    * never installs the middleware).
@@ -132,7 +132,7 @@ export interface ServerFunctionsOptions {
    * server-function endpoint as streamed HTML that the client runtime
    * applies in place of the boundary (instead of decoding it as data).
    *
-   * The plugin's dispatch surfaces — the turnkey dev middleware and the
+   * The plugin's dispatch surfaces — the built-in dev middleware and the
    * `virtual:solid-server-function-handler` module — install the response
    * transform on the server runtime automatically, so this needs no
    * per-request wiring or server code.
@@ -141,7 +141,7 @@ export interface ServerFunctionsOptions {
    * at boot with zero endpoint requests) needs three more pieces: the
    * render must run with the server-component render plugin, the document
    * must carry the bootstrap script, and the client must call
-   * `installServerComponents()` before hydrating. With turnkey SSR (the
+   * `installServerComponents()` before hydrating. With SSR start mode (the
    * main plugin's `start` option with `ssr: true`) and generated entries
    * the plugin emits all three. With authored entries those pieces live in
    * your entry files — import them from `@solidjs/web/frames` (see the
@@ -164,7 +164,7 @@ const DEFAULT_RUNTIME = '@solidjs/web/server-functions';
 // equals it, no configure calls need to be emitted at all.
 const DEFAULT_ENDPOINT = '/_server';
 const STORAGE_SOURCE = '@solidjs/web/storage';
-// Server-only turnkey handler: importing it wires the endpoint in one line
+// Server-only handler: importing it wires the endpoint in one line
 // (registrations via the manifest, request-event scoping, endpoint config).
 const HANDLER_ID = 'virtual:solid-server-function-handler';
 
@@ -295,10 +295,10 @@ function invalidateModules(
 
 /**
  * The second parameter is internal wiring for the main plugin's
- * `serverFunctions` option: the turnkey dev middleware is only installed
+ * `serverFunctions` option: the built-in dev middleware is only installed
  * through that path, so meta-frameworks composing this factory directly
  * (and dispatching to `handleServerFunctionRequest` themselves) never race
- * it for the endpoint. On the turnkey path the public
+ * it for the endpoint. On the main plugin's path the public
  * `options.devMiddleware` (default true) can opt back out of it.
  */
 export function serverFunctions(
@@ -317,7 +317,7 @@ export function serverFunctions(
   const endpointOption = options.endpoint || DEFAULT_ENDPOINT;
   const endpoint = endpointOption.startsWith('/') ? endpointOption : '/' + endpointOption;
   const components = !!options.components;
-  // The middleware only exists on the turnkey path to begin with (see the
+  // The middleware only exists on the main plugin's path to begin with (see the
   // `internal` parameter doc); the public option opts out of it there.
   const installDevMiddleware = !!internal.devMiddleware && options.devMiddleware !== false;
 
@@ -516,7 +516,7 @@ export function serverFunctions(
             return next();
           }
           // When the stripped form matched, restore the base for dispatch:
-          // the turnkey handler compares the request pathname against the
+          // the generated handler compares the request pathname against the
           // base-prefixed endpoint, and production handlers only ever see
           // base-prefixed URLs.
           const dispatchUrl =
@@ -535,7 +535,7 @@ export function serverFunctions(
             }
             // Dispatch through a module evaluated in the SSR environment so
             // the handler shares the registry instance with the app modules.
-            // With turnkey SSR active the main plugin threads its handler id
+            // With SSR start mode active the main plugin threads its handler id
             // in, and dispatch goes through `handleRequest` instead — one
             // middleware chain and one stub-backed request event front the
             // endpoint exactly as they front page SSR.

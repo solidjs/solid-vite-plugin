@@ -42,7 +42,7 @@ it('renders and updates a DOM component under jsdom', async () => {
 
     button.click();
     // Solid 2 schedules updates; give the graph a tick (poll briefly to
-    // stay robust against scheduler changes across betas).
+    // stay robust against scheduler changes across 2.0 releases).
     for (let i = 0; i < 20 && !button.textContent!.includes('count: 1'); i++) {
       await nextTick();
     }
