@@ -247,6 +247,27 @@ function assertSchemaShape(
       );
     }
   }
+  // The reverse guard: Vite itself bakes every prefixed variable into
+  // `import.meta.env` for the browser, so declaring one under `server`
+  // cannot keep it secret — it leaks through Vite's channel with no
+  // diagnostics from this plugin's leak scan (which only watches the
+  // virtual server module's values).
+  for (const key of Object.keys(typed.server ?? {})) {
+    const prefix = envPrefixes.find((p) => key.startsWith(p));
+    if (prefix) {
+      const bare = key.slice(prefix.length);
+      throw new Error(
+        `[vite-plugin-solid] server env var "${key}" in ${envFile} carries the public ` +
+          `env prefix "${prefix}". Vite exposes every "${prefix}"-prefixed variable to ` +
+          `the browser through import.meta.env no matter which side declares it, so a ` +
+          `\`server\` entry cannot keep it secret. ` +
+          (bare
+            ? `Rename it to "${bare}" (in the schema and in your .env/environment), or `
+            : `Rename it without the prefix, or `) +
+          `move it to \`client\` if it is public.`,
+      );
+    }
+  }
   return typed;
 }
 

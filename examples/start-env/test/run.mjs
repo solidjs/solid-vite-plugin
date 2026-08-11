@@ -365,6 +365,12 @@ async function guardsMode() {
 
   out = await build({ ENV_SCHEMA: './env.badprefix.ts' }).catch((e) => e.message);
   record('guards', 'prefix', 'non-VITE_ client key is a config-time error', /must carry the public env prefix/.test(out) && /APP_NAME/.test(out), out.slice(0, 400));
+
+  // The reverse: Vite bakes every VITE_-prefixed var into the browser's
+  // import.meta.env regardless of schema side, so a prefixed SERVER key
+  // is a leak the moment it exists — reject it before anything builds.
+  out = await build({ ENV_SCHEMA: './env.serverprefix.ts' }).catch((e) => e.message);
+  record('guards', 'prefix', 'VITE_-prefixed server key is a config-time error', /cannot keep it secret/.test(out) && /VITE_API_SECRET/.test(out), out.slice(0, 400));
 }
 
 async function prodMode() {
