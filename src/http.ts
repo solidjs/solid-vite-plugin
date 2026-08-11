@@ -56,8 +56,27 @@ export async function sendWebResponse(res: ServerResponse, response: Response): 
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
+      // A response whose client already went away never emits 'drain'
+      // (writes are no-ops), so a backpressure wait must also settle on
+      // 'close'/'error' or an aborted streaming response parks this promise
+      // — and the reader and Response it holds — forever.
+      if (res.destroyed) return;
       if (!res.write(value)) {
-        await new Promise((resolve) => res.once('drain', resolve));
+        const drained = await new Promise<boolean>((resolve) => {
+          const settle = (ok: boolean) => {
+            res.off('drain', onDrain);
+            res.off('close', onGone);
+            res.off('error', onGone);
+            resolve(ok);
+          };
+          const onDrain = () => settle(true);
+          const onGone = () => settle(false);
+          res.once('drain', onDrain);
+          res.once('close', onGone);
+          res.once('error', onGone);
+        });
+        // Client gone mid-stream; the 'close' handler cancels the reader.
+        if (!drained) return;
       }
     }
     res.end();
