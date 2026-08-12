@@ -1,0 +1,52 @@
+{
+  "name": "vite-plugin-solid",
+  "version": "3.0.0-next.27",
+  "description": "Renamed to @solidjs/vite-plugin — this final release re-exports the new package. Please update your dependency.",
+  "type": "module",
+  "files": [
+    "index.mjs",
+    "index.cjs",
+    "index.d.ts",
+    "virtual-solid-manifest.d.ts",
+    "boundary-modules.d.ts"
+  ],
+  "main": "index.cjs",
+  "module": "index.mjs",
+  "types": "index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "import": "./index.mjs",
+      "node": "./index.cjs",
+      "require": "./index.cjs",
+      "default": "./index.cjs"
+    },
+    "./virtual-solid-manifest": {
+      "types": "./virtual-solid-manifest.d.ts"
+    },
+    "./boundary-modules": {
+      "types": "./boundary-modules.d.ts"
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/solidjs/solid-vite-plugin.git"
+  },
+  "keywords": [
+    "vite",
+    "vite plugin",
+    "vitejs",
+    "vitejs plugin",
+    "vite-plugin",
+    "solid"
+  ],
+  "author": "Alexandre Mouton-Brady <amoutonbrady@gmail.com>",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/solidjs/solid-vite-plugin/issues"
+  },
+  "homepage": "https://github.com/solidjs/solid-vite-plugin#readme",
+  "dependencies": {
+    "@solidjs/vite-plugin": "^3.0.0-next.27"
+  }
+}
