@@ -267,7 +267,10 @@ export interface Options {
    *   `dist/client`, server to `dist/server` via the environments/builder
    *   API). The server bundle's entry is `virtual:solid-ssr-handler`, whose
    *   `handleRequest(request)` export maps a web `Request` to a streamed
-   *   `Response` — mount it on any server or adapter in one line.
+   *   `Response`; its default `{ fetch(request) }` export provides the same
+   *   handler in the Fetchable shape used by deployment integrations.
+   *   The normal `ssr` environment exposes it as the `index` service entry
+   *   so provider Vite plugins can supply the runtime and build orchestration.
    * - With `serverFunctions` also enabled, the prod handler serves the
    *   server-function endpoint too (in dev the server-function middleware
    *   already runs first).

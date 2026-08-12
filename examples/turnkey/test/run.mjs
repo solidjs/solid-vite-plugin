@@ -109,7 +109,7 @@
 // (default: all)
 
 import { spawn, execSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import path from 'node:path';
 import { rmSync, existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
@@ -926,6 +926,31 @@ async function runProdMode() {
   // The virtual handler's manifest import must keep the registrations in the
   // SSR bundle even though the render graph also reaches them.
   const serverBundle = readFileSync(path.join(exampleDir, 'dist/server/server.js'), 'utf-8');
+  const builtHandler = await import(
+    pathToFileURL(path.join(exampleDir, 'dist/server/server.js')).href + `?fetchable=${Date.now()}`
+  );
+  record(
+    mode,
+    'build',
+    'server handler exposes a default Fetchable entry',
+    typeof builtHandler.default?.fetch === 'function',
+  );
+  const fetchableResponse = await builtHandler.default.fetch(
+    new Request(origin + '/'),
+    // Fetch hosts commonly pass bindings and execution context after the
+    // request. The wrapper must ignore them rather than forwarding this
+    // object as handleRequest's Solid options bag.
+    { clientEntry: '/provider-argument-must-not-be-forwarded.js' },
+  );
+  const fetchableHtml = await fetchableResponse.text();
+  record(
+    mode,
+    'build',
+    'default Fetchable ignores provider arguments',
+    fetchableResponse.status === 200 &&
+      fetchableHtml.includes('SSR Start Mode') &&
+      !fetchableHtml.includes('provider-argument-must-not-be-forwarded'),
+  );
   record(
     mode,
     'build',
@@ -2842,6 +2867,15 @@ async function runDetectMode() {
       'env',
       'probe ssr environment is non-runnable',
       !isRunnableDevEnvironment(server.environments.ssr),
+    );
+    const ssrInput = server.environments.ssr.config.build.rollupOptions.input;
+    record(
+      mode,
+      'env',
+      'provider environment sees the Fetchable index service entry',
+      !!ssrInput &&
+        typeof ssrInput === 'object' &&
+        ssrInput.index === 'virtual:solid-ssr-handler',
     );
 
     httpServer = http.createServer(server.middlewares);

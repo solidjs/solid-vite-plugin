@@ -200,16 +200,22 @@ With `ssr: true` — **SSR start mode**:
   client — e.g. @cloudflare/vite-plugin — with no hand-written ordering
   plugin; setups without another orchestrator keep Vite's stock
   build-everything behavior, just client-first.
-- **Prod**: the server bundle's entry is `virtual:solid-ssr-handler`, whose
-  `handleRequest(request)` export maps a web-standard `Request` to a
-  streamed `Response` — adapter-agnostic, so any node server / worker /
-  runtime mounts SSR in one line:
+- **Prod**: the server bundle's entry is `virtual:solid-ssr-handler`.
+  Its named `handleRequest(request)` export maps a web-standard `Request`
+  to a streamed `Response`; its default `{ fetch(request) }` export provides
+  the same handler in the Fetchable shape used by Workers, Nitro, Netlify
+  Functions, Bun, and `deno serve`:
 
 ```js
-import { handleRequest } from './dist/server/server.js';
+import app, { handleRequest } from './dist/server/server.js';
 // serve dist/client statically, everything else:
 const response = await handleRequest(request);
+const sameResponse = await app.fetch(request);
 ```
+
+The Fetchable wrapper deliberately accepts only the request. Hosts may pass
+environment or execution-context arguments after it; those are not the
+Solid options accepted by `handleRequest`'s second parameter.
 
 - **Preview**: `vite build && vite preview` runs the production artifact
   with no server file — Vite's preview statics serve `dist/client`, and
@@ -402,31 +408,23 @@ server-function middleware pre-loads the referenced module, then dispatches
 through the same handler), so one middleware chain and one request event
 front pages and server functions identically.
 
-**`external: true`** hands the server side of start mode to a host integration
-that owns the server environment — build wiring and HTTP serving alike. The
-plugin skips its start-mode server-build config (no `dist/server` output or
-builder flag; the host's orchestrator drives the server build) and stands
-its dev middlewares down (SSR serving and the server-function endpoint
-both). Start mode still provides everything the host loads through its own
-environment: the generated entries, the client manifest, and the
-`virtual:solid-ssr-handler` request handler — which self-serves in dev,
-inlining the entry graph's CSS through a virtual dev-styles module (HMR
-included) and composing the server-function endpoint, so
-`handleRequest(request)` is the whole contract in dev exactly as in
-production.
+The normal `ssr` environment exposes the default Fetchable handler as its
+`index` service entry in development and production. Provider Vite plugins
+can adopt that environment directly: they supply its runtime and build
+orchestration while Solid continues to supply the application entry,
+manifest, middleware, and server-function dispatch. When a provider replaces
+the development environment with a non-runnable one, Solid detects that
+ownership and stands its HTTP middlewares down automatically.
 
-Three switches cover host-owned setups, broadest first:
+Two explicit switches remain for custom host setups:
 
-1. **Nothing — capability detection.** When a provider (e.g.
-   @cloudflare/vite-plugin) replaces the dev server's `ssr` environment with
-   its own non-runnable one, the plugin detects that and stands the dev
-   middlewares down automatically; the handler self-serves as above. Zero
-   config.
-2. **`start.external: true`** — the explicit whole-server switch: everything
-   detection does, plus skipping the server-build wiring. Also needed when
-   the provider owns a _differently named_ environment (not `ssr`), which
-   detection can't see.
-3. **[`serverFunctions.devMiddleware: false`](#optionsserverfunctions)** —
+1. **`start.external: true`** — hands the whole server side to a host that
+   does not adopt Solid's normal `ssr` environment. Solid skips its
+   server-build wiring and stands its development middlewares down, while
+   continuing to provide the generated entries, client manifest, and
+   `virtual:solid-ssr-handler`. This is mainly for differently named or
+   independently configured environments.
+2. **[`serverFunctions.devMiddleware: false`](#optionsserverfunctions)** —
    the narrow, endpoint-only switch: keeps start mode's server build and SSR
    serving, hands only server-function dispatch in dev to the host. For
    setups without `start`, or when only the endpoint should move.

@@ -14,9 +14,10 @@
 // - Prod: the plugin configures a full-app build (client + server bundles
 //   via the Vite 6+ environments/builder API — a single `vite build` builds
 //   both) whose server entry is `virtual:solid-ssr-handler`: an
-//   adapter-agnostic `handleRequest(Request) => Promise<Response>` that
-//   scopes each request with `provideRequestEvent`, streams the render, and
-//   resolves hashed client assets through `virtual:solid-manifest`.
+//   adapter-agnostic named `handleRequest(Request) => Promise<Response>` plus
+//   a default Fetchable `{ fetch(request) }` export. Both scope each request
+//   with `provideRequestEvent`, stream the render, and resolve hashed client
+//   assets through `virtual:solid-manifest`.
 // - Entries are conventional with escape hatches: `src/entry-server.*` /
 //   `src/entry-client.*` are used when present (or set explicitly); when
 //   absent, default entries are generated from a single root component
@@ -193,14 +194,16 @@ export interface StartOptions {
    * stands its dev middlewares down (SSR serving and the server-function
    * endpoint); the generated `virtual:solid-ssr-handler` self-serves
    * instead, inlining dev styles through a virtual module and composing the
-   * server-function endpoint, so `handleRequest(request)` is the whole
-   * contract in dev exactly as in production. Generated entries and the
-   * client manifest are still provided.
+   * server-function endpoint. Its named `handleRequest(request)` and default
+   * Fetchable exports provide the same contract in dev and production.
+   * Generated entries and the client manifest are still provided.
    *
    * Often unnecessary: a provider-owned (non-runnable) `ssr` dev environment
-   * is detected automatically and the middlewares stand down on their own.
-   * Set this when the host also owns the server build, or when its
-   * environment uses a different name so detection can't see it. To hand
+   * is detected automatically and the middlewares stand down on their own;
+   * the normal `ssr` environment also exposes the handler as an `index`
+   * service entry for provider build orchestrators. Set this only when the
+   * host does not adopt that environment — for example, when it uses a
+   * different name or independently configures the server build. To hand
    * over only the server-function endpoint, use
    * `serverFunctions.devMiddleware: false` instead.
    *
@@ -863,6 +866,15 @@ export function startServe(
       // createSSRResponse committed and pass through untouched.
       `  return commitEventResponse(response, event);`,
       `}`,
+      ``,
+      `export default {`,
+      `  fetch(request) {`,
+      // Hosts may pass environment/context arguments after the request.
+      // Do not alias fetch directly to handleRequest: its second argument is
+      // the Solid handler options bag, not a provider binding object.
+      `    return handleRequest(request);`,
+      `  },`,
+      `};`,
     );
 
     return lines.join('\n');
@@ -952,9 +964,16 @@ export function startServe(
                       },
                     },
                     ssr: {
+                      consumer: 'server',
                       build: {
                         outDir: 'dist/server',
-                        rollupOptions: { input: { server: HANDLER_ID } },
+                        rollupOptions: {
+                          // `index` is the Vite service convention consumed
+                          // by provider orchestrators such as Nitro. Keep the
+                          // standalone artifact's established filename.
+                          input: { index: HANDLER_ID },
+                          output: { entryFileNames: 'server.js' },
+                        },
                       },
                     },
                   },
@@ -965,6 +984,24 @@ export function startServe(
                   ...(env.isSsrBuild ? {} : { builder: {} }),
                 }
             : {
+                ...(!clientMode && !externalServer
+                  ? {
+                      environments: {
+                        ssr: {
+                          consumer: 'server' as const,
+                          build: {
+                            outDir: 'dist/server',
+                            rollupOptions: {
+                              // Expose the same service entry during serve so
+                              // provider runtimes can discover and own it.
+                              input: { index: HANDLER_ID },
+                              output: { entryFileNames: 'server.js' },
+                            },
+                          },
+                        },
+                      },
+                    }
+                  : {}),
                 optimizeDeps: { entries: scanEntries },
               }),
         };

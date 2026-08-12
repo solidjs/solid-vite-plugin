@@ -43,4 +43,10 @@ declare module "virtual:solid-ssr-handler" {
       serverFunctions?: Record<string, unknown>;
     },
   ): Promise<Response>;
+
+  /** Fetchable entry for runtimes and deployment integrations that use the web-standard convention. */
+  const handler: {
+    fetch(request: Request): Promise<Response>;
+  };
+  export default handler;
 }
