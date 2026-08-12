@@ -31,6 +31,7 @@
     "drop-vite-lt-6",
     "empty-dragons-grow",
     "external-dev-styles",
+    "fetchable-start-handler",
     "fix-runnable-environment-check",
     "fix-ssr-stream-abort-crash",
     "handler-edge-commit-fold",
@@ -65,6 +66,7 @@
     "turnkey-ssr",
     "turnkey-start-option",
     "virtual-manifest-types-subpath",
+    "vitest-browser-mode-no-jsdom-default",
     "vitest-client-posture",
     "vitest-server-posture-opt-out"
   ]
