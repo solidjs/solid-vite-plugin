@@ -8,17 +8,17 @@ allowBuilds:
   msw: true
 
 catalog:
-  solid-js: "2.0.0-beta.32"
-  "@solidjs/web": "2.0.0-beta.32"
+  solid-js: "^2.0.0-rc.0"
+  "@solidjs/web": "^2.0.0-rc.0"
 
 ignoredBuiltDependencies:
   - cypress
 
 minimumReleaseAgeExclude:
-  - '@solidjs/signals@2.0.0-beta.30 || 2.0.0-beta.31 || 2.0.0-beta.32'
-  - '@solidjs/web@2.0.0-beta.30 || 2.0.0-beta.31 || 2.0.0-beta.32'
-  - babel-preset-solid@2.0.0-beta.30 || 2.0.0-beta.31 || 2.0.0-beta.32
-  - solid-js@2.0.0-beta.30 || 2.0.0-beta.31 || 2.0.0-beta.32
+  - '@solidjs/signals@2.0.0-beta.30 || 2.0.0-beta.31 || 2.0.0-beta.32 || 2.0.0-rc.0'
+  - '@solidjs/web@2.0.0-beta.30 || 2.0.0-beta.31 || 2.0.0-beta.32 || 2.0.0-rc.0'
+  - babel-preset-solid@2.0.0-beta.30 || 2.0.0-beta.31 || 2.0.0-beta.32 || 2.0.0-rc.0
+  - solid-js@2.0.0-beta.30 || 2.0.0-beta.31 || 2.0.0-beta.32 || 2.0.0-rc.0
   - '@dom-expressions/babel-plugin-jsx@0.50.0-next.35 || 0.50.0-next.37 || 0.50.0-next.40'
   - '@dom-expressions/compiler-darwin-arm64@0.50.0-next.35 || 0.50.0-next.37 || 0.50.0-next.40'
   - '@dom-expressions/compiler-darwin-x64@0.50.0-next.35 || 0.50.0-next.37 || 0.50.0-next.40'
