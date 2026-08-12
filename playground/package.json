@@ -11,7 +11,7 @@
     "@babel/core": "^7.18.6",
     "@babel/plugin-syntax-top-level-await": "^7.14.5",
     "vite": "7.0.6",
-    "vite-plugin-solid": "link:.."
+    "@solidjs/vite-plugin": "link:.."
   },
   "dependencies": {
     "@solidjs/meta": "0.30.0-next.0",

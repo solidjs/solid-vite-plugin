@@ -505,7 +505,7 @@ const modes = requested ? [requested] : ['dev', 'guards', 'prod', 'client'];
 // default (probe) includes it under start mode; without `start` there is no
 // env layer at all.
 {
-  const { default: solid } = await import('vite-plugin-solid');
+  const { default: solid } = await import('@solidjs/vite-plugin');
   const names = (opts) => solid(opts).map((p) => p.name);
   record(
     'config',

@@ -4,7 +4,7 @@ import { type Plugin } from 'vite';
 // vitest/config's defineConfig passes straight through to Vite and types the
 // `test` block the VITEST_PROJECTS knob adds.
 import { defineConfig } from 'vitest/config';
-import solidPlugin from 'vite-plugin-solid';
+import solidPlugin from '@solidjs/vite-plugin';
 
 // Start-mode kitchen sink: `start: {}` + `ssr: true` adds the serving layer on
 // top of the SSR transforms, and `serverFunctions` composes with it. No

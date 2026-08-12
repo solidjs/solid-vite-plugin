@@ -139,7 +139,7 @@ async function fetchAssets(key) {
     response = await fetch(url);
   } catch (error) {
     console.error(
-      '[vite-plugin-solid] Dev manifest bridge request failed for module key "' + key +
+      '[@solidjs/vite-plugin] Dev manifest bridge request failed for module key "' + key +
         '" (' + url.href + '): ' + ((error && error.message) || error) +
         ". SSR will render without this module's client assets, so its hydration preload entry will be missing.",
     );
@@ -150,7 +150,7 @@ async function fetchAssets(key) {
     // SSR'd hydration asset map and hydration fails much later with a
     // cryptic client-side error — report the miss where it happens.
     console.error(
-      '[vite-plugin-solid] Dev manifest bridge request failed with status ' + response.status +
+      '[@solidjs/vite-plugin] Dev manifest bridge request failed with status ' + response.status +
         ' for module key "' + key + '" (' + url.href +
         "). SSR will render without this module's client assets, so its hydration preload entry will be missing.",
     );
@@ -191,7 +191,7 @@ async function loadNativeCompiler() {
     nativeCompilerPromise = undefined;
     const reason = error instanceof Error ? `\n\nCause: ${error.message}` : '';
     throw new Error(
-      'vite-plugin-solid: failed to load @dom-expressions/compiler, which is required ' +
+      '@solidjs/vite-plugin: failed to load @dom-expressions/compiler, which is required ' +
         'in every mode (it drives the lazy, refresh, and server-function transforms; ' +
         'compiler: "babel" only switches the JSX transform). Your platform should get ' +
         'a prebuilt native binary or the @dom-expressions/compiler-wasm32-wasi fallback ' +
@@ -201,7 +201,7 @@ async function loadNativeCompiler() {
   }
 }
 
-/** Configuration options for vite-plugin-solid. */
+/** Configuration options for @solidjs/vite-plugin. */
 export interface Options {
   /**
    * A [picomatch](https://github.com/micromatch/picomatch) pattern, or array of patterns, which specifies the files
@@ -318,7 +318,7 @@ export interface Options {
   hot?: boolean;
   /**
    * This registers additional extensions that should be processed by
-   * vite-plugin-solid.
+   * @solidjs/vite-plugin.
    *
    * @default undefined
    */
@@ -539,7 +539,7 @@ function normalizeEmittedLazyEntries(manifest: Record<string, any>) {
 export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
   if (typeof options.ssr === 'object') {
     throw new Error(
-      '[vite-plugin-solid] `ssr` now only accepts a boolean ("is the app server-rendered"); ' +
+      '[@solidjs/vite-plugin] `ssr` now only accepts a boolean ("is the app server-rendered"); ' +
         'move start-mode options to `start: {}` and set `ssr: true`. Example: ' +
         '`solid({ ssr: { document: … } })` becomes `solid({ start: { document: … }, ssr: true })`.',
     );
@@ -840,7 +840,7 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
       filter = createFilter(options.include, options.exclude, { resolve: projectRoot });
       if (serverComponents && !(options.start && options.ssr)) {
         config.logger.warn(
-          '[vite-plugin-solid] serverFunctions.components is set without SSR start mode (the `start` ' +
+          '[@solidjs/vite-plugin] serverFunctions.components is set without SSR start mode (the `start` ' +
             'option with `ssr: true`), so the plugin only installs the endpoint response transform ' +
             '(server functions returning components stream correctly). The document wiring — render ' +
             'plugin, bootstrap script, and the client-side installServerComponents() call — is ' +

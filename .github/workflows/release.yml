@@ -63,6 +63,16 @@ jobs:
         working-directory: examples/start-env
         run: pnpm run test
 
+  # Publishes @solidjs/vite-plugin (the workspace root — the only public
+  # workspace package; examples are private and legacy-stub/ is outside the
+  # workspace, so nothing else can be published from here).
+  #
+  # npm trusted publishing (OIDC) can only be registered on an EXISTING
+  # package, so the FIRST publish under the @solidjs/vite-plugin name must be
+  # a manual `npm publish` by the maintainer, followed by registering this
+  # repo/workflow as the trusted publisher on npmjs.com. Until that npm-side
+  # setup is done, the publish step below fails with an npm auth/404 error —
+  # tests and the Version Packages PR flow still work.
   release:
     name: Release
     needs: test

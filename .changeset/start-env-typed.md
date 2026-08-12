@@ -1,5 +1,5 @@
 ---
-'vite-plugin-solid': patch
+'@solidjs/vite-plugin': patch
 ---
 
 Turnkey typed env (`start.env`): first-party typed, validated environment

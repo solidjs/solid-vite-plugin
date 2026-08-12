@@ -1,5 +1,5 @@
 ---
-"vite-plugin-solid": patch
+"@solidjs/vite-plugin": patch
 ---
 
 Follow the native compiler package rename: `@dom-expressions/jsx-compiler` is

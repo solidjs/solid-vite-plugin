@@ -1,8 +1,13 @@
 <p>
-  <img width="100%" src="https://raw.githubusercontent.com/solidjs/vite-plugin-solid/master/banner.png" alt="Solid Vite Plugin">
+  <img width="100%" src="https://raw.githubusercontent.com/solidjs/solid-vite-plugin/master/banner.png" alt="Solid Vite Plugin">
 </p>
 
-# ⚡ vite-plugin-solid
+# ⚡ @solidjs/vite-plugin
+
+> **Renamed from `vite-plugin-solid`.** This package was previously published as
+> [`vite-plugin-solid`](https://www.npmjs.com/package/vite-plugin-solid). To migrate,
+> swap the dependency and the import — `npm install -D @solidjs/vite-plugin` and
+> `import solid from '@solidjs/vite-plugin'` — nothing else changes.
 
 A simple integration to run [solid-js](https://github.com/solidjs/solid) with [vite](https://github.com/vitejs/vite)
 
@@ -44,7 +49,7 @@ $ npm run build # builds to /dist
 
 ## Installation
 
-Install `vite`, `vite-plugin-solid` as dev dependencies.
+Install `vite`, `@solidjs/vite-plugin` as dev dependencies.
 
 Install `solid-js` as dependency.
 
@@ -52,15 +57,15 @@ You have to install those so that you are in control to which solid version is u
 
 ```bash
 # with npm
-$ npm install -D vite vite-plugin-solid
+$ npm install -D vite @solidjs/vite-plugin
 $ npm install solid-js
 
 # with pnpm
-$ pnpm add -D vite vite-plugin-solid
+$ pnpm add -D vite @solidjs/vite-plugin
 $ pnpm add solid-js
 
 # with yarn
-$ yarn add -D vite vite-plugin-solid
+$ yarn add -D vite @solidjs/vite-plugin
 $ yarn add solid-js
 ```
 
@@ -69,7 +74,7 @@ Add it as plugin to `vite.config.js`
 ```js
 // vite.config.ts
 import { defineConfig } from 'vite';
-import solidPlugin from 'vite-plugin-solid';
+import solidPlugin from '@solidjs/vite-plugin';
 
 export default defineConfig({
   plugins: [solidPlugin()],
@@ -157,7 +162,7 @@ zero-config spelling; add `ssr: true` for streaming SSR:
 ```ts
 // vite.config.ts
 import { defineConfig } from 'vite';
-import solidPlugin from 'vite-plugin-solid';
+import solidPlugin from '@solidjs/vite-plugin';
 
 export default defineConfig({
   plugins: [solidPlugin({ start: true, ssr: true })],
@@ -567,7 +572,7 @@ there.
 
 ```ts
 import { defineConfig } from 'vite';
-import solidPlugin from 'vite-plugin-solid';
+import solidPlugin from '@solidjs/vite-plugin';
 
 export default defineConfig({
   plugins: [solidPlugin({ compiler: 'babel' })],
@@ -628,12 +633,12 @@ For TypeScript, the ambient declarations ship with the plugin — add to an
 `env.d.ts`:
 
 ```ts
-/// <reference types="vite-plugin-solid/boundary-modules" />
+/// <reference types="@solidjs/vite-plugin/boundary-modules" />
 ```
 
 Note: these markers shadow React's `server-only` / `client-only` npm
 packages if they happen to be installed; the semantics are the same, and the
-plugin's errors are prefixed `[vite-plugin-solid]`.
+plugin's errors are prefixed `[@solidjs/vite-plugin]`.
 
 ## Note on HMR
 
@@ -672,7 +677,7 @@ if (import.meta.hot) {
 
 The master branch now target vite 2.
 
-The main breaking change from previous version is that the package has been renamed from `@amoutonbrady/vite-plugin-solid` to `vite-plugin-solid`.
+The main breaking change from previous version is that the package has been renamed from `@amoutonbrady/vite-plugin-solid` to `vite-plugin-solid` (since renamed again to `@solidjs/vite-plugin` — see the note at the top).
 
 For other breaking changes, check [the migration guide of vite](https://vitejs.dev/guide/migration.html).
 

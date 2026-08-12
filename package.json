@@ -1,5 +1,5 @@
 {
-  "name": "vite-plugin-solid",
+  "name": "@solidjs/vite-plugin",
   "version": "3.0.0-next.26",
   "description": "solid-js integration plugin for vite 6/7/8",
   "type": "module",
@@ -36,7 +36,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/solidjs/vite-plugin-solid.git"
+    "url": "git+https://github.com/solidjs/solid-vite-plugin.git"
   },
   "keywords": [
     "vite",
@@ -48,10 +48,13 @@
   ],
   "author": "Alexandre Mouton-Brady <amoutonbrady@gmail.com>",
   "license": "MIT",
-  "bugs": {
-    "url": "https://github.com/solidjs/vite-plugin-solid/issues"
+  "publishConfig": {
+    "access": "public"
   },
-  "homepage": "https://github.com/solidjs/vite-plugin-solid#readme",
+  "bugs": {
+    "url": "https://github.com/solidjs/solid-vite-plugin/issues"
+  },
+  "homepage": "https://github.com/solidjs/solid-vite-plugin#readme",
   "dependencies": {
     "@ampproject/remapping": "^2.3.0",
     "@babel/core": "^7.23.3",

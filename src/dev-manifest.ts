@@ -50,7 +50,7 @@ export type DevAssetResolver = {
 // `Symbol.for`-keyed registry mapping project roots to resolvers; isolated
 // runners (nitro's dev worker, workerd) won't find it and instead fall back
 // to fetching the HTTP bridge endpoint below.
-export const DEV_MANIFEST_REGISTRY_KEY = 'vite-plugin-solid:dev-manifest';
+export const DEV_MANIFEST_REGISTRY_KEY = '@solidjs/vite-plugin:dev-manifest';
 
 export function registerDevAssetResolver(root: string, resolver: DevAssetResolver): void {
   const key = Symbol.for(DEV_MANIFEST_REGISTRY_KEY);
@@ -63,13 +63,13 @@ export function registerDevAssetResolver(root: string, resolver: DevAssetResolve
  * modules outside the Vite process (nitro's dev worker, workerd via
  * @cloudflare/vite-plugin) can't see the `globalThis` registry, so the dev
  * server itself serves asset resolution: `GET
- * /@vite-plugin-solid/dev-manifest?key=<module key>` answers with the
+ * /@solidjs/vite-plugin/dev-manifest?key=<module key>` answers with the
  * resolver's `ResolvedAssets` JSON (`null` when the key can't be resolved).
  * The dev flavor of `virtual:solid-manifest` falls back to fetching it when
  * the registry has no entry for the root — in-process consumers hit the
  * registry and never touch HTTP.
  */
-export const DEV_MANIFEST_ENDPOINT = '/@vite-plugin-solid/dev-manifest';
+export const DEV_MANIFEST_ENDPOINT = '/@solidjs/vite-plugin/dev-manifest';
 
 export function installDevManifestBridge(server: ViteDevServer): void {
   // configureServer middlewares run ahead of Vite's internals, so `req.url`
@@ -96,7 +96,7 @@ export function installDevManifestBridge(server: ViteDevServer): void {
         // hydration asset map and hydration fails much later with a cryptic
         // client-side error — report the miss where it happens.
         console.error(
-          `[vite-plugin-solid] The dev manifest registry has no resolver for root "${server.config.root}" ` +
+          `[@solidjs/vite-plugin] The dev manifest registry has no resolver for root "${server.config.root}" ` +
             `(requested asset key "${key}"). The module's client assets cannot be resolved and hydration ` +
             'will fail for it. Typical causes: the dev server was not restarted after dependency changes, ' +
             'or the install is stale.',
@@ -105,7 +105,7 @@ export function installDevManifestBridge(server: ViteDevServer): void {
       const assets = resolver ? await resolver.resolve(key) : null;
       if (resolver && assets == null) {
         console.error(
-          `[vite-plugin-solid] Dev manifest resolver returned no assets for key "${key}" (root "${server.config.root}"). ` +
+          `[@solidjs/vite-plugin] Dev manifest resolver returned no assets for key "${key}" (root "${server.config.root}"). ` +
             "The module's hydration preload entry will be missing.",
         );
       }

@@ -1,5 +1,5 @@
 ---
-'vite-plugin-solid': patch
+'@solidjs/vite-plugin': patch
 ---
 
 Three extension points for composing the plugin with host environments

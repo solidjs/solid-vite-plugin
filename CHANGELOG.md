@@ -1,5 +1,10 @@
 # Changelog
 
+> **Package renamed.** Every version below this note was published to npm as
+> [`vite-plugin-solid`](https://www.npmjs.com/package/vite-plugin-solid); the
+> package is [`@solidjs/vite-plugin`](https://www.npmjs.com/package/@solidjs/vite-plugin)
+> from 3.0.0-next.27 onward.
+
 ## 3.0.0-next.26
 
 ### Patch Changes

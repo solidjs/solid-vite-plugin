@@ -1,5 +1,5 @@
 ---
-'vite-plugin-solid': patch
+'@solidjs/vite-plugin': patch
 ---
 
 Let provider-owned SSR environments serve turnkey development requests without

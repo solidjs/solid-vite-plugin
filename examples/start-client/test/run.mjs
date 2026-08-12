@@ -429,7 +429,7 @@ const modes = requested ? [requested] : ['dev', 'prod', 'flip'];
 // on the boolean form): both spellings must construct the identical plugin
 // set, and `start: false` must mean off exactly like omission.
 {
-  const { default: solid } = await import('vite-plugin-solid');
+  const { default: solid } = await import('@solidjs/vite-plugin');
   const names = (opts) => solid(opts).map((p) => p.name).join(',');
   record(
     'config',

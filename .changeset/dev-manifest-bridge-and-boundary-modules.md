@@ -1,5 +1,5 @@
 ---
-'vite-plugin-solid': patch
+'@solidjs/vite-plugin': patch
 ---
 
 Two pieces hoisted from SolidStart so any host gets them plugin-side:
@@ -10,7 +10,7 @@ Two pieces hoisted from SolidStart so any host gets them plugin-side:
   isolated module runner (nitro's dev worker, workerd via
   @cloudflare/vite-plugin) can't see it, which broke lazy-route CSS and
   hydration preloads in dev. With `ssr` enabled the dev server now serves
-  `GET /@vite-plugin-solid/dev-manifest?key=<module key>` (ResolvedAssets
+  `GET /@solidjs/vite-plugin/dev-manifest?key=<module key>` (ResolvedAssets
   JSON, `null` for unresolvable keys), and the dev flavor of
   `virtual:solid-manifest` transparently falls back to fetching it when the
   registry has no entry for the root — the endpoint URL is baked in at
@@ -26,6 +26,6 @@ Two pieces hoisted from SolidStart so any host gets them plugin-side:
   build with an error naming the importer (and vice versa for
   `client-only`); the allowed environment resolves the marker to an empty
   module. Ambient type declarations ship at
-  `vite-plugin-solid/boundary-modules`. The bare specifiers are claimed
+  `@solidjs/vite-plugin/boundary-modules`. The bare specifiers are claimed
   even when React's same-named npm packages are installed; the errors are
-  prefixed `[vite-plugin-solid]`.
+  prefixed `[@solidjs/vite-plugin]`.

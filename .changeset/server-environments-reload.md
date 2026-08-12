@@ -1,5 +1,5 @@
 ---
-'vite-plugin-solid': patch
+'@solidjs/vite-plugin': patch
 ---
 
 Send non-client server environments their own full-reload signal during hot

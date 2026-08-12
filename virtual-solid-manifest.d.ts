@@ -1,5 +1,5 @@
 declare module "virtual:solid-manifest" {
-  import type { ViteManifest } from "vite-plugin-solid";
+  import type { ViteManifest } from "@solidjs/vite-plugin";
   const manifest: ViteManifest;
   export default manifest;
 }

@@ -16,7 +16,7 @@
     "@vitest/browser": "^3.0.7",
     "playwright": "^1.50.1",
     "vite": "^6.2.0",
-    "vite-plugin-solid": "workspace:*",
+    "@solidjs/vite-plugin": "workspace:*",
     "vitest": "^3.0.7"
   },
   "dependencies": {

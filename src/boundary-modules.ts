@@ -1,6 +1,6 @@
 import type { Plugin } from 'vite';
 
-const VIRTUAL_ID = '\0vite-plugin-solid:boundary-modules';
+const VIRTUAL_ID = '\0@solidjs/vite-plugin:boundary-modules';
 
 /**
  * `server-only` and `client-only` marker modules: importing `server-only`
@@ -38,7 +38,7 @@ export function boundaryModules(): Plugin {
       if (id === 'server-only') {
         if (!options?.ssr && !scan)
           this.error(
-            `[vite-plugin-solid] Attempt to import 'server-only' in a client module: ${importer}. ` +
+            `[@solidjs/vite-plugin] Attempt to import 'server-only' in a client module: ${importer}. ` +
               `Code that uses this module must run only on the server — make sure it is only ` +
               `imported by server code (e.g. a server entry, a "use server" module, or code ` +
               `reached exclusively from them).`,
@@ -46,7 +46,7 @@ export function boundaryModules(): Plugin {
       } else if (id === 'client-only') {
         if (options?.ssr && !scan)
           this.error(
-            `[vite-plugin-solid] Attempt to import 'client-only' in a server module: ${importer}. ` +
+            `[@solidjs/vite-plugin] Attempt to import 'client-only' in a server module: ${importer}. ` +
               `Code that uses this module must run only in the browser — make sure it is only ` +
               `imported by client code (e.g. behind a client-only lazy boundary).`,
           );

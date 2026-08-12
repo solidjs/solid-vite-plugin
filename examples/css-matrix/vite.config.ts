@@ -1,5 +1,5 @@
 import { defineConfig, type Plugin } from 'vite';
-import solidPlugin from 'vite-plugin-solid';
+import solidPlugin from '@solidjs/vite-plugin';
 
 // Virtual CSS modules (CSS with no backing file, e.g. generated styles).
 // Handles query suffixes (?direct, ?inline, ?url) the way real plugins must:

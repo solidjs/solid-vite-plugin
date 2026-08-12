@@ -11,7 +11,7 @@
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { build, createServer } from 'vite';
-import solidPlugin from 'vite-plugin-solid';
+import solidPlugin from '@solidjs/vite-plugin';
 
 const exampleDir = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const fixture = (name) => path.join(exampleDir, 'test/boundary-fixtures', name);
@@ -52,7 +52,7 @@ async function runBuild({ entry, ssr }) {
   record(
     'failure is the plugin error naming the importer',
     !client.ok &&
-      client.message.includes('[vite-plugin-solid]') &&
+      client.message.includes('[@solidjs/vite-plugin]') &&
       client.message.includes("'server-only'") &&
       client.message.includes('server-only-import.ts'),
     client.message,
@@ -72,7 +72,7 @@ async function runBuild({ entry, ssr }) {
   record(
     'failure is the plugin error naming the importer',
     !server.ok &&
-      server.message.includes('[vite-plugin-solid]') &&
+      server.message.includes('[@solidjs/vite-plugin]') &&
       server.message.includes("'client-only'") &&
       server.message.includes('client-only-import.ts'),
     server.message,
@@ -114,7 +114,7 @@ async function runBuild({ entry, ssr }) {
     record(
       "dev client transform of a 'server-only' importer errors",
       !!devError &&
-        String(devError.message).includes('[vite-plugin-solid]') &&
+        String(devError.message).includes('[@solidjs/vite-plugin]') &&
         String(devError.message).includes("'server-only'"),
       devError ? String(devError.message) : 'transform unexpectedly succeeded',
     );

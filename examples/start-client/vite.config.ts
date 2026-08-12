@@ -1,5 +1,5 @@
 import { defineConfig } from 'vite';
-import solidPlugin from 'vite-plugin-solid';
+import solidPlugin from '@solidjs/vite-plugin';
 
 // Client start mode, zero-config spelling: `start: true` (sugar for
 // `start: {}` — both mean the identical start mode with defaults) opts

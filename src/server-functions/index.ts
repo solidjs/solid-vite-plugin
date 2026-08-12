@@ -572,7 +572,7 @@ export function serverFunctions(
             : path.resolve(root, options.configure);
           if (!existsSync(absolute)) {
             throw new Error(
-              `[vite-plugin-solid] serverFunctions.configure does not exist: ${options.configure}`,
+              `[@solidjs/vite-plugin] serverFunctions.configure does not exist: ${options.configure}`,
             );
           }
           configureModulePath = absolute;

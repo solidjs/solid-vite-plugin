@@ -1,5 +1,5 @@
 ---
-'vite-plugin-solid': patch
+'@solidjs/vite-plugin': patch
 ---
 
 The native `@dom-expressions/compiler` is now the default JSX compiler (`compiler: 'native'`). `compiler: 'babel'` remains available as an escape hatch that switches ONLY the JSX transform back to `babel-preset-solid` — if native output differs from your expectations, set it and file an issue (the behavioral diff between the modes is the bug report). Platforms without a prebuilt native binary (e.g. StackBlitz WebContainers) automatically use the compiler's wasm32-wasi fallback; the compiler package is required in every mode.

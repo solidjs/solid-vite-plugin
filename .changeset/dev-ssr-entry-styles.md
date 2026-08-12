@@ -1,5 +1,5 @@
 ---
-'vite-plugin-solid': patch
+'@solidjs/vite-plugin': patch
 ---
 
 Turnkey SSR: dev responses now inline the entry graph's CSS, fixing the

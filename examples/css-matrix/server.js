@@ -102,7 +102,7 @@ async function start() {
     // devStylePatch reconciles SSR'd <style data-vite-dev-id> tags with
     // Vite's HMR client (virtual-id rewriting + twin dedupe). Must be
     // inline in <head> before any module script.
-    const { devStylePatch } = await import('vite-plugin-solid');
+    const { devStylePatch } = await import('@solidjs/vite-plugin');
     devHeadInjection =
       `<script>${devStylePatch}</script>` +
       '<script type="module" src="/@vite/client"></script>';

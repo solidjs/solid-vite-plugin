@@ -263,11 +263,11 @@ function probe(root: string, stem: string, extensions: string[]): string | null 
 function normalizeUserPath(root: string, spec: string, option: string): string {
   const absolute = path.isAbsolute(spec) ? spec : path.resolve(root, spec);
   if (!existsSync(absolute)) {
-    throw new Error(`[vite-plugin-solid] start.${option} does not exist: ${spec}`);
+    throw new Error(`[@solidjs/vite-plugin] start.${option} does not exist: ${spec}`);
   }
   const relative = path.relative(root, absolute).split(path.sep).join('/');
   if (relative.startsWith('..')) {
-    throw new Error(`[vite-plugin-solid] start.${option} must live inside the Vite root: ${spec}`);
+    throw new Error(`[@solidjs/vite-plugin] start.${option} must live inside the Vite root: ${spec}`);
   }
   return relative;
 }
@@ -316,7 +316,7 @@ function resolveEntries(root: string, options: StartOptions, clientMode: boolean
       : (probe(root, 'src/App', APP_EXTENSIONS) ?? probe(root, 'src/app', APP_EXTENSIONS));
     if (!app) {
       throw new Error(
-        `[vite-plugin-solid] the \`start\` option needs an app root: add src/App.tsx ` +
+        `[@solidjs/vite-plugin] the \`start\` option needs an app root: add src/App.tsx ` +
           `(or set start.app), or provide a src/entry-client.* entry.`,
       );
     }
@@ -345,7 +345,7 @@ function resolveEntries(root: string, options: StartOptions, clientMode: boolean
     const found = entryServer ? 'entry-server' : 'entry-client';
     const missing = entryServer ? 'entry-client' : 'entry-server';
     throw new Error(
-      `[vite-plugin-solid] found ${found} but no ${missing}; entry files come in pairs. ` +
+      `[@solidjs/vite-plugin] found ${found} but no ${missing}; entry files come in pairs. ` +
         `Provide both (src/entry-server.* and src/entry-client.*, or the start.entryServer / ` +
         `start.entryClient options) or neither (to generate both from start.app).`,
     );
@@ -356,7 +356,7 @@ function resolveEntries(root: string, options: StartOptions, clientMode: boolean
     : (probe(root, 'src/App', APP_EXTENSIONS) ?? probe(root, 'src/app', APP_EXTENSIONS));
   if (!app) {
     throw new Error(
-        `[vite-plugin-solid] the \`start\` option needs an app root: add src/App.tsx ` +
+        `[@solidjs/vite-plugin] the \`start\` option needs an app root: add src/App.tsx ` +
           `(or set start.app), or provide src/entry-server.* and src/entry-client.* entries.`,
     );
   }
@@ -410,7 +410,7 @@ export function startServe(
 
   function requireEntries(): ResolvedEntries {
     // config() always runs before resolveId/load/configureServer.
-    if (!entries) throw new Error('[vite-plugin-solid] SSR entries not resolved yet');
+    if (!entries) throw new Error('[@solidjs/vite-plugin] SSR entries not resolved yet');
     return entries;
   }
 
@@ -505,7 +505,7 @@ export function startServe(
       ...(setupPath
         ? [
             `if (typeof setup !== 'function') {`,
-            `  throw new Error('[vite-plugin-solid] start.setup must default-export a function ' +`,
+            `  throw new Error('[@solidjs/vite-plugin] start.setup must default-export a function ' +`,
             `    '((event, App) => Component | void | Promise<...>): ' + ${JSON.stringify(options.setup)});`,
             `}`,
             ``,
@@ -698,7 +698,7 @@ export function startServe(
         `const middlewares = Array.isArray(middlewareModule) ? middlewareModule : [middlewareModule];`,
         `for (const mw of middlewares) {`,
         `  if (typeof mw !== 'function') {`,
-        `    throw new Error('[vite-plugin-solid] start.middleware must default-export a function or an array of functions: ' + ${JSON.stringify(middlewarePath)});`,
+        `    throw new Error('[@solidjs/vite-plugin] start.middleware must default-export a function or an array of functions: ' + ${JSON.stringify(middlewarePath)});`,
         `  }`,
         `}`,
         `const runMiddleware = composeMiddleware(middlewares);`,
@@ -900,7 +900,7 @@ export function startServe(
           // An authored entry-server owns its render function — the seam the
           // hook needs does not exist there.
           throw new Error(
-            '[vite-plugin-solid] start.setup only applies to generated entries: your ' +
+            '[@solidjs/vite-plugin] start.setup only applies to generated entries: your ' +
               'entry-server owns render() already, so call your setup step there instead ' +
               `(remove start.setup or the authored entry): ${options.setup}`,
           );

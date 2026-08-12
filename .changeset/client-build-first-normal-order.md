@@ -1,5 +1,5 @@
 ---
-'vite-plugin-solid': patch
+'@solidjs/vite-plugin': patch
 ---
 
 Move the `solid:client-build-first` buildApp hook from `pre` to normal

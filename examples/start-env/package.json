@@ -10,7 +10,7 @@
   },
   "devDependencies": {
     "vite": "^7.0.0",
-    "vite-plugin-solid": "workspace:*"
+    "@solidjs/vite-plugin": "workspace:*"
   },
   "dependencies": {
     "solid-js": "catalog:",

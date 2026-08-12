@@ -1,5 +1,5 @@
 ---
-'vite-plugin-solid': minor
+'@solidjs/vite-plugin': minor
 ---
 
 BREAKING: requires Vite 6+. The `vite` peer dependency is now

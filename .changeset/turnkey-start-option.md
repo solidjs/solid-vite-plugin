@@ -1,5 +1,5 @@
 ---
-'vite-plugin-solid': patch
+'@solidjs/vite-plugin': patch
 ---
 
 Breaking (turnkey config reshape): Start is now a mode of the plugin. The

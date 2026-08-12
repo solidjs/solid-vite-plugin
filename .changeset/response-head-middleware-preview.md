@@ -1,5 +1,5 @@
 ---
-'vite-plugin-solid': patch
+'@solidjs/vite-plugin': patch
 ---
 
 Turnkey SSR adopts the runtime's response-head lifecycle, gains fetch-style middleware, and serves `vite preview` (requires `@solidjs/web` > 2.0.0-beta.31 for `createRequestEvent` / `createSSRResponse` / `composeMiddleware`):

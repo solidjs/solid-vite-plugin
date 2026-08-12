@@ -1,5 +1,5 @@
 ---
-'vite-plugin-solid': patch
+'@solidjs/vite-plugin': patch
 ---
 
 Turnkey SSR: the object form of the `ssr` option (even empty: `ssr: {}`)

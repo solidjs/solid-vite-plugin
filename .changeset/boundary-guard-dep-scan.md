@@ -1,5 +1,5 @@
 ---
-'vite-plugin-solid': patch
+'@solidjs/vite-plugin': patch
 ---
 
 Boundary guard no longer aborts Vite's dependency scan. The dep scanner

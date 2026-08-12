@@ -1,4 +1,4 @@
-import solid from 'vite-plugin-solid';
+import solid from '@solidjs/vite-plugin';
 import { defineConfig, type PluginOption } from 'vite';
 
 const logPlugin = (): PluginOption => {

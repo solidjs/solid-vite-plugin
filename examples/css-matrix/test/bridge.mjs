@@ -2,10 +2,10 @@
 // runners (nitro's dev worker, workerd) that can't see the process-global
 // resolver registry. Boots a listening dev server over the css-matrix app
 // and asserts, in one process:
-//   - protocol: GET /@vite-plugin-solid/dev-manifest?key=<module key>
+//   - protocol: GET /@solidjs/vite-plugin/dev-manifest?key=<module key>
 //     answers ResolvedAssets JSON ({ js, css }) with the module's dev URL
 //     and its transitively imported CSS; a missing key is a 400,
-//   - serve-side hardening: a registry miss logs a loud [vite-plugin-solid]
+//   - serve-side hardening: a registry miss logs a loud [@solidjs/vite-plugin]
 //     error and answers null (the runtime's no-assets warning stays the
 //     final catch-all),
 //   - fallback consumer: with the registry entry removed, the dev flavor of
@@ -29,8 +29,8 @@ import path from 'node:path';
 import { createServer } from 'vite';
 
 const exampleDir = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
-const REGISTRY_KEY = Symbol.for('vite-plugin-solid:dev-manifest');
-const ENDPOINT = '/@vite-plugin-solid/dev-manifest';
+const REGISTRY_KEY = Symbol.for('@solidjs/vite-plugin:dev-manifest');
+const ENDPOINT = '/@solidjs/vite-plugin/dev-manifest';
 const LAZY_KEY = 'src/routes/Lazy.tsx';
 // Distinctive rule from src/routes/lazy.css.
 const LAZY_CSS_COLOR = 'rgb(70, 80, 90)';
@@ -108,7 +108,7 @@ try {
     record('registry miss answers null (runtime catch-all preserved)', missBody === null);
     record(
       'registry miss logs a loud plugin error',
-      spy.errors.some((e) => e.includes('[vite-plugin-solid]') && e.includes('no resolver for root')),
+      spy.errors.some((e) => e.includes('[@solidjs/vite-plugin]') && e.includes('no resolver for root')),
       spy.errors.join(' | '),
     );
   }
@@ -173,13 +173,13 @@ try {
     record('non-OK bridge response resolves null', nonOk === null);
     record(
       'non-OK bridge response logs a loud plugin error',
-      spy.errors.some((e) => e.includes('[vite-plugin-solid]') && e.includes('status 500')),
+      spy.errors.some((e) => e.includes('[@solidjs/vite-plugin]') && e.includes('status 500')),
       spy.errors.join(' | '),
     );
     record('bridge network failure resolves null', netFail === null);
     record(
       'bridge network failure logs a loud plugin error',
-      spy.errors.some((e) => e.includes('[vite-plugin-solid]') && e.includes('connection refused')),
+      spy.errors.some((e) => e.includes('[@solidjs/vite-plugin]') && e.includes('connection refused')),
       spy.errors.join(' | '),
     );
     // A failure must stay retryable: caching the null would silently strip

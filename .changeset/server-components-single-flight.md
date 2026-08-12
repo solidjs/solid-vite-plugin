@@ -1,5 +1,5 @@
 ---
-"vite-plugin-solid": patch
+"@solidjs/vite-plugin": patch
 ---
 
 Install `frameTransformFlightResult` alongside `frameTransformResult` in the generated server-function handler module when `serverComponents` is on: mutations whose single-flight payload includes invalidated server-component markup answer with the frame stream as carrier (regions + envelope in one response). Only active when a router registers a `collectFlightData` hook.

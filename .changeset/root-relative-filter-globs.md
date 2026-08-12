@@ -1,5 +1,5 @@
 ---
-'vite-plugin-solid': patch
+'@solidjs/vite-plugin': patch
 ---
 
 Resolve relative filter globs against the Vite root instead of `process.cwd()`.

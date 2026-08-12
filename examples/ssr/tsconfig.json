@@ -9,6 +9,6 @@
     "isolatedModules": true,
     "jsx": "preserve",
     "jsxImportSource": "@solidjs/web",
-    "types": ["vite/client", "vite-plugin-solid/virtual-solid-manifest"]
+    "types": ["vite/client", "@solidjs/vite-plugin/virtual-solid-manifest"]
   }
 }

@@ -1,5 +1,5 @@
 import { defineConfig } from 'vite';
-import solidPlugin from 'vite-plugin-solid';
+import solidPlugin from '@solidjs/vite-plugin';
 
 // Start-mode typed env: `start.env` is left unset here so the suite covers the
 // convention — env.ts at the project root is probed and picked up with zero

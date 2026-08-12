@@ -1,6 +1,6 @@
 // Ambient declarations for the `server-only` / `client-only` boundary
-// markers claimed by vite-plugin-solid. Reference from an env.d.ts:
-//   /// <reference types="vite-plugin-solid/boundary-modules" />
+// markers claimed by @solidjs/vite-plugin. Reference from an env.d.ts:
+//   /// <reference types="@solidjs/vite-plugin/boundary-modules" />
 
 /**
  * Import `server-only` to ensure this module is never bundled for the
