@@ -2,7 +2,7 @@
 '@solidjs/vite-plugin': patch
 ---
 
-Turnkey SSR: dev responses now inline the entry graph's CSS, fixing the
+SSR start mode: dev responses now inline the entry graph's CSS, fixing the
 flash of unstyled content. The dev middleware walks the SSR module graph
 from the root entry (the app + document for generated entries, the authored
 server entry otherwise), compiles each transitively imported stylesheet

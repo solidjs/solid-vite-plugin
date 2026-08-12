@@ -2,10 +2,10 @@
 '@solidjs/vite-plugin': patch
 ---
 
-Breaking (turnkey config reshape): Start is now a mode of the plugin. The
-turnkey options move from the object form of `ssr` to a new `start` option
+Breaking (start-mode config reshape): Start is now a mode of the plugin. The
+start-mode options move from the object form of `ssr` to a new `start` option
 (`start: true` is the zero-config spelling, pure sugar for `start: {}` —
-both mean the identical turnkey mode with defaults), and `ssr` is a boolean
+both mean the identical start mode with defaults), and `ssr` is a boolean
 again with one meaning everywhere — "is the app server-rendered".
 `ssr: { ... }` is now a config-time error with a migration message: write
 `start: { ... }` (or `start: true`) and set `ssr: true`. Options are
@@ -15,7 +15,7 @@ the root component); a bare `ssr: true` without `start` keeps the
 transform-only behavior, and `serverFunctions` stays orthogonal. The
 `SsrOptions` type is renamed to `StartOptions`.
 
-The reason for the split is the new **turnkey client mode**: `start` without
+The reason for the split is the new **client start mode**: `start` without
 `ssr: true` serves the same conventions client-only. Dev streams the
 rendered document shell (without the app — history-fallback semantics,
 entry CSS inlined) and the generated client entry `render()`s the app into

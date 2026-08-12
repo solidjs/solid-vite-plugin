@@ -2,7 +2,7 @@
 '@solidjs/vite-plugin': patch
 ---
 
-Let provider-owned SSR environments serve turnkey development requests without
+Let provider-owned SSR environments serve start-mode development requests without
 calling `ssrLoadModule`. Entry CSS and server functions are transported through
 the generated handler so isolated runtimes retain SSR styles and HMR support.
 

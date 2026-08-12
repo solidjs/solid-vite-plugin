@@ -2,8 +2,8 @@
 '@solidjs/vite-plugin': patch
 ---
 
-Turnkey typed env (`start.env`): first-party typed, validated environment
-variables for both turnkey modes. A schema file at the project root —
+Start-mode typed env (`start.env`): first-party typed, validated environment
+variables for both start modes. A schema file at the project root —
 `env.ts`/`env.js`, probed automatically (explicit via `start.env: './path'`,
 off via `false`) — default-exports `{ server, client }` maps of Standard
 Schema validators (zod, valibot, arktype, mixable per key; nothing imported
@@ -44,5 +44,5 @@ the leak-scan heuristics — follows @vite-env/core by pyyupsk (MIT,
 https://github.com/pyyupsk/vite-env); the implementation is fresh on this
 plugin's machinery (Standard Schema as the only contract, no zod/jiti
 dependencies, consumer-based environment guarding, Vite's `runnerImport`
-for schema loading, runtime-read server values). Env is a turnkey feature:
+for schema loading, runtime-read server values). Env is a start-mode feature:
 without `start` there is no env layer. See `examples/start-env`.

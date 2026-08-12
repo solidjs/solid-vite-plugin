@@ -2,7 +2,7 @@
 '@solidjs/vite-plugin': patch
 ---
 
-Turnkey server functions: `serverFunctions: true` now gives a fully working
+Built-in server functions: `serverFunctions: true` now gives a fully working
 setup with no manual wiring.
 
 - Dev: a middleware on the Vite dev server handles the endpoint (default

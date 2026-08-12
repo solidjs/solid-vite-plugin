@@ -2,7 +2,7 @@
 '@solidjs/vite-plugin': patch
 ---
 
-Turnkey SSR: the object form of the `ssr` option (even empty: `ssr: {}`)
+SSR start mode: the object form of the `ssr` option (even empty: `ssr: {}`)
 adds a serving layer on top of the SSR transforms so a plain Vite app gets
 streaming server-side rendering with zero wiring — no entry files, no
 index.html, no dev server script (requires Vite 6+; `ssr: true` keeps the

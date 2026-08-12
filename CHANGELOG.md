@@ -36,7 +36,7 @@
 
 ### Patch Changes
 
-- dea55b3: Base-path and lazy-asset URL handling fixed across the turnkey surfaces (#298, #299, #300). Vite's base middleware strips the configured `base` from `req.url` before post middlewares run, but the built handler compares the request pathname against the base-prefixed server-function endpoint and hands the URL to application code — so under a non-root `base`, `vite preview` never dispatched `/base/_server` (requests fell through to page rendering) and dev page SSR saw base-stripped URLs that production would never send. The plugin's node adapters (the preview middleware, the turnkey dev SSR middleware, and the server-function dev middleware when the stripped endpoint form matched) now restore the base before constructing the web `Request`, so the handler sees production-shaped URLs on every surface. The dev asset resolver's lazy module URLs get the same treatment: they were emitted as `"/" + key`, which Vite rejects outside a non-root base and which mis-normalizes for root-external modules — they are now base-prefixed, and keys outside the Vite root (`../…`, e.g. sibling workspace packages) resolve to `/@fs/` URLs; the generated `virtual:solid-manifest` dev fallback mirrors the same logic. Finally, module query strings survive the lazy asset lookup: `resolveLazyModuleUrls` and the SSR `$$moduleUrl` injection kept only the queryless path while Rollup keys the facade chunk (and the Vite manifest entry) by the queried module id, so `lazy(() => import('./Panel.tsx?variant=a'))` missed its production manifest entry and could load different plugin output in dev — the query is now part of the asset key end to end, matching the manifest and the dev URL.
+- dea55b3: Base-path and lazy-asset URL handling fixed across the start mode surfaces (#298, #299, #300). Vite's base middleware strips the configured `base` from `req.url` before post middlewares run, but the built handler compares the request pathname against the base-prefixed server-function endpoint and hands the URL to application code — so under a non-root `base`, `vite preview` never dispatched `/base/_server` (requests fell through to page rendering) and dev page SSR saw base-stripped URLs that production would never send. The plugin's node adapters (the preview middleware, the start-mode dev SSR middleware, and the server-function dev middleware when the stripped endpoint form matched) now restore the base before constructing the web `Request`, so the handler sees production-shaped URLs on every surface. The dev asset resolver's lazy module URLs get the same treatment: they were emitted as `"/" + key`, which Vite rejects outside a non-root base and which mis-normalizes for root-external modules — they are now base-prefixed, and keys outside the Vite root (`../…`, e.g. sibling workspace packages) resolve to `/@fs/` URLs; the generated `virtual:solid-manifest` dev fallback mirrors the same logic. Finally, module query strings survive the lazy asset lookup: `resolveLazyModuleUrls` and the SSR `$$moduleUrl` injection kept only the queryless path while Rollup keys the facade chunk (and the Vite manifest entry) by the queried module id, so `lazy(() => import('./Panel.tsx?variant=a'))` missed its production manifest entry and could load different plugin output in dev — the query is now part of the asset key end to end, matching the manifest and the dev URL.
 - 3e5d8ff: Boundary guard no longer aborts Vite's dependency scan. The dep scanner
   (`vite:dep-scan`) crawls the raw import graph from the plugin's injected
   scan entries before any directive transform runs, so it walks straight
@@ -55,10 +55,10 @@
   error naming the importer.
 - e180576: The dev-manifest bridge resolver no longer caches failed lookups. The convergence cache introduced for the nested-lazy render-pass fix stored the `null` a bridge failure resolves to, so one transient miss (dev server briefly unreachable, non-OK response) silently stripped that module's client assets — and its hydration preload entry — for the rest of the dev session. Only successful answers are cached now; failures keep logging loudly and stay retryable, while in-flight dedupe still hands retries of the same render pass a stable promise, so convergence is unaffected.
 - 23965a2: The dev asset resolver now caches per module key and answers synchronously once a key's assets are known (in-flight walks are deduped; any watcher event drops the cache so dev CSS stays fresh). Server-side `lazy()` re-requests a module's assets on every retry of a suspended render pass — the router's nested outlets re-create the component per retry — and an always-async resolver suspends every retry on a brand-new promise, so the pass never converges: any nested route hung `vite dev`, or overflowed the render stack (one resume closure nests per cycle) and the escaped rejection killed the dev server. The build manifest never looped because it answers synchronously; dev now matches it after the first resolution. The HTTP bridge resolver for isolated SSR runners (nitro dev worker, workerd) gets the same convergence cache.
-- a2bd979: Turnkey dev middleware dispatches every request through the `start.middleware` chain — all methods and accept types, matching production and preview — instead of only HTML-accepting GETs. API routes (GET/POST exports served by a middleware like filesystem-routing's `createAPIHandler`) and no-JS form POSTs now work under `vite dev`. Non-page requests the chain does not handle fall back to Vite's own pipeline (its 404) rather than getting a page rendered at them, and without a configured middleware nothing changes: non-page requests never leave Vite's pipeline.
+- a2bd979: The start-mode dev middleware dispatches every request through the `start.middleware` chain — all methods and accept types, matching production and preview — instead of only HTML-accepting GETs. API routes (GET/POST exports served by a middleware like filesystem-routing's `createAPIHandler`) and no-JS form POSTs now work under `vite dev`. Non-page requests the chain does not handle fall back to Vite's own pipeline (its 404) rather than getting a page rendered at them, and without a configured middleware nothing changes: non-page requests never leave Vite's pipeline.
 - ec7543f: Doc examples for `serverFunctions.configure` import `configureServerFunctionsServer` from the type-correct `@solidjs/web/server-functions/server` subpath (the base subpath's types are the client surface and don't declare it).
-- 6e2d526: Turnkey typed env (`start.env`): first-party typed, validated environment
-  variables for both turnkey modes. A schema file at the project root —
+- 6e2d526: Start-mode typed env (`start.env`): first-party typed, validated environment
+  variables for both start modes. A schema file at the project root —
   `env.ts`/`env.js`, probed automatically (explicit via `start.env: './path'`,
   off via `false`) — default-exports `{ server, client }` maps of Standard
   Schema validators (zod, valibot, arktype, mixable per key; nothing imported
@@ -99,14 +99,14 @@
   https://github.com/pyyupsk/vite-env); the implementation is fresh on this
   plugin's machinery (Standard Schema as the only contract, no zod/jiti
   dependencies, consumer-based environment guarding, Vite's `runnerImport`
-  for schema loading, runtime-read server values). Env is a turnkey feature:
+  for schema loading, runtime-read server values). Env is a start-mode feature:
   without `start` there is no env layer. See `examples/start-env`.
 
-- 1272d95: Turnkey per-request app setup: `start.setup` points at a server-only module default-exporting `(event, App) => Component | void | Promise<Component | void>`, awaited by the generated server entry after the middleware chain dispatches to the page render and immediately before `renderToStream`. The seam routers with async per-request preparation need for SSR (create a router bound to the request, `await router.load()`, then render) — return a component to render in the app's place, or nothing to render `<App />` unchanged. The hook sees the same request event middleware decorated and runs inside the request scope. Zero-config entries are byte-identical without the option; authored server entries own `render()` already, so combining them is a config error.
-- 8b36370: Breaking (turnkey config reshape): Start is now a mode of the plugin. The
-  turnkey options move from the object form of `ssr` to a new `start` option
+- 1272d95: Start-mode per-request app setup: `start.setup` points at a server-only module default-exporting `(event, App) => Component | void | Promise<Component | void>`, awaited by the generated server entry after the middleware chain dispatches to the page render and immediately before `renderToStream`. The seam routers with async per-request preparation need for SSR (create a router bound to the request, `await router.load()`, then render) — return a component to render in the app's place, or nothing to render `<App />` unchanged. The hook sees the same request event middleware decorated and runs inside the request scope. Zero-config entries are byte-identical without the option; authored server entries own `render()` already, so combining them is a config error.
+- 8b36370: Breaking (start-mode config reshape): Start is now a mode of the plugin. The
+  start-mode options move from the object form of `ssr` to a new `start` option
   (`start: true` is the zero-config spelling, pure sugar for `start: {}` —
-  both mean the identical turnkey mode with defaults), and `ssr` is a boolean
+  both mean the identical start mode with defaults), and `ssr` is a boolean
   again with one meaning everywhere — "is the app server-rendered".
   `ssr: { ... }` is now a config-time error with a migration message: write
   `start: { ... }` (or `start: true`) and set `ssr: true`. Options are
@@ -116,7 +116,7 @@
   transform-only behavior, and `serverFunctions` stays orthogonal. The
   `SsrOptions` type is renamed to `StartOptions`.
 
-  The reason for the split is the new **turnkey client mode**: `start` without
+  The reason for the split is the new **client start mode**: `start` without
   `ssr: true` serves the same conventions client-only. Dev streams the
   rendered document shell (without the app — history-fallback semantics,
   entry CSS inlined) and the generated client entry `render()`s the app into
@@ -139,13 +139,13 @@
 
 ### Patch Changes
 
-- 906ef2a: update to solid 2.0.0-beta.32 and @dom-expressions/compiler 0.50.0-next.40 — `commitEventResponse` now ships in `@solidjs/web`, so the turnkey SSR handler imports it by name and the namespace-import fallback for pre-.40 runtimes is deleted; the solid floor moves to beta.32 accordingly
-- b6af42f: Turnkey SSR closes the middleware early-return gap with the runtime's `commitEventResponse`: a middleware that answers without calling `next()` (an API handler) bypasses `createSSRResponse`, so its request-scope stub writes — cookies appended to `event.response.headers`, status — never reached the wire. The generated handler now applies `commitEventResponse(response, event)` unconditionally at the handler edge, strictly after the outermost middleware returns: headers stay mutable through the whole unwind, committed page responses pass through untouched (the fold is idempotent), and the inner per-path folds (`applyResponseStub` on raw `entry.render` Responses and server-function responses) collapse into the one edge fold.
+- 906ef2a: update to solid 2.0.0-beta.32 and @dom-expressions/compiler 0.50.0-next.40 — `commitEventResponse` now ships in `@solidjs/web`, so the SSR start-mode handler imports it by name and the namespace-import fallback for pre-.40 runtimes is deleted; the solid floor moves to beta.32 accordingly
+- b6af42f: SSR start mode closes the middleware early-return gap with the runtime's `commitEventResponse`: a middleware that answers without calling `next()` (an API handler) bypasses `createSSRResponse`, so its request-scope stub writes — cookies appended to `event.response.headers`, status — never reached the wire. The generated handler now applies `commitEventResponse(response, event)` unconditionally at the handler edge, strictly after the outermost middleware returns: headers stay mutable through the whole unwind, committed page responses pass through untouched (the fold is idempotent), and the inner per-path folds (`applyResponseStub` on raw `entry.render` Responses and server-function responses) collapse into the one edge fold.
 
-  Until the next `@solidjs/web` repin ships `commitEventResponse` (TODO(.40-repin) in the codegen), the handler resolves it off a namespace import with a local fallback that preserves the previous partial fold semantics — a named import of a missing export would be fatal in ESM — so generated modules keep working against the current beta.31 line and upgrade to the runtime's fold (protocol-header denylist, committed-stub loudness) automatically at the repin.
+  Until the next `@solidjs/web` repin ships `commitEventResponse` (TODO(.40-repin) in the codegen), the handler resolves it off a namespace import with a local fallback that preserves the previous partial fold semantics — a named import of a missing export would be fatal in ESM — so generated modules keep working against pre-.40 runtimes and upgrade to the runtime's fold (protocol-header denylist, committed-stub loudness) automatically at the repin.
 
 - 65d6b51: Remove the unreleased `virtual:solid-manifest/client` module (and the `ClientAssetMap` type export). Its purpose was a route-CSS acquire/release lifecycle, which the head-management design has since ruled out: ambient, bundler-injected CSS is never lifecycle-managed — only head-registry-mounted stylesheets follow their owner — so the module had no remaining consumer. The server-side `virtual:solid-manifest` (SSR asset streaming) is untouched.
-- 398044f: Turnkey SSR adopts the runtime's response-head lifecycle, gains fetch-style middleware, and serves `vite preview` (requires `@solidjs/web` > 2.0.0-beta.31 for `createRequestEvent` / `createSSRResponse` / `composeMiddleware`):
+- 398044f: SSR start mode adopts the runtime's response-head lifecycle, gains fetch-style middleware, and serves `vite preview` (requires `@solidjs/web` > 2.0.0-beta.31 for `createRequestEvent` / `createSSRResponse` / `composeMiddleware`):
 
   - Every dispatch runs under a stub-backed request event (`createRequestEvent`) and page responses go through `createSSRResponse`: `httpStatus()` / `httpHeader()` writes land on the wire at shell flush, a pre-flush `Location` becomes a real 3xx redirect, and a post-flush one (streamed responses) falls back to a nonce-aware `<script>window.location=...</script>` tail. Raw `Response` results and server-function responses get uncommitted stub headers merged (set-cookie appended) so cookie/header writes made before they were produced still land.
   - `ssr.middleware`: a server-only module default-exporting one `(request, next) => Response | Promise<Response>` function or an array, composed in order. The chain fronts every dispatch path — page SSR, the server-function endpoint, dev, external-dev, production, preview — and runs inside the request-event scope, so `getRequestEvent()` works exactly as in app code; the endpoint shares the chain's event, so `locals` decoration is visible to server functions. Nothing hits the wire until the outermost middleware returns (post-`next()` header mutation works on streamed responses), and error middleware is a plain `try { await next() } catch`.
@@ -156,7 +156,7 @@
 
 ### Patch Changes
 
-- d6fcfb9: update to solid 2.0.0-beta.30 and @dom-expressions/compiler 0.50.0-next.35 (the compiler's module-URL pass now also annotates `clientOnly(() => import("x"))` calls — third argument, options slot padded with `void 0` — so the beta.30 server half can emit early modulepreload hints for browser-only modules; `resolveLazyModuleUrls` already resolves the placeholder position-independently)
+- d6fcfb9: update to solid 2.0.0-beta.30 and @dom-expressions/compiler 0.50.0-next.35 (the compiler's module-URL pass now also annotates `clientOnly(() => import("x"))` calls — third argument, options slot padded with `void 0` — so the server half can emit early modulepreload hints for browser-only modules; `resolveLazyModuleUrls` already resolves the placeholder position-independently)
 - Update @dom-expressions/compiler to 0.50.0-next.37: the directive DCE now removes an import declaration whose surviving specifiers are all type-only after pruning (solid-start #2273), instead of leaving a bare server-module edge in the client bundle.
 - 030fc89: Drop the `_$SC` bootstrap head-open splice. The runtime's serialized server-component references now self-bootstrap the registry (each hydration script's first reference carries it as an idempotent expression), so nothing needs to precede the data scripts — and the splice actively broke hydration: a script ahead of the authored `<head>` elements claims as the first walked child and drifts every positional claim after it (metas claimed as title, title as link), silently in production. Requires @dom-expressions/runtime 0.50.0-next.37 / @solidjs/web 2.0.0-beta.31.
 - d1b2ed0: The generated SSR handler no longer crashes the server process when a client aborts a streaming response mid-flight. Enqueueing into a closed `ReadableStream` controller throws, and a streamed fragment can land seconds after the shell — an abort (page reload, navigation away) during that window took down the whole Node process with `ERR_INVALID_STATE`. Writes are now dropped once the stream closes or is cancelled.
@@ -165,7 +165,7 @@
 
 ### Patch Changes
 
-- 6662c0f: update to solid 2.0.0-beta.29 and @dom-expressions/compiler 0.50.0-next.34 (the single-flight handler wiring imports `frameTransformFlightResult` from `@solidjs/web`, which first ships in beta.29)
+- 6662c0f: update to solid 2.0.0-beta.29 and @dom-expressions/compiler 0.50.0-next.34 (the single-flight handler wiring imports `frameTransformFlightResult` from `@solidjs/web`, which first ships in that solid release)
 - 1c51f54: Replace vite's `isRunnableDevEnvironment` with a duck-typed `runner`-presence check. Vite's helper is an `instanceof` test against the caller's own `vite` module, so when the plugin resolves to a different physical vite copy than the dev server's (workspace/`link:` installs), every environment failed the check and the SSR/dev middlewares silently stood down — serving markup without hydration wiring.
 - c0fa77c: Install `frameTransformFlightResult` alongside `frameTransformResult` in the generated server-function handler module when `serverComponents` is on: mutations whose single-flight payload includes invalidated server-component markup answer with the frame stream as carrier (regions + envelope in one response). Only active when a router registers a `collectFlightData` hook.
 
@@ -200,7 +200,7 @@
   and knows which environments to skip). Plain `builder: {}` setups keep the
   reinstated build-everything fallback, unchanged.
 
-  Covered by a new turnkey e2e mode (builder-prepare) that builds against a
+  Covered by a new `examples/turnkey` e2e mode (builder-prepare) that builds against a
   nitro-shaped host: a pre-order output-wiping hook plus a post-order
   ssr-building orchestrator that skips already-built environments.
 
@@ -248,7 +248,7 @@
     even when React's same-named npm packages are installed; the errors are
     prefixed `[vite-plugin-solid]`.
 
-- 8386fb4: Let provider-owned SSR environments serve turnkey development requests without
+- 8386fb4: Let provider-owned SSR environments serve start-mode development requests without
   calling `ssrLoadModule`. Entry CSS and server functions are transported through
   the generated handler so isolated runtimes retain SSR styles and HMR support.
 
@@ -260,7 +260,7 @@
 
 - cdb19bf: update to solid 2.0.0-beta.28 and @dom-expressions/compiler 0.50.0-next.33
 - 98fd955: Three extension points for composing the plugin with host environments
-  (e.g. @cloudflare/vite-plugin) without giving up the turnkey option forms:
+  (e.g. @cloudflare/vite-plugin) without giving up the start-mode option forms:
 
   - New `serverFunctions.devMiddleware` option (default `true`): set `false`
     to keep the plugin's dev middleware off the endpoint so a host's server
@@ -280,7 +280,7 @@
     before the client — no longer need a hand-written ordering plugin for the
     server bundle to bake real hashed assets. A post-order hook reinstates
     Vite's build-everything fallback when no other orchestrator built
-    anything, so plain `builder: {}` setups (turnkey included) behave exactly
+    anything, so plain `builder: {}` setups (start mode included) behave exactly
     as before, just explicitly client-first.
   - New `serverFunctions.configure` option: path to a server-only module
     (resolved against the Vite root) that the generated
@@ -302,7 +302,7 @@
 ### Patch Changes
 
 - 178b9dc: update to solid 2.0.0-beta.26 and @dom-expressions/compiler 0.50.0-next.31
-- 3b913f5: Inject the server-component bootstrap at the top of `<head>`, before the hydration data script. It was appended at `</head>`, but the generated document renders `<HydrationScript />` inside `<head>`, so the bootstrap always landed _after_ the payload it has to precede. The render plugin serializes a server component's placeholder as `self._$SC.r(id)`, so any document whose hydration payload carried a frame reference threw `Cannot read properties of undefined (reading 'r')` on boot — which aborted hydration, leaving the whole page inert: no client state, no interactivity, and no navigation, on an otherwise perfectly server-rendered document. The turnkey example's own payload happens not to carry such a reference, so its "no page errors" check never caught this; the document assertion now verifies the ordering rather than mere presence.
+- 3b913f5: Inject the server-component bootstrap at the top of `<head>`, before the hydration data script. It was appended at `</head>`, but the generated document renders `<HydrationScript />` inside `<head>`, so the bootstrap always landed _after_ the payload it has to precede. The render plugin serializes a server component's placeholder as `self._$SC.r(id)`, so any document whose hydration payload carried a frame reference threw `Cannot read properties of undefined (reading 'r')` on boot — which aborted hydration, leaving the whole page inert: no client state, no interactivity, and no navigation, on an otherwise perfectly server-rendered document. The `examples/turnkey` app's own payload happens not to carry such a reference, so its "no page errors" check never caught this; the document assertion now verifies the ordering rather than mere presence.
 
 ## 3.0.0-next.16
 
@@ -313,16 +313,16 @@
   are gone: the plugin now always configures `resolve.conditions` and SSR
   `noExternal`/`external` per environment through `configEnvironment` (instead
   of the old top-level `resolve.conditions` / `ssr` config placement), and the
-  turnkey SSR object form no longer needs a Vite-version guard. The `vite-3`,
+  start-mode SSR object form no longer needs a Vite-version guard. The `vite-3`,
   `vite-4` and `vite-5` examples were removed. If you are on Vite 3–5, stay on
   an earlier release of this plugin or upgrade Vite.
-- 4bddb00: add `serverFunctions: { components: true }` (experimental): server components ride server functions with zero extra plugin config — the dev middleware and production handler serve component responses automatically, and turnkey SSR's generated entries emit the document wiring (render plugin, bootstrap script, client `installServerComponents()` call)
+- 4bddb00: add `serverFunctions: { components: true }` (experimental): server components ride server functions with zero extra plugin config — the dev middleware and production handler serve component responses automatically, and SSR start mode's generated entries emit the document wiring (render plugin, bootstrap script, client `installServerComponents()` call)
 
 ### Patch Changes
 
 - 4d68f9c: update to solid 2.0.0-beta.24 and @dom-expressions/compiler 0.50.0-next.29
 - 2ca6a9e: update to solid 2.0.0-beta.25
-- 7b20a0f: Turnkey SSR: dev responses now inline the entry graph's CSS, fixing the
+- 7b20a0f: SSR start mode: dev responses now inline the entry graph's CSS, fixing the
   flash of unstyled content. The dev middleware walks the SSR module graph
   from the root entry (the app + document for generated entries, the authored
   server entry otherwise), compiles each transitively imported stylesheet
@@ -350,7 +350,7 @@
 ### Patch Changes
 
 - b2b9979: update to solid 2.0.0-beta.21 and @dom-expressions/compiler 0.50.0-next.24
-- 5828a6e: Turnkey SSR: the object form of the `ssr` option (even empty: `ssr: {}`)
+- 5828a6e: SSR start mode: the object form of the `ssr` option (even empty: `ssr: {}`)
   adds a serving layer on top of the SSR transforms so a plain Vite app gets
   streaming server-side rendering with zero wiring — no entry files, no
   index.html, no dev server script (requires Vite 6+; `ssr: true` keeps the
@@ -416,7 +416,7 @@
     counts are unreliable there); the directive rewrite itself still applies,
     and a warning is logged in development mode.
 
-- 25f0506: Turnkey server functions: `serverFunctions: true` now gives a fully working
+- 25f0506: Built-in server functions: `serverFunctions: true` now gives a fully working
   setup with no manual wiring.
 
   - Dev: a middleware on the Vite dev server handles the endpoint (default
