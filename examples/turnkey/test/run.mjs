@@ -119,6 +119,7 @@ import {
   createServerModuleRunner,
   DevEnvironment,
   isRunnableDevEnvironment,
+  resolveConfig,
 } from 'vite';
 
 const exampleDir = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
@@ -2956,6 +2957,41 @@ async function runVitestMode() {
     'DOM (jsdom) and server (node) posture projects coexist in one workspace',
     projectsPass,
     projectsPass ? undefined : projectsOut.slice(-2000),
+  );
+
+  // Browser-mode projects must NOT get the jsdom default: vitest 4 probes
+  // for the environment's package at startup (getEnvPackageName →
+  // ensureInstalled) and sets a failing exit code when jsdom isn't
+  // installed — even though the suite itself runs (and passes) in the real
+  // browser. The gate mirrors the plugin's jest-dom one (`browser.enabled`
+  // skips the injection); everything else keeps the jsdom default. Asserted
+  // at the config-resolution level: jsdom IS installed in this example, so
+  // a full browser run couldn't reproduce the missing-package probe.
+  const resolveTestEnvironment = async (testBlock) => {
+    const resolved = await resolveConfig(
+      { root: exampleDir, mode: 'test', test: testBlock },
+      'serve',
+    );
+    return resolved.test?.environment;
+  };
+  let browserEnv;
+  let defaultEnv;
+  let envError = '';
+  try {
+    browserEnv = await resolveTestEnvironment({
+      browser: { enabled: true, provider: 'playwright', instances: [{ browser: 'chromium' }] },
+    });
+    defaultEnv = await resolveTestEnvironment({});
+  } catch (e) {
+    envError = String(e);
+  }
+  const browserEnvPass = !envError && browserEnv === undefined && defaultEnv === 'jsdom';
+  record(
+    mode,
+    'browser-env',
+    'browser-mode project gets no injected jsdom environment (non-browser keeps the jsdom default)',
+    browserEnvPass,
+    browserEnvPass ? undefined : envError || `browser: ${browserEnv}, default: ${defaultEnv}`,
   );
 }
 

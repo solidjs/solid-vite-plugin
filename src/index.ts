@@ -709,7 +709,11 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
         // Regardless of the app's `ssr` flag: tests run with the client
         // posture (DOM component tests are the norm), so the default test
         // environment is a DOM. Node-environment tests opt in explicitly.
-        if (!userTest.environment) {
+        // Browser-mode projects get the real browser DOM, so don't default
+        // them to jsdom — vitest probes for the environment's package at
+        // startup and fails the run if jsdom isn't installed. They fall
+        // back to vitest's own node default (no package probe).
+        if (!userTest.environment && !userTest.browser?.enabled) {
           test.environment = 'jsdom';
         }
 
