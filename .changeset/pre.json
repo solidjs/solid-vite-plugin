@@ -44,6 +44,7 @@
     "native-compiler-custom-extensions",
     "native-compiler-option",
     "native-server-function-transform",
+    "plugin-package-rename",
     "reject-prefixed-server-env-keys",
     "remove-client-manifest-virtual",
     "response-head-middleware-preview",
