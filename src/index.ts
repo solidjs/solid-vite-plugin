@@ -329,7 +329,11 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin {
     },
 
     configResolved(config) {
-      needHmr = config.command === 'serve' && config.mode !== 'production' && options.hot !== false;
+      needHmr =
+        !isTestMode &&
+        config.command === 'serve' &&
+        config.mode !== 'production' &&
+        options.hot !== false;
     },
 
     resolveId(id) {
