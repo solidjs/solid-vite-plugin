@@ -782,9 +782,16 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
           exclude: solidPkgsConfig.optimizeDeps.exclude,
           // Vite 8+ uses Rolldown for dependency scanning. Rolldown defaults to
           // React's automatic JSX runtime for .tsx files, injecting a
-          // react/jsx-dev-runtime import. Tell it to preserve JSX as-is since
-          // this plugin handles JSX transformation via babel-preset-solid.
-          ...(isVite8 ? { rolldownOptions: { transform: { jsx: 'preserve' as const } } } : {}),
+          // react/jsx-dev-runtime import that fails to resolve and aborts the
+          // scan. 'preserve' is no fix: the scanner re-parses the transformed
+          // output as plain JS, so any preserved JSX is a hard parse error
+          // (issue #262). The classic runtime is the only scan-safe lowering:
+          // it emits bare `React.createElement` calls without injecting any
+          // import, and the scan output is never executed — it only exists so
+          // rolldown can walk the import graph.
+          ...(isVite8
+            ? { rolldownOptions: { transform: { jsx: { runtime: 'classic' as const } } } }
+            : {}),
         },
         ...(Object.keys(test).length ? { test } : {}),
       };
