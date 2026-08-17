@@ -1526,6 +1526,13 @@ async function runNoMiddlewareMode() {
       hostOk && hostOut.includes('HOST-DISPATCH 200 hello host from the server'),
       hostOut.slice(-500),
     );
+    record(
+      mode,
+      'host',
+      'options.event reaches the standalone handler event (nativeEvent echo)',
+      hostOk && hostOut.includes('HOST-DISPATCH-NATIVE 200 198.51.100.7'),
+      hostOut.slice(-500),
+    );
   } catch (e) {
     record(
       mode,
@@ -2191,6 +2198,25 @@ async function runMiddlewareChecksOverHttp(mode, origin, functionId) {
     `status ${info.status}, body ${JSON.stringify(infoBody)}`,
   );
 
+  // The `options.event` seam, live end to end: the plugin's dev/preview
+  // middlewares and the prod Node entry (server.js) all pass the raw Node
+  // request as `event: { nativeEvent: req }`, so getRequestEvent() inside
+  // app code (the /api/native middleware route) sees the IncomingMessage —
+  // with a readable loopback socket.remoteAddress — identically on every
+  // surface.
+  const native = await fetch(origin + '/api/native', { headers: { accept: 'application/json' } });
+  const nativeBody = native.ok ? await native.json() : null;
+  record(
+    mode,
+    'mw',
+    'request event exposes nativeEvent (Node req, readable remote address)',
+    native.status === 200 &&
+      nativeBody?.hasNativeEvent === true &&
+      typeof nativeBody?.remoteAddress === 'string' &&
+      nativeBody.remoteAddress.length > 0,
+    `status ${native.status}, body ${JSON.stringify(nativeBody)}`,
+  );
+
   // POST with a JSON body: the node->web request bridge must carry the body.
   const echo = await fetch(origin + '/api/echo', {
     method: 'POST',
@@ -2351,6 +2377,40 @@ async function runMiddlewareMode() {
         'generated entry threads start.setup and boxes the async stream',
         entryCode.includes('const prepared = ') &&
           entryCode.includes('__solidSetupStream'),
+      );
+      // The `options.event` seam on an external handleRequest call: a
+      // host-shaped direct dispatch (no dev middleware involved) passes a
+      // synthetic nativeEvent, and the event the app sees (the /api/native
+      // middleware route reading getRequestEvent()) carries exactly those
+      // fields — createRequestEvent(request, options.event) spreads them
+      // over the event defaults.
+      const handlerModule = await probe.ssrLoadModule('virtual:solid-ssr-handler');
+      const seamResponse = await handlerModule.handleRequest(
+        new Request('http://localhost/api/native', { headers: { accept: 'application/json' } }),
+        { event: { nativeEvent: { socket: { remoteAddress: '203.0.113.7' } } } },
+      );
+      const seamBody = seamResponse.ok ? await seamResponse.json() : null;
+      record(
+        'mw-codegen',
+        'event',
+        'options.event spreads into the request event (external handleRequest)',
+        seamResponse.status === 200 &&
+          seamBody?.hasNativeEvent === true &&
+          seamBody?.remoteAddress === '203.0.113.7',
+        `status ${seamResponse.status}, body ${JSON.stringify(seamBody)}`,
+      );
+      // And without options at all the event creation stays safe (the init
+      // spread is a no-op) — the same route answers with no nativeEvent.
+      const bareResponse = await handlerModule.handleRequest(
+        new Request('http://localhost/api/native', { headers: { accept: 'application/json' } }),
+      );
+      const bareBody = bareResponse.ok ? await bareResponse.json() : null;
+      record(
+        'mw-codegen',
+        'event',
+        'handleRequest without options.event keeps the default event shape',
+        bareResponse.status === 200 && bareBody?.hasNativeEvent === false,
+        `status ${bareResponse.status}, body ${JSON.stringify(bareBody)}`,
       );
     } finally {
       await probe?.close();

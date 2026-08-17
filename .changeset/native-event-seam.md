@@ -1,0 +1,5 @@
+---
+'@solidjs/vite-plugin': minor
+---
+
+`options.event`: the public wrapper→event extension seam on the generated handlers. Fields passed as `handleRequest(request, { event })` (and `handleServerFunctionRequest(request, { event })` on the standalone server-function handler, threaded through its `createEvent` option) spread into the request event at creation, so hosts and custom server entries can extend what `getRequestEvent()` answers with — no new convention beyond `createRequestEvent`'s own init parameter. The conventional field is `nativeEvent`, the platform's raw request object: the plugin's own dev, preview, and server-function dev middlewares now pass `event: { nativeEvent: req }` (the Node `IncomingMessage`), so `getRequestEvent().nativeEvent` reads the same under `vite dev`/`vite preview` as behind a production Node entry that passes it. The event shape itself is unchanged (`{ request, locals, response }` plus whatever the wrapper spreads in); nothing is attached to the `Request`, and no client-address helper is added — on bare Node read `event.nativeEvent.socket.remoteAddress`, behind a trusted proxy read the forwarding headers off `event.request`.

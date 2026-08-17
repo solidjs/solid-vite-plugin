@@ -40,6 +40,18 @@ export async function whoAmI() {
   return String(event?.locals.user ?? 'anonymous');
 }
 
+// The `options.event` seam on the standalone server-function handler: a
+// host dispatching `handleServerFunctionRequest(request, { event })` extends
+// the event the function's getRequestEvent() answers with (threaded through
+// the runtime's createEvent option by the generated wrapper). host-dispatch
+// mode passes a synthetic nativeEvent and asserts this echo.
+export async function nativeAddress() {
+  const event = getRequestEvent() as unknown as
+    | { nativeEvent?: { socket?: { remoteAddress?: string } } }
+    | undefined;
+  return String(event?.nativeEvent?.socket?.remoteAddress ?? 'no-native-event');
+}
+
 // Probe for the `serverFunctions.configure` e2e: src/serverConfig.ts (when
 // pinned into the handler graph) rewrites this exact result and stamps a
 // response header — in every other mode the string round-trips untouched.

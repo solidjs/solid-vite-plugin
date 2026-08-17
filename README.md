@@ -222,6 +222,41 @@ The Fetchable wrapper deliberately accepts only the request. Hosts may pass
 environment or execution-context arguments after it; those are not the
 Solid options accepted by `handleRequest`'s second parameter.
 
+Among those options, **`event`** is the supported public seam for extending
+the request event: its fields spread into the event at creation, so a custom
+server entry (or a host wrapper) can attach whatever its platform knows and
+read it back anywhere in the request scope with `getRequestEvent()`. The
+conventional field name is `nativeEvent` — the platform's raw request
+object. A Node entry passes the `IncomingMessage`:
+
+```js
+import { createServer } from 'node:http';
+import { handleRequest } from './dist/server/server.js';
+
+createServer(async (req, res) => {
+  const response = await handleRequest(webRequest(req), {
+    event: { nativeEvent: req },
+  });
+  // ... write response to res
+});
+```
+
+```js
+// anywhere inside the request scope (middleware, setup, app code)
+import { getRequestEvent } from '@solidjs/web';
+const event = getRequestEvent();
+event.nativeEvent; // the Node IncomingMessage the entry passed
+```
+
+The plugin's own dev and preview middlewares (and the server-function dev
+middleware) pass `event: { nativeEvent: req }` with the Node request, so
+`getRequestEvent().nativeEvent` answers the same under `vite dev` and
+`vite preview` as behind a Node entry written like the above. For the
+client's IP on bare Node, read `event.nativeEvent.socket.remoteAddress`;
+behind a proxy or load balancer that address is the proxy's, so read the
+forwarding headers off `event.request` instead (`x-forwarded-for` and
+friends) — only when you trust the proxy that set them.
+
 - **Preview**: `vite build && vite preview` runs the production artifact
   with no server file — Vite's preview statics serve `dist/client`, and
   everything else (pages, the server-function endpoint, middleware)

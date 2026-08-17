@@ -17,7 +17,17 @@ declare module "virtual:solid-server-function-handler" {
   export const endpoint: string;
   export function handleServerFunctionRequest(
     request: Request,
-    options?: Record<string, unknown>,
+    options?: {
+      /**
+       * Extra fields spread into the request event at creation — the public
+       * wrapper→event extension seam, same as the SSR handler's
+       * `handleRequest`. Conventionally `nativeEvent` carries the platform's
+       * raw request object (the plugin's dev middleware and a Node server
+       * entry pass the Node `IncomingMessage`); read it back with
+       * `getRequestEvent()`.
+       */
+      event?: Record<string, unknown>;
+    } & Record<string, unknown>,
   ): Promise<Response>;
 }
 
@@ -39,6 +49,16 @@ declare module "virtual:solid-ssr-handler" {
       context?: Record<string, unknown>;
       /** Status/headers for the HTML response. */
       responseInit?: ResponseInit;
+      /**
+       * Extra fields spread into the request event at creation — the public
+       * wrapper→event extension seam. Conventionally `nativeEvent` carries
+       * the platform's raw request object; the plugin's dev/preview
+       * middlewares (and, by convention, a custom Node server entry) pass
+       * the Node `IncomingMessage` here, so `getRequestEvent().nativeEvent`
+       * answers the same on every surface. Read it back anywhere inside the
+       * request scope with `getRequestEvent()`.
+       */
+      event?: Record<string, unknown>;
       /** Options forwarded to the server-function handler for endpoint requests. */
       serverFunctions?: Record<string, unknown>;
     },

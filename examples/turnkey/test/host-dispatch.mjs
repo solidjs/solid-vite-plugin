@@ -9,6 +9,11 @@
 // dispatches a synthetic request through `handleServerFunctionRequest`.
 // Run by test/run.mjs (no-middleware mode) with SERVER_FN_DEV_MIDDLEWARE=0;
 // prints HOST-DISPATCH <status> <body> and exits non-zero on mismatch.
+// A second dispatch exercises the `options.event` seam on the standalone
+// handler: fields spread into the request event (threaded through the
+// runtime's createEvent by the generated wrapper), so the function's
+// getRequestEvent() sees the host-provided nativeEvent — printed as
+// HOST-DISPATCH-NATIVE <status> <body>.
 import { createServer } from 'vite';
 
 const server = await createServer({ server: { middlewareMode: true } });
@@ -31,7 +36,28 @@ try {
   );
   const body = await response.text();
   console.log(`HOST-DISPATCH ${response.status} ${body}`);
-  exitCode = response.status === 200 && body === 'hello host from the server' ? 0 : 1;
+
+  const nativeMatch = /createServerReference\w*\("([^"]*-nativeAddress)"/.exec(
+    transformed?.code || '',
+  );
+  if (!nativeMatch) throw new Error('could not extract nativeAddress function id');
+  const nativeResponse = await handler.handleServerFunctionRequest(
+    new Request(
+      `http://localhost${handler.endpoint}?id=${encodeURIComponent(nativeMatch[1])}&args=${encodeURIComponent('[]')}`,
+      { method: 'POST' },
+    ),
+    { event: { nativeEvent: { socket: { remoteAddress: '198.51.100.7' } } } },
+  );
+  const nativeBody = await nativeResponse.text();
+  console.log(`HOST-DISPATCH-NATIVE ${nativeResponse.status} ${nativeBody}`);
+
+  exitCode =
+    response.status === 200 &&
+    body === 'hello host from the server' &&
+    nativeResponse.status === 200 &&
+    nativeBody === '198.51.100.7'
+      ? 0
+      : 1;
 } catch (error) {
   console.error(error);
 } finally {

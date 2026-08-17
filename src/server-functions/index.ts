@@ -441,8 +441,20 @@ export function serverFunctions(
           : ''
       } });`,
       `export const endpoint = ${JSON.stringify(resolvedEndpoint)};`,
+      // `options.event` is the same wrapper->event extension seam the SSR
+      // handler's handleRequest carries (conventionally `nativeEvent`, the
+      // platform's raw request object). The runtime's standalone handler
+      // creates its own event (`{ request, locals }`) with no init
+      // parameter, so the extension threads through its existing
+      // `createEvent` option instead — spread before `...options` so an
+      // explicit host-provided createEvent still wins.
       `export function handleServerFunctionRequest(request, options) {`,
-      `  return handle(request, { provideEvent: provideRequestEvent, ...options });`,
+      `  const { event: eventInit, ...rest } = options || {};`,
+      `  return handle(request, {`,
+      `    provideEvent: provideRequestEvent,`,
+      `    ...(eventInit ? { createEvent: (req) => ({ request: req, locals: {}, ...eventInit }) } : {}),`,
+      `    ...rest,`,
+      `  });`,
       `}`,
     ].join('\n');
   }
@@ -540,9 +552,16 @@ export function serverFunctions(
             // middleware chain and one stub-backed request event front the
             // endpoint exactly as they front page SSR.
             const handler = await server.ssrLoadModule(internal.ssrHandler ?? HANDLER_ID);
+            // Both dispatch shapes carry the raw Node request on the event
+            // (the `options.event` seam), matching the SSR dev middleware
+            // and what a production Node entry passes.
+            const dispatchOptions = { event: { nativeEvent: req } };
             const response: Response = internal.ssrHandler
-              ? await handler.handleRequest(webRequestFromNode(req, dispatchUrl))
-              : await handler.handleServerFunctionRequest(webRequestFromNode(req, dispatchUrl));
+              ? await handler.handleRequest(webRequestFromNode(req, dispatchUrl), dispatchOptions)
+              : await handler.handleServerFunctionRequest(
+                  webRequestFromNode(req, dispatchUrl),
+                  dispatchOptions,
+                );
             await sendWebResponse(res, response);
           })().catch((error) => {
             if (error instanceof Error) server.ssrFixStacktrace(error);

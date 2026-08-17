@@ -851,7 +851,13 @@ export function startServe(
       `}`,
       ``,
       `export async function handleRequest(request, options = {}) {`,
-      `  const event = createRequestEvent(request);`,
+      // `options.event` is the public wrapper->event extension seam: extra
+      // fields (conventionally `nativeEvent`, the platform's raw request
+      // object) spread over the event's defaults at creation, so hosts and
+      // custom server entries can extend what getRequestEvent() answers
+      // with — no new convention beyond createRequestEvent's own init
+      // parameter (spreading undefined is a no-op).
+      `  const event = createRequestEvent(request, options.event);`,
       // Middleware runs inside the request scope, after event creation —
       // getRequestEvent() answers in middleware exactly as in app code, and
       // nothing reaches the wire until the outermost middleware returns.
@@ -1059,7 +1065,10 @@ export function startServe(
         if (externalServer || (clientMode && !internal.serverFunctions)) return;
         return () => {
           let handlerPromise: Promise<{
-            handleRequest: (request: Request) => Promise<Response>;
+            handleRequest: (
+              request: Request,
+              options?: { event?: Record<string, unknown> },
+            ) => Promise<Response>;
           }> | null = null;
           server.middlewares.use((req, res, next) => {
             (async () => {
@@ -1075,6 +1084,9 @@ export function startServe(
               // receives base-prefixed URLs and preview must match it.
               const response = await handler.handleRequest(
                 webRequestFromNode(req, joinBase(base, req.url || '/')),
+                // Same event extension the dev middleware and a production
+                // Node entry pass: the raw Node request as `nativeEvent`.
+                { event: { nativeEvent: req } },
               );
               // Preview's compression middleware buffers whole responses;
               // opting HTML out keeps SSR streaming observable, matching
@@ -1130,6 +1142,11 @@ export function startServe(
                 {
                   devHead,
                   pageRequest,
+                  // The raw Node request on the event, matching what a
+                  // production Node server entry passes through the
+                  // `options.event` seam — getRequestEvent().nativeEvent
+                  // answers the same in dev as deployed.
+                  event: { nativeEvent: req },
                 },
               );
               // A non-page request the chain never handled: the terminal

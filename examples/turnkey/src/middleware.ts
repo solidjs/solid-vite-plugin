@@ -29,6 +29,21 @@ async function api(request: Request, next: Next): Promise<Response> {
     const event = getRequestEvent()!;
     return Response.json({ user: event.locals.user, order: event.locals.order });
   }
+  if (request.method === 'GET' && pathname === '/api/native') {
+    // The `options.event` seam: the plugin's dev/preview middlewares (and a
+    // Node production entry like server.js) pass the raw Node request as
+    // `nativeEvent`, spread into the event at creation — app code reads it
+    // back through getRequestEvent(). The e2e asserts a live socket address
+    // in dev/prod/preview and an exact synthetic one for a direct
+    // handleRequest(request, { event }) call.
+    const event = getRequestEvent()! as unknown as {
+      nativeEvent?: { socket?: { remoteAddress?: string } };
+    };
+    return Response.json({
+      hasNativeEvent: !!event.nativeEvent,
+      remoteAddress: event.nativeEvent?.socket?.remoteAddress ?? null,
+    });
+  }
   if (request.method === 'POST' && pathname === '/api/echo') {
     // The request body must arrive intact through the node -> web bridge.
     return Response.json({ method: request.method, echoed: await request.json() });
