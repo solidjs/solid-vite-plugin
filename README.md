@@ -396,7 +396,14 @@ import { env } from 'virtual:env/client'; // the VITE_-prefixed client vars
   is fine). Platform-injected vars that don't exist at build time work,
   secrets rotate without a rebuild, and no secret value exists in any
   dist artifact; an invalid server environment fails boot with the same
-  per-key report.
+  per-key report. Boot validation is synchronous: the generated server
+  env module contains no top-level await, so the server bundle works
+  under any downstream build target (Nitro's node-server preset,
+  es2020 — no `esnext` override needed). The flip side: `server`
+  validators must be synchronous — an async refinement/transform on a
+  server key is rejected at config time with the fix in the message
+  (`client` keys may stay async; they are awaited at build time where
+  the values are baked).
 - **Leaks are errors.** Importing `virtual:env/server` from a client
   module graph is a hard error naming the importer (the app root and
   everything it imports hydrate — they are client code; keep server env

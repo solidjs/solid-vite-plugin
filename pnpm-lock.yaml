@@ -166,6 +166,9 @@ importers:
       '@solidjs/vite-plugin':
         specifier: workspace:*
         version: link:../..
+      esbuild:
+        specifier: ^0.25.0
+        version: 0.25.12
       vite:
         specifier: ^7.0.0
         version: 7.3.6(@types/node@18.19.130)(lightningcss@1.33.0)

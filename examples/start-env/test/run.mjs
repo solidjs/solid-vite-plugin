@@ -12,13 +12,16 @@
 //     client-chunk leak scan; a missing SERVER var only warns at build
 //     time (runtime env — deferred to boot) while a missing CLIENT var
 //     (baked) fails the build; a non-VITE_ client key is a config-time
-//     error,
+//     error; an async SERVER validator is a config-time error (boot
+//     validation is synchronous — no top-level await in the server chunk),
 //   - prod (ssr mode): client chunks carry the client values and neither
 //     the secret, the server key names, nor any '~standard' validator
 //     machinery; dist/server bakes NO server values — it reads process.env
 //     at boot through the user's schema (validator is server-only), so the
 //     same artifact serves a rotated secret without a rebuild and fails
-//     boot with the per-key report when the runtime env is invalid;
+//     boot with the per-key report when the runtime env is invalid; every
+//     server chunk bundles at target es2020 (no top-level await — the
+//     Nitro node-server / non-esnext-target regression guard);
 //     preview folds .env into process.env (zero-config smoke test) and serves
 //     with the middleware headers live,
 //   - client mode: the same env layer on a static build — index.html shell,
@@ -371,6 +374,14 @@ async function guardsMode() {
   // is a leak the moment it exists — reject it before anything builds.
   out = await build({ ENV_SCHEMA: './env.serverprefix.ts' }).catch((e) => e.message);
   record('guards', 'prefix', 'VITE_-prefixed server key is a config-time error', /cannot keep it secret/.test(out) && /VITE_API_SECRET/.test(out), out.slice(0, 400));
+
+  // Async validators are rejected for `server` keys at config time: boot
+  // validation is synchronous (the generated server env module carries no
+  // top-level await so server bundles work on non-esnext targets), so a
+  // Promise-returning server validator could only ever fail at deploy
+  // boot — fail fast at build instead, with the fix in the message.
+  out = await build({ ENV_SCHEMA: './env.async.ts' }).catch((e) => e.message);
+  record('guards', 'sync-only', 'async server validator is a config-time error', /async validator/.test(out) && /SESSION_SECRET/.test(out), out.slice(0, 400));
 }
 
 async function prodMode() {
@@ -395,6 +406,27 @@ async function prodMode() {
   const serverJs = readFileSync(path.join(exampleDir, 'dist/server/server.js'), 'utf-8');
   record('prod', 'server-bundle', 'server secret NOT baked into the server bundle', !serverJs.includes(SECRET));
   record('prod', 'server-bundle', 'server bundle validates process.env at boot (schema shipped server-side)', serverJs.includes('~standard') && serverJs.includes('validation failed at boot') && /process\.env/.test(serverJs));
+
+  // TLA regression guard: the env module's boot validation used to emit a
+  // top-level await (the conditional Standard Schema promise await), which
+  // made any downstream bundler with a non-esnext target — Nitro's
+  // node-server preset in practice — reject the whole server chunk unless
+  // deployments overrode the build target to esnext. esbuild at target
+  // es2020 refuses TLA at parse time (it can lower everything else, TLA it
+  // cannot), which is exactly the check a downstream bundler applies: every
+  // server chunk must pass it.
+  const esbuild = await import('esbuild');
+  let tlaFailure = '';
+  for (const [name, code] of Object.entries(readDistFiles(path.join(exampleDir, 'dist/server')))) {
+    if (!/\.m?js$/.test(name)) continue;
+    try {
+      await esbuild.transform(code, { format: 'esm', target: 'es2020' });
+    } catch (error) {
+      tlaFailure = `${name}: ${error.message}`;
+      break;
+    }
+  }
+  record('prod', 'server-bundle', 'no top-level await in any server chunk (bundles at target es2020)', !tlaFailure, tlaFailure.slice(0, 300));
 
   const preview = (env) => {
     const child = startProcess(

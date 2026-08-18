@@ -180,6 +180,11 @@ export interface StartOptions {
    * only), so platform-injected vars work and secrets rotate without a
    * rebuild — no secret exists in any dist artifact. Build-time server
    * failures are a deferred-to-boot warning; dev failures stay hard.
+   * Boot validation is synchronous — the generated module carries no
+   * top-level await, so server bundles work on non-esnext targets
+   * (Nitro's node-server preset needs no `esnext` override) — which is
+   * why async validators are rejected for `server` keys at config time
+   * (`client` keys may stay async: they are awaited at build time).
    *
    * `true` requires the conventional file (error when missing); a string
    * is an explicit schema path; `false` disables even the probing.

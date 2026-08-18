@@ -16,7 +16,9 @@ import solidPlugin from '@solidjs/vite-plugin';
 // - ENV_SCHEMA points start.env at a fixture schema (explicit-path option):
 //   env.fail.ts requires a variable no .env provides (validation failure),
 //   env.badprefix.ts declares a client var without the VITE_ prefix
-//   (config-time prefix error).
+//   (config-time prefix error), env.async.ts puts an async validator on a
+//   server key (config-time error — boot validation is synchronous so the
+//   server chunk carries no top-level await).
 export default defineConfig({
   plugins: [
     solidPlugin({
