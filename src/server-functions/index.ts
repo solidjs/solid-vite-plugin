@@ -557,9 +557,12 @@ export function serverFunctions(
             // and what a production Node entry passes.
             const dispatchOptions = { event: { nativeEvent: req } };
             const response: Response = internal.ssrHandler
-              ? await handler.handleRequest(webRequestFromNode(req, dispatchUrl), dispatchOptions)
+              ? await handler.handleRequest(
+                  webRequestFromNode(req, dispatchUrl, res),
+                  dispatchOptions,
+                )
               : await handler.handleServerFunctionRequest(
-                  webRequestFromNode(req, dispatchUrl),
+                  webRequestFromNode(req, dispatchUrl, res),
                   dispatchOptions,
                 );
             await sendWebResponse(res, response);

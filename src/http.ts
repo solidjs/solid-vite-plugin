@@ -10,17 +10,52 @@ import { Readable } from 'node:stream';
  * different URL than the one node saw — the dev middlewares use it to
  * restore the configured Vite `base` that the dev/preview base middleware
  * stripped, so the handler always sees production-shaped URLs.
+ *
+ * Handles plain HTTP/1 *and* the HTTP/2 compat API: Vite's dev server uses
+ * `http2.createSecureServer({ allowHTTP1: true })` whenever `server.https`
+ * is set without a proxy, so under https the middlewares receive
+ * `Http2ServerRequest`s. The h2/protocol/abort techniques here are
+ * reimplemented from srvx's Node adapter (github.com/h3js/srvx,
+ * src/adapters/_node) — reference, not copied code.
  */
-export function webRequestFromNode(req: IncomingMessage, urlPath?: string): Request {
-  const url = new URL(urlPath ?? req.url ?? '/', `http://${req.headers.host || 'localhost'}`);
+export function webRequestFromNode(
+  req: IncomingMessage,
+  urlPath?: string,
+  res?: ServerResponse,
+): Request {
+  // TLS sockets (https and h2) expose `encrypted`; a Request whose url says
+  // http: on a TLS connection breaks secure-cookie logic, absolute
+  // redirects, and origin checks in application code.
+  const protocol = (req.socket as { encrypted?: boolean } | undefined)?.encrypted
+    ? 'https'
+    : 'http';
+  // HTTP/2 has no Host header — the authority travels in the `:authority`
+  // pseudo-header instead.
+  const host = req.headers.host ?? (req.headers[':authority'] as string | undefined) ?? 'localhost';
+  const url = new URL(urlPath ?? req.url ?? '/', `${protocol}://${host}`);
   const headers = new Headers();
   for (const [key, value] of Object.entries(req.headers)) {
     if (value === undefined) continue;
+    // HTTP/2 pseudo-headers (:method, :path, :authority, :scheme) are not
+    // legal field names — Headers#append throws a TypeError on them.
+    if (key[0] === ':') continue;
     if (Array.isArray(value)) {
       for (const item of value) headers.append(key, item);
     } else {
       headers.append(key, value);
     }
+  }
+  // Surface client disconnects as the request's AbortSignal so handlers can
+  // cancel work (streamed SSR renders, in-flight fetches). The response's
+  // 'close' fires on normal completion too; `writableEnded` distinguishes a
+  // finished response from a client that went away.
+  let signal: AbortSignal | undefined;
+  if (res) {
+    const controller = new AbortController();
+    res.once('close', () => {
+      if (!res.writableEnded) controller.abort();
+    });
+    signal = controller.signal;
   }
   const method = req.method || 'GET';
   const body =
@@ -31,6 +66,7 @@ export function webRequestFromNode(req: IncomingMessage, urlPath?: string): Requ
     method,
     headers,
     body,
+    signal,
     // undici requires half-duplex for streamed request bodies.
     ...(body ? { duplex: 'half' } : {}),
   } as RequestInit);
@@ -44,7 +80,11 @@ export async function sendWebResponse(res: ServerResponse, response: Response): 
     if (key !== 'set-cookie') res.setHeader(key, value);
   });
   if (cookies && cookies.length) res.setHeader('set-cookie', cookies);
-  if (!response.body) {
+  // HEAD gets the head only — and the body must be *cancelled*, not pumped:
+  // node discards HEAD body writes, so streaming a long (or endless) body
+  // into the void just burns the render. (Technique from srvx.)
+  if (!response.body || res.req?.method === 'HEAD') {
+    response.body?.cancel().catch(() => {});
     res.end();
     return;
   }

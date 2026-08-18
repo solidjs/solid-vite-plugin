@@ -1,0 +1,5 @@
+---
+'@solidjs/vite-plugin': patch
+---
+
+Fixes the dev server crashing on every request under https/HTTP/2. Vite serves `server.https` through an HTTP/2 server (with HTTP/1 fallback), and the plugin's Node→web request bridge copied the h2 pseudo-headers (`:path`, `:method`, `:authority`, `:scheme`) into `Headers`, which throws `TypeError: ":path" is an invalid header name` — so start-mode SSR and server functions 500'd on every request over `vite dev` with https. Pseudo-headers are now skipped and the host derives from `Host` or the h2 `:authority`. Alongside it, three more bridge hardenings (techniques referenced from srvx's Node adapter, h3js/srvx): `request.url` now says `https:` on TLS sockets instead of always `http:` (secure-cookie logic, absolute redirects, and origin checks in app code saw the wrong protocol), client disconnects now fire the request's `AbortSignal` so handlers can cancel streamed renders and in-flight work, and HEAD requests end immediately with the response body cancelled instead of pumping the whole (possibly endless) stream into Node's discarded HEAD writes.

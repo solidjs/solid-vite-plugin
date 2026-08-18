@@ -6,7 +6,7 @@
     "dev": "vite",
     "build": "vite build",
     "serve": "NODE_ENV=production node server.js",
-    "test": "node test/run.mjs"
+    "test": "node test/run.mjs && node test/http-bridge.mjs"
   },
   "devDependencies": {
     "jsdom": "^26.1.0",

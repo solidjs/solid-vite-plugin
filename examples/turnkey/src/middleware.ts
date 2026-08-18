@@ -44,6 +44,49 @@ async function api(request: Request, next: Next): Promise<Response> {
       remoteAddress: event.nativeEvent?.socket?.remoteAddress ?? null,
     });
   }
+  if (request.method === 'GET' && pathname === '/api/request-info') {
+    // Node→web bridge surface for test/http-bridge.mjs: echoes the URL the
+    // handler actually saw (protocol/host derivation under TLS and HTTP/2)
+    // and the wire protocol version off the raw Node request.
+    const event = getRequestEvent()! as unknown as {
+      nativeEvent?: { httpVersion?: string };
+    };
+    return Response.json({
+      url: request.url,
+      httpVersion: event.nativeEvent?.httpVersion ?? null,
+    });
+  }
+  if ((request.method === 'GET' || request.method === 'HEAD') && pathname === '/api/abort-probe') {
+    // Bridge surface for test/http-bridge.mjs: a never-ending stream that
+    // records, on a process global the in-process test reads back, whether
+    // the request's AbortSignal fired (client disconnect propagation) and
+    // whether the body stream was cancelled (HEAD short-circuit / reader
+    // cleanup).
+    const g = globalThis as { __solidBridgeProbe?: { aborts: number; cancels: number } };
+    const probe = (g.__solidBridgeProbe ??= { aborts: 0, cancels: 0 });
+    const encoder = new TextEncoder();
+    let timer: ReturnType<typeof setInterval> | undefined;
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode('tick\n'));
+        timer = setInterval(() => controller.enqueue(encoder.encode('tick\n')), 25);
+        request.signal.addEventListener('abort', () => {
+          probe.aborts++;
+          clearInterval(timer);
+          try {
+            controller.close();
+          } catch {
+            // already cancelled
+          }
+        });
+      },
+      cancel() {
+        probe.cancels++;
+        clearInterval(timer);
+      },
+    });
+    return new Response(stream, { headers: { 'content-type': 'text/plain' } });
+  }
   if (request.method === 'POST' && pathname === '/api/echo') {
     // The request body must arrive intact through the node -> web bridge.
     return Response.json({ method: request.method, echoed: await request.json() });

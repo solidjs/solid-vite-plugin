@@ -1088,7 +1088,7 @@ export function startServe(
               // code, so restore the base — the deployed production handler
               // receives base-prefixed URLs and preview must match it.
               const response = await handler.handleRequest(
-                webRequestFromNode(req, joinBase(base, req.url || '/')),
+                webRequestFromNode(req, joinBase(base, req.url || '/'), res),
                 // Same event extension the dev middleware and a production
                 // Node entry pass: the raw Node request as `nativeEvent`.
                 { event: { nativeEvent: req } },
@@ -1143,7 +1143,7 @@ export function startServe(
               // sees the same URLs in dev as in production (where the
               // deployed handler receives base-prefixed requests).
               const response: Response = await handler.handleRequest(
-                webRequestFromNode(req, joinBase(base, req.url || '/')),
+                webRequestFromNode(req, joinBase(base, req.url || '/'), res),
                 {
                   devHead,
                   pageRequest,
