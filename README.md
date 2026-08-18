@@ -469,6 +469,19 @@ Two explicit switches remain for custom host setups:
    serving, hands only server-function dispatch in dev to the host. For
    setups without `start`, or when only the endpoint should move.
 
+**`virtual:solid-manifest`** exposes the client asset manifest that serving
+works from — a server-side module, available in dev and in SSR builds. In
+an SSR build its default export is the parsed client manifest
+(`dist/client/.vite/manifest.json`), keyed by source path with the resolved
+Vite `base` attached as `_base`; in dev it exports the live asset resolver
+the plugin uses for dev CSS collection instead of a static object. This is
+the seam for frameworks and routers that do their own asset gating —
+deciding which scripts and styles a response carries, as the TanStack Start
+integration does — without re-reading the manifest from disk or re-deriving
+`base`. Ambient types ship with the plugin
+(`/// <reference types="@solidjs/vite-plugin/virtual-solid-manifest" />`);
+see that `.d.ts` and the exported `ViteManifest` type for the full shape.
+
 Without `ssr: true` — **client mode** (experimental), the same conventions
 with client-only rendering:
 
