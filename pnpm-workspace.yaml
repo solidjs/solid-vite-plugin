@@ -19,14 +19,14 @@ minimumReleaseAgeExclude:
   - '@solidjs/web@2.0.0-beta.30 || 2.0.0-beta.31 || 2.0.0-beta.32 || 2.0.0-rc.0'
   - babel-preset-solid@2.0.0-beta.30 || 2.0.0-beta.31 || 2.0.0-beta.32 || 2.0.0-rc.0
   - solid-js@2.0.0-beta.30 || 2.0.0-beta.31 || 2.0.0-beta.32 || 2.0.0-rc.0
-  - '@dom-expressions/babel-plugin-jsx@0.50.0-next.35 || 0.50.0-next.37 || 0.50.0-next.40'
-  - '@dom-expressions/compiler-darwin-arm64@0.50.0-next.35 || 0.50.0-next.37 || 0.50.0-next.40'
-  - '@dom-expressions/compiler-darwin-x64@0.50.0-next.35 || 0.50.0-next.37 || 0.50.0-next.40'
-  - '@dom-expressions/compiler-linux-arm64-gnu@0.50.0-next.35 || 0.50.0-next.37 || 0.50.0-next.40'
-  - '@dom-expressions/compiler-linux-x64-gnu@0.50.0-next.35 || 0.50.0-next.37 || 0.50.0-next.40'
-  - '@dom-expressions/compiler-win32-x64-msvc@0.50.0-next.35 || 0.50.0-next.37 || 0.50.0-next.40'
-  - '@dom-expressions/compiler-wasm32-wasi@0.50.0-next.35 || 0.50.0-next.37 || 0.50.0-next.40'
-  - '@dom-expressions/compiler@0.50.0-next.35 || 0.50.0-next.37 || 0.50.0-next.40'
+  - '@dom-expressions/babel-plugin-jsx@0.50.0-next.35 || 0.50.0-next.37 || 0.50.0-next.40 || 0.50.0-next.43'
+  - '@dom-expressions/compiler-darwin-arm64@0.50.0-next.35 || 0.50.0-next.37 || 0.50.0-next.40 || 0.50.0-next.43'
+  - '@dom-expressions/compiler-darwin-x64@0.50.0-next.35 || 0.50.0-next.37 || 0.50.0-next.40 || 0.50.0-next.43'
+  - '@dom-expressions/compiler-linux-arm64-gnu@0.50.0-next.35 || 0.50.0-next.37 || 0.50.0-next.40 || 0.50.0-next.43'
+  - '@dom-expressions/compiler-linux-x64-gnu@0.50.0-next.35 || 0.50.0-next.37 || 0.50.0-next.40 || 0.50.0-next.43'
+  - '@dom-expressions/compiler-win32-x64-msvc@0.50.0-next.35 || 0.50.0-next.37 || 0.50.0-next.40 || 0.50.0-next.43'
+  - '@dom-expressions/compiler-wasm32-wasi@0.50.0-next.35 || 0.50.0-next.37 || 0.50.0-next.40 || 0.50.0-next.43'
+  - '@dom-expressions/compiler@0.50.0-next.35 || 0.50.0-next.37 || 0.50.0-next.40 || 0.50.0-next.43'
   - '@solidjs/testing-library@1.0.0-beta.2'
 
 onlyBuiltDependencies:
