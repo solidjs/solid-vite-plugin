@@ -1,5 +1,12 @@
 # Changelog
 
+## 3.0.0-next.30
+
+### Patch Changes
+
+- fbb5239: Unlock the @dom-expressions/compiler dependency from the exact 0.50.0-next.40 pin to the `^0.50.0-next.43` range — floors at next.43, auto-graduates to later next.N and stable 0.50.0, matching how babel-preset-solid is ranged. Absorbs the .41–.43 compiler fixes: dedicated `<!>` insertion markers for components boxed by static text (solidjs/solid#3004, content no longer lands after the trailing text), `$key` on intrinsic server JSX compiling to a `_key` attribute so the frame morph matches keyed elements by key instead of position, `transformLazy` annotating the module-URL placeholder in `lazy()`'s third argument for solid-js 2.0's `{ export }` options bag (solidjs/solid#3011), HTML-escaping of static template-literal parts in attribute/style values, innerHTML/textContent holes no longer taking the `_$scope` id reservation (solidjs/solid#3015), and the Rust 1.95 / Oxc 0.144 toolchain upgrade with the WASI linking fix.
+- 5543386: Fixes the dev server crashing on every request under https/HTTP/2. Vite serves `server.https` through an HTTP/2 server (with HTTP/1 fallback), and the plugin's Node→web request bridge copied the h2 pseudo-headers (`:path`, `:method`, `:authority`, `:scheme`) into `Headers`, which throws `TypeError: ":path" is an invalid header name` — so start-mode SSR and server functions 500'd on every request over `vite dev` with https. Pseudo-headers are now skipped and the host derives from `Host` or the h2 `:authority`. Alongside it, three more bridge hardenings (techniques referenced from srvx's Node adapter, h3js/srvx): `request.url` now says `https:` on TLS sockets instead of always `http:` (secure-cookie logic, absolute redirects, and origin checks in app code saw the wrong protocol), client disconnects now fire the request's `AbortSignal` so handlers can cancel streamed renders and in-flight work, and HEAD requests end immediately with the response body cancelled instead of pumping the whole (possibly endless) stream into Node's discarded HEAD writes.
+
 ## 3.0.0-next.29
 
 ### Minor Changes
