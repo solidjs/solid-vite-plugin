@@ -1,5 +1,54 @@
 # Changelog
 
+## 3.0.0-next.29
+
+### Minor Changes
+
+- 24747b7: `options.event`: the public wrapper→event extension seam on the generated handlers. Fields passed as `handleRequest(request, { event })` (and `handleServerFunctionRequest(request, { event })` on the standalone server-function handler, threaded through its `createEvent` option) spread into the request event at creation, so hosts and custom server entries can extend what `getRequestEvent()` answers with — no new convention beyond `createRequestEvent`'s own init parameter. The conventional field is `nativeEvent`, the platform's raw request object: the plugin's own dev, preview, and server-function dev middlewares now pass `event: { nativeEvent: req }` (the Node `IncomingMessage`), so `getRequestEvent().nativeEvent` reads the same under `vite dev`/`vite preview` as behind a production Node entry that passes it. The event shape itself is unchanged (`{ request, locals, response }` plus whatever the wrapper spreads in); nothing is attached to the `Request`, and no client-address helper is added — on bare Node read `event.nativeEvent.socket.remoteAddress`, behind a trusted proxy read the forwarding headers off `event.request`.
+
+### Patch Changes
+
+- 40c6865: Housekeeping: add the MIT LICENSE file the `license` field has always declared but the repo never carried (#219), and document `virtual:solid-manifest` in the README — what it exports in dev (the live asset resolver) versus SSR builds (the baked client manifest with `_base`), and its role as the seam for frameworks doing their own asset gating (e.g. the TanStack Start integration).
+- ca4d221: `start.env`: the generated `virtual:env/server` module no longer contains
+  top-level await, removing the esnext-target deploy requirement. Boot
+  validation used to conditionally `await` each validator result (Standard
+  Schema allows `validate()` to return a Promise), which put a TLA in the
+  server env chunk whenever the schema had `server` keys — and any
+  downstream bundler with a non-esnext target refuses a TLA chunk outright
+  (Nitro's node-server preset is the one that bites in practice), forcing
+  deployments to override the build target to `esnext`. Boot validation is
+  now fully synchronous with identical semantics: same `process.env` read at
+  module init, same per-key report, same fail-loud-at-boot before any
+  importer's body runs, same frozen `env` export — and synchronous init is
+  the only shape that can keep the "validated before first use" guarantee,
+  since user server modules read `env.KEY` at their own top level (deferring
+  the await to request entry cannot cover module-init consumers). The
+  tradeoff is explicit: async validators (e.g. `z.string().refine(async
+...)`) are no longer supported for `server` keys — they are rejected at
+  config/build time with the fix in the message (they could only ever have
+  failed at deploy boot otherwise), and boot backstops with the same report
+  for schemas whose async-ness only surfaces on real values. `client` keys
+  keep async support: their values are baked at build time, where the plugin
+  awaits. The start-env suite now asserts every built server chunk
+  transforms under esbuild target es2020 (which rejects TLA at parse time —
+  exactly the check a downstream bundler applies) so this cannot regress.
+- 3257a97: Vite 8's dependency scan no longer breaks on `.tsx` files (issue #262).
+  The plugin previously set `optimizeDeps.rolldownOptions.transform.jsx:
+'preserve'` to stop Rolldown from injecting `react/jsx-dev-runtime`
+  imports during the scan — but the scanner re-parses the transformed
+  output as plain JS (`import.meta.glob` handling force-tags modules as
+  `js`, and even without glob the oxc-preserved JSX is re-parsed without
+  JSX enabled), so any `.tsx` with JSX was a hard `PARSE_ERROR: Unexpected
+JSX expression` that aborted the whole scan. Every dependency was then
+  missed by pre-bundling and discovered at runtime instead ("new
+  dependencies optimized" mid-session re-optimize/reload — the classic
+  symptom for deps only reachable through `import.meta.glob`). The scan
+  transform now uses the classic JSX runtime, which lowers JSX to bare
+  `React.createElement` calls without injecting any import: the scan
+  output is never executed, it only exists so rolldown can walk the import
+  graph, so the undefined identifier is harmless. With this, the scan
+  completes and glob-only dependencies are pre-bundled up front.
+
 ## 3.0.0-next.28
 
 ### Patch Changes
