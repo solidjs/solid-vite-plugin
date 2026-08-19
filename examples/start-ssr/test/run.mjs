@@ -642,7 +642,7 @@ async function runHmrChecks(mode, cdp, origin, { expectCompiler } = {}) {
   }
 }
 
-async function runBrowserChecks(mode, origin, { hmr, devCss, expectCompiler } = {}) {
+async function runBrowserChecks(mode, origin, { hmr, devCss, expectCompiler, devtools } = {}) {
   const chrome = startProcess(CHROME, [
     '--headless=new',
     `--remote-debugging-port=${CDP_PORT}`,
@@ -740,6 +740,25 @@ async function runBrowserChecks(mode, origin, { hmr, devCss, expectCompiler } = 
         (await cdp.evalJs(
           `document.querySelectorAll(${JSON.stringify(APP_CSS_STYLE_SELECTOR)}).length`,
         )) === 1,
+      );
+    }
+
+    // `devtools: true` (dev, auto-detected package): the toolbar mounts in
+    // the live DOM. `devtools: false` (prod): it must not exist. Undefined
+    // skips the check — other dev-server modes don't re-assert the default.
+    if (devtools === true) {
+      record(
+        mode,
+        'devtools',
+        'development toolbar mounted in the DOM',
+        await cdp.waitFor('document.querySelector("[data-solid-dev-toolbar]") !== null'),
+      );
+    } else if (devtools === false) {
+      record(
+        mode,
+        'devtools',
+        'no development toolbar in the DOM',
+        (await cdp.evalJs('document.querySelector("[data-solid-dev-toolbar]")')) === null,
       );
     }
 
@@ -872,11 +891,34 @@ async function runDevMode() {
         !generatedEntry.includes('@solidjs/web/frames'),
     );
 
+    // Devtools default-on: the workspace's @solidjs/start-devtools install is
+    // auto-detected, so the generated client entry must wrap the app in the
+    // toolbar and pull the virtual devtools module (whose transformed source
+    // wires the server-function observer).
+    record(
+      mode,
+      'devtools',
+      'generated client entry wraps the app in DevToolbar',
+      generatedEntry.includes('DevToolbar') && generatedEntry.includes('virtual:solid-devtools'),
+    );
+    const devtoolsModule = await (await fetch(origin + '/@id/virtual:solid-devtools')).text();
+    record(
+      mode,
+      'devtools',
+      'server function observer wired in the devtools module',
+      devtoolsModule.includes('observeServerFunctionCalls'),
+    );
+
     await runHttpChecks(mode, origin);
 
     await runLazyAssetChecks(mode, origin, { dev: true });
 
-    await runBrowserChecks(mode, origin, { hmr: true, devCss: true, expectCompiler: 'native' });
+    await runBrowserChecks(mode, origin, {
+      hmr: true,
+      devCss: true,
+      expectCompiler: 'native',
+      devtools: true,
+    });
 
     // ---- Cold-start dep scan (boundary-guard false positive) -------------
     // Counterpart: the ssr example's boundary.mjs proves the guard still
@@ -894,6 +936,41 @@ async function runDevMode() {
       'dependency pre-bundling wrote its metadata',
       existsSync(path.join(exampleDir, 'node_modules/.vite/deps/_metadata.json')),
     );
+
+    // ---- Devtools opt-out sub-run (SSR_DEVTOOLS=0 → devtools: false) -----
+    // The package still resolves, but the option must win: no toolbar wrap in
+    // the generated entry and the virtual devtools module stays unclaimed.
+    const offPort = 3176;
+    const offOrigin = `http://localhost:${offPort}`;
+    const offServer = startProcess(
+      'pnpm',
+      ['exec', 'vite', '--port', String(offPort), '--strictPort'],
+      { cwd: exampleDir, env: { ...process.env, SSR_DEVTOOLS: '0' } },
+    );
+    try {
+      await waitForHttp(offOrigin + '/src/api.ts', 30000);
+      const offEntry = await (
+        await fetch(offOrigin + '/@id/virtual:solid-ssr-entry-client.tsx')
+      ).text();
+      record(
+        mode,
+        'devtools',
+        'devtools: false strips the toolbar from the generated entry',
+        !offEntry.includes('DevToolbar') && !offEntry.includes('virtual:solid-devtools'),
+      );
+      const offModule = await fetch(offOrigin + '/@id/virtual:solid-devtools');
+      record(
+        mode,
+        'devtools',
+        'devtools: false leaves the virtual devtools module unserved',
+        !offModule.ok,
+        `status ${offModule.status}`,
+      );
+    } finally {
+      try {
+        process.kill(-offServer.pid, 'SIGTERM');
+      } catch {}
+    }
   } catch (e) {
     record(
       mode,
@@ -1001,6 +1078,27 @@ async function runProdMode() {
     'no server-components transform in server bundle (option off)',
     !serverBundle.includes('@solidjs/web/frames') && !serverBundle.includes('frameTransformResult'),
   );
+  // Dev-serve-only guarantee for `start.devtools`: production output carries
+  // none of it — client assets checked via the toolbar's minification-proof
+  // DOM marker and the package name, the (unminified) server bundle via the
+  // package name and the virtual module id.
+  const devtoolsLeaks = readdirSync(assetsDir).filter((f) => {
+    const source = readFileSync(path.join(assetsDir, f), 'utf-8');
+    return source.includes('data-solid-dev-toolbar') || source.includes('start-devtools');
+  });
+  record(
+    mode,
+    'dce',
+    'no devtools code in client assets',
+    devtoolsLeaks.length === 0,
+    devtoolsLeaks.join(', '),
+  );
+  record(
+    mode,
+    'dce',
+    'no devtools wiring in server bundle',
+    !serverBundle.includes('start-devtools') && !serverBundle.includes('virtual:solid-devtools'),
+  );
 
   const server = startProcess('node', ['server.js'], {
     cwd: exampleDir,
@@ -1076,7 +1174,7 @@ async function runProdMode() {
 
     await runLazyAssetChecks(mode, origin, { dev: false });
 
-    await runBrowserChecks(mode, origin);
+    await runBrowserChecks(mode, origin, { devtools: false });
   } catch (e) {
     record(
       mode,

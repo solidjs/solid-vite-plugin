@@ -44,10 +44,11 @@
 // endpoint. Client code compiles non-hydratable, exactly like a plain SPA.
 import { existsSync, rmSync, writeFileSync } from 'fs';
 import path from 'path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   type DevEnvironment,
   type FilterPattern,
+  normalizePath,
   type Plugin,
   type PreviewServer,
   type ViteDevServer,
@@ -56,6 +57,7 @@ import { getEnvironmentConsumer, isRunnableEnvironment } from '../environment.js
 import {
   DEVTOOLS_ID,
   DEVTOOLS_MOUNT_ID,
+  DEVTOOLS_PACKAGE,
   devtoolsModuleCode,
   devtoolsMountModuleCode,
 } from '../devtools/index.js';
@@ -457,7 +459,9 @@ export function startServe(
   const errorBoundary = options.errorBoundary !== false;
   const styleFilter = internal.styleFilter;
   let devtools: boolean | undefined = false;
-  let devtoolsResolution: Promise<boolean> | undefined;
+  let devtoolsResolution: Promise<string | null> | undefined;
+  /** Resolved module id of `@solidjs/start-devtools` once detection succeeds. */
+  let devtoolsId: string | null = null;
   // `external` is server-mode-only (documented no-op in client mode, so a
   // host-integrated config survives the `ssr` boolean flip untouched).
   const externalServer = !clientMode && !!options.external;
@@ -476,10 +480,23 @@ export function startServe(
     return entries;
   }
 
-  async function resolveDevtools(resolve: () => Promise<unknown>): Promise<boolean> {
+  async function resolveDevtools(
+    resolve: (source: string, importer: string) => Promise<{ id: string } | null>,
+    importer: string,
+  ): Promise<boolean> {
     if (devtools !== undefined) return devtools;
-    devtoolsResolution ??= resolve().then(Boolean);
-    devtools = await devtoolsResolution;
+    // Detect from the app graph first (the documented install location), then
+    // from the plugin's own file: in pnpm-isolated apps a copy that is only a
+    // dependency of the plugin is not reachable from the app's importers. The
+    // resolved id is kept so the virtual modules' imports of the package can
+    // be delegated to it (see resolveId).
+    devtoolsResolution ??= (async () =>
+      (
+        (await resolve(DEVTOOLS_PACKAGE, importer)) ??
+        (await resolve(DEVTOOLS_PACKAGE, fileURLToPath(import.meta.url)))
+      )?.id ?? null)();
+    devtoolsId = await devtoolsResolution;
+    devtools = devtoolsId !== null;
     if (!devtools && options.devtools === true) {
       throw new Error(
         '[@solidjs/vite-plugin] start.devtools requires @solidjs/start-devtools. ' +
@@ -487,6 +504,25 @@ export function startServe(
       );
     }
     return devtools;
+  }
+
+  /**
+   * Cheap root-walk probe mirroring how the optimizer resolves bare
+   * `optimizeDeps.include` entries: is @solidjs/start-devtools reachable from
+   * the Vite root? Detection proper (resolveDevtools) runs later with a real
+   * importer; this only decides whether the toolbar graph can be pre-bundled
+   * at scan time — it hangs off virtual modules the scanner never sees, so
+   * first-request discovery would force a re-optimize + full page reload.
+   */
+  function devtoolsReachableFromRoot(dir: string): boolean {
+    for (let current = dir; ; ) {
+      if (existsSync(path.join(current, 'node_modules', DEVTOOLS_PACKAGE, 'package.json'))) {
+        return true;
+      }
+      const parent = path.dirname(current);
+      if (parent === current) return false;
+      current = parent;
+    }
   }
 
   /** Import specifier for generated code: absolute for files, id for virtuals. */
@@ -1040,6 +1076,7 @@ export function startServe(
             ? undefined
             : false;
         devtoolsResolution = undefined;
+        devtoolsId = null;
         entries = resolveEntries(root, options, clientMode);
         middlewarePath = options.middleware
           ? path.resolve(root, normalizeUserPath(root, options.middleware, 'middleware'))
@@ -1156,7 +1193,17 @@ export function startServe(
                       },
                     }
                   : {}),
-                optimizeDeps: { entries: scanEntries },
+                optimizeDeps: {
+                  entries: scanEntries,
+                  // Like the refresh runtime in the main plugin: the toolbar
+                  // graph is injected behind virtual modules the scanner never
+                  // crawls, so pre-bundle it (and the server-functions runtime
+                  // the virtual module pulls in) up front — first-request
+                  // discovery would re-optimize and full-reload the page.
+                  ...(devtools === undefined && devtoolsReachableFromRoot(root)
+                    ? { include: [DEVTOOLS_PACKAGE, '@solidjs/web/server-functions'] }
+                    : {}),
+                },
               }),
         };
       },
@@ -1165,7 +1212,7 @@ export function startServe(
         base = config.base;
         isBuild = config.command === 'build';
       },
-      resolveId(source) {
+      resolveId(source, importer) {
         if (source === HANDLER_ID) {
           return { id: HANDLER_ID, moduleSideEffects: true };
         }
@@ -1182,6 +1229,18 @@ export function startServe(
         }
         if (devtools && (source === DEVTOOLS_ID || source === DEVTOOLS_MOUNT_ID)) {
           return { id: source, moduleSideEffects: true };
+        }
+        // The virtual devtools modules import the package by its bare name,
+        // but a virtual importer gives Vite no directory to walk, so the
+        // specifier would only resolve from the Vite root — which fails in
+        // pnpm-isolated apps where the package is not a root-level install.
+        // Delegate to the resolution captured at detection time instead.
+        if (
+          devtoolsId &&
+          source === DEVTOOLS_PACKAGE &&
+          (importer === DEVTOOLS_ID || importer === DEVTOOLS_MOUNT_ID)
+        ) {
+          return { id: devtoolsId };
         }
         return null;
       },
@@ -1205,14 +1264,25 @@ export function startServe(
         }
         if (id === ENTRY_SERVER_ID) return generatedEntryServerCode();
         if (id === ENTRY_CLIENT_ID) {
-          const toolbar = await resolveDevtools(() =>
-            this.resolve('@solidjs/start-devtools', requireEntries().app!, { skipSelf: true }),
+          const toolbar = await resolveDevtools(
+            (source, importer) => this.resolve(source, importer, { skipSelf: true }),
+            requireEntries().app!,
           );
           return generatedEntryClientCode(toolbar);
         }
         if (id === DOCUMENT_ID) return documentShellCode;
         if (id === ERROR_BOUNDARY_ID) return errorBoundaryCode;
         if (id === DEVTOOLS_ID || id === DEVTOOLS_MOUNT_ID) {
+          // A cold direct request (stale tab reload) can reach the virtual
+          // module before the entry has triggered detection — run it here so
+          // first-touch order doesn't matter.
+          if (!isBuild && consumer === 'client' && devtools === undefined) {
+            const { app, entryClient } = requireEntries();
+            await resolveDevtools(
+              (source, importer) => this.resolve(source, importer, { skipSelf: true }),
+              app ?? path.resolve(root, entryClient),
+            );
+          }
           if (isBuild || !devtools || consumer !== 'client') {
             this.error(`${id} is only available to the development client.`);
           }
@@ -1226,9 +1296,14 @@ export function startServe(
         if (current.generated || getEnvironmentConsumer(this.environment, opts) !== 'client') {
           return null;
         }
-        if (id.split('?')[0] !== path.resolve(root, current.entryClient)) return null;
-        const toolbar = await resolveDevtools(() =>
-          this.resolve('@solidjs/start-devtools', id, { skipSelf: true }),
+        // Module ids are always forward-slashed; normalize the path.resolve
+        // side too so the comparison holds on Windows.
+        if (normalizePath(id.split('?')[0]) !== normalizePath(path.resolve(root, current.entryClient))) {
+          return null;
+        }
+        const toolbar = await resolveDevtools(
+          (source, importer) => this.resolve(source, importer, { skipSelf: true }),
+          id,
         );
         if (!toolbar) return null;
         return {

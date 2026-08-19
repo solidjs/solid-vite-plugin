@@ -30,6 +30,9 @@ import solidPlugin from '@solidjs/vite-plugin';
 // - SERVER_FN_DEV_MIDDLEWARE=0 disables the built-in dev middleware via
 //   `serverFunctions.devMiddleware` (no-middleware mode) — endpoint dispatch
 //   becomes the host's job, like a Cloudflare-style environment plugin.
+// - SSR_DEVTOOLS=0 disables the development toolbar via `start.devtools`
+//   (dev-mode off sub-run); by default the workspace's @solidjs/start-devtools
+//   install is auto-detected and the toolbar mounts in dev.
 // - BUILD_SSR_FIRST installs an adversarial `builder.buildApp` that builds
 //   the ssr environment before the client (builder-order mode) — mimicking
 //   host orchestrators like @cloudflare/vite-plugin; the plugin's
@@ -137,6 +140,11 @@ export default defineConfig({
                 ? { css: { filter: { include: /App\.tsx$/, exclude: /App\.tsx$/ } } }
                 : {}),
               ...(process.env.CSS_FILTER === 'default' ? { app: 'src/CssLibApp.tsx' } : {}),
+              // SSR_DEVTOOLS=0 (dev-mode sub-run) opts out of the development
+              // toolbar via `start.devtools`. Without the knob the workspace's
+              // @solidjs/start-devtools install is auto-detected, so plain dev
+              // runs double as coverage for the default-on wiring.
+              ...(process.env.SSR_DEVTOOLS === '0' ? { devtools: false } : {}),
               // SSR_MIDDLEWARE=1 (middleware/preview modes): a fetch-style
               // chain fronting every dispatch path — page SSR, /_server,
               // preview — with getRequestEvent() live inside it.
