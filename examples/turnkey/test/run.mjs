@@ -1127,6 +1127,33 @@ async function runDocumentMode() {
   }
 }
 
+async function runCssFilterMode() {
+  const mode = 'css-filter';
+  console.log(`\n=== ${mode.toUpperCase()} ===`);
+  const port = 3172;
+  const origin = `http://localhost:${port}`;
+  const server = startProcess('pnpm', ['exec', 'vite', '--port', String(port), '--strictPort'], {
+    cwd: exampleDir,
+    env: { ...process.env, CSS_FILTER: '1' },
+  });
+  let serverLog = '';
+  server.stdout.on('data', (d) => (serverLog += d));
+  server.stderr.on('data', (d) => (serverLog += d));
+
+  try {
+    await waitForHttp(origin + '/src/api.ts', 30000);
+    const { html } = await fetchStreamed(origin + '/');
+    record(mode, 'css', 'excluded module graph is not crawled for CSS', !html.includes(APP_CSS_COLOR));
+    record(mode, 'ssr', 'filter does not prevent app rendering', html.includes('SSR Start Mode'));
+  } catch (error) {
+    record(mode, 'run', 'mode completed', false, String(error) + serverLog.slice(-2000));
+  } finally {
+    try {
+      process.kill(-server.pid, 'SIGTERM');
+    } catch {}
+  }
+}
+
 // Conventional entries: authored src/entry-server.tsx / src/entry-client.tsx
 // (written temporarily) take precedence over the generated ones. Dev serves
 // them as-is; the prod handler rewrites the authored `/src/entry-client.tsx`
@@ -3111,6 +3138,7 @@ const ALL_MODES = [
   'dev',
   'prod',
   'document',
+  'css-filter',
   'entries',
   'endpoint',
   'configure',
@@ -3132,6 +3160,7 @@ for (const mode of modes) {
   if (mode === 'dev') await runDevMode();
   else if (mode === 'prod') await runProdMode();
   else if (mode === 'document') await runDocumentMode();
+  else if (mode === 'css-filter') await runCssFilterMode();
   else if (mode === 'entries') await runEntriesMode();
   else if (mode === 'endpoint') await runEndpointMode();
   else if (mode === 'configure') await runConfigureMode();

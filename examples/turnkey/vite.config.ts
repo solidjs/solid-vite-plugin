@@ -109,6 +109,9 @@ export default defineConfig({
           ? { document: process.env.SSR_DOCUMENT }
           : {
               external: !!process.env.SOLID_EXTERNAL,
+              ...(process.env.CSS_FILTER
+                ? { css: { filter: { exclude: /App\.tsx$/ } } }
+                : {}),
               // SSR_MIDDLEWARE=1 (middleware/preview modes): a fetch-style
               // chain fronting every dispatch path — page SSR, /_server,
               // preview — with getRequestEvent() live inside it.
