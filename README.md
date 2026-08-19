@@ -179,7 +179,8 @@ same server functions.
 The object form carries the options (`start: true` is pure sugar for
 `start: {}` — both mean the identical start mode with defaults, and
 `false`/absent means off): `app`, `document`, `entryServer`, `entryClient`,
-`middleware`, `env`, `external`, all documented below.
+`middleware`, `setup`, `env`, `errorBoundary`, `css`, `external`, all
+documented below.
 
 ```tsx
 // src/App.tsx — the entire app: a plain content component
@@ -428,6 +429,43 @@ client values, the leak scan — follows
 [@vite-env/core](https://github.com/pyyupsk/vite-env) (MIT), the
 design-correct prior art, reimplemented on this plugin's machinery with
 Standard Schema as the only contract (and runtime-read server values).
+
+**`errorBoundary`** — in a production build, generated entries wrap the app
+in a default error boundary (and the document in an outer one): a render
+error streams a generic `500 | Internal Server Error` fallback — no stack
+or error details reach the HTML; the error itself goes to `console.error`
+— and an error caught before the shell flushes commits a real 500 status
+through the response-head lifecycle. Development is unaffected (Vite's
+error overlay owns dev errors), as are authored entries — the boundary is
+generated-entry codegen. Disable it with `start: { errorBoundary: false }`
+when application middleware owns error handling (an error middleware only
+sees the throw when no boundary catches it first). Default: `true`.
+
+**`css.filter`** — include/exclude patterns
+([picomatch](https://github.com/micromatch/picomatch) globs or regexes;
+relative globs resolve against the Vite root) for the module graphs the dev
+server crawls when collecting the CSS it inlines into `<head>` (the no-FOUC
+guarantee). By default the crawl covers the app's own sources and skips
+`node_modules`. `exclude` prunes matching graphs — providing one replaces
+the default `node_modules` exclusion — and `include` opts matching files in
+on top of that baseline, which is how a dependency's CSS gets
+server-inlined in dev:
+
+```ts
+solid({
+  start: {
+    css: { filter: { include: /node_modules\/some-ui-lib/ } },
+  },
+  ssr: true,
+});
+```
+
+CSS files themselves and virtual modules always pass — the filter decides
+which module graphs are traversed, not which stylesheets are kept — and a
+file matching both patterns stays excluded (Vite `createFilter`'s
+conflict rule). Development only: excluding a graph does not remove its
+CSS from the production build, where CSS always comes from the built
+assets.
 
 **Entry resolution** (all paths relative to the Vite root):
 

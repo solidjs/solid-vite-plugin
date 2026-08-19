@@ -557,10 +557,26 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
   const startOptions: StartOptions | null =
     options.start === true ? {} : options.start || null;
   const styleFilterOptions = startOptions?.css?.filter;
-  let styleFilter = createFilter(
-    styleFilterOptions?.include,
-    styleFilterOptions?.exclude ?? DEFAULT_STYLE_EXCLUDE,
-  );
+  // The CSS crawl walks the module graph from the app's own entries, so a
+  // plain createFilter allowlist can't express the option's purpose (opting
+  // node_modules graphs in): a bare `include` would reject the app sources
+  // the crawl has to traverse to ever reach the included package. Instead
+  // `include` rescues files on top of the baseline (everything except
+  // `exclude`, which defaults to node_modules), while a file matching both
+  // patterns stays excluded — createFilter's own conflict rule.
+  const createStyleFilter = (resolve?: string) => {
+    const opts = resolve === undefined ? undefined : { resolve };
+    const base = createFilter(
+      undefined,
+      styleFilterOptions?.exclude ?? DEFAULT_STYLE_EXCLUDE,
+      opts,
+    );
+    const include = styleFilterOptions?.include;
+    const hasInclude = include != null && (!Array.isArray(include) || include.length > 0);
+    const included = hasInclude ? createFilter(include, styleFilterOptions?.exclude, opts) : null;
+    return (id: string) => base(id) || (included ? included(id) : false);
+  };
+  let styleFilter = createStyleFilter();
   const filterDevStyles = (id: string) => styleFilter(id);
   // `start.external` only means something when a server side exists to hand
   // over (SSR start mode); in client mode it is a documented no-op.
@@ -852,11 +868,7 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
       base = config.base;
       projectRoot = config.root;
       filter = createFilter(options.include, options.exclude, { resolve: projectRoot });
-      styleFilter = createFilter(
-        styleFilterOptions?.include,
-        styleFilterOptions?.exclude ?? DEFAULT_STYLE_EXCLUDE,
-        { resolve: projectRoot },
-      );
+      styleFilter = createStyleFilter(projectRoot);
       if (serverComponents && !(options.start && options.ssr)) {
         config.logger.warn(
           '[@solidjs/vite-plugin] serverFunctions.components is set without SSR start mode (the `start` ' +

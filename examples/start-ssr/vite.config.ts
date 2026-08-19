@@ -58,6 +58,12 @@ export default defineConfig({
   define: {
     __JSX_COMPILER__: JSON.stringify(jsxCompiler),
   },
+  // test-css-lib is written into node_modules by the css-filter mode; it
+  // imports its own CSS, so the SSR environment must transform it (a
+  // Node-externalized import of a bare .css file would crash the render).
+  ...(process.env.CSS_FILTER === 'include' || process.env.CSS_FILTER === 'default'
+    ? { ssr: { noExternal: ['test-css-lib'] } }
+    : {}),
   // VITEST_PROJECTS=1 (vitest mode): both test postures in ONE workspace —
   // DOM component tests under jsdom get the client posture (browser
   // conditions, dom codegen), while the node project gets the server
@@ -109,9 +115,28 @@ export default defineConfig({
           ? { document: process.env.SSR_DOCUMENT }
           : {
               external: !!process.env.SOLID_EXTERNAL,
-              ...(process.env.CSS_FILTER
+              // CSS_FILTER (css-filter mode) exercises `start.css.filter`
+              // against a temp app (src/CssLibApp.tsx, written by the test)
+              // whose graph pulls a temp node_modules package with CSS
+              // (test-css-lib, also written by the test):
+              // - exclude: prune the App.tsx graph (replaces the default
+              //   node_modules exclusion).
+              // - include: opt the test-css-lib graph in on top of the
+              //   default baseline (app CSS must survive).
+              // - conflict: the same file matched by both patterns stays
+              //   excluded (createFilter's exclude-wins rule).
+              // - default: no filter — the node_modules graph is pruned by
+              //   the default exclusion while app CSS is collected.
+              ...(process.env.CSS_FILTER === 'exclude'
                 ? { css: { filter: { exclude: /App\.tsx$/ } } }
                 : {}),
+              ...(process.env.CSS_FILTER === 'include'
+                ? { app: 'src/CssLibApp.tsx', css: { filter: { include: /test-css-lib/ } } }
+                : {}),
+              ...(process.env.CSS_FILTER === 'conflict'
+                ? { css: { filter: { include: /App\.tsx$/, exclude: /App\.tsx$/ } } }
+                : {}),
+              ...(process.env.CSS_FILTER === 'default' ? { app: 'src/CssLibApp.tsx' } : {}),
               // SSR_MIDDLEWARE=1 (middleware/preview modes): a fetch-style
               // chain fronting every dispatch path — page SSR, /_server,
               // preview — with getRequestEvent() live inside it.

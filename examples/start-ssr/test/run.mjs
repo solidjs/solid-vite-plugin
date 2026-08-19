@@ -78,6 +78,13 @@
 //     generated entries and client assets carry no reference to the
 //     server-components runtime when the option is off.
 //
+//   - `start.css.filter` (css-filter mode, CSS_FILTER=<shape> in
+//     vite.config.ts): the dev CSS crawl's include/exclude semantics against
+//     a temp node_modules package written by the test — `exclude` prunes an
+//     app graph (replacing the default node_modules exclusion), `include`
+//     opts the package's graph in on top of the default baseline with app
+//     CSS surviving (the PR #316 use case), a file matching both patterns
+//     stays excluded, and the filterless default prunes node_modules,
 //   - the response-head lifecycle in dev, prod, and preview (App.tsx's
 //     path-keyed surfaces): httpStatus(404)/httpHeader reach the wire, a
 //     pre-flush Location is a real 3xx with no body, a post-flush Location
@@ -105,13 +112,13 @@
 //
 // Requires the plugin built (pnpm build at the repo root) and Google Chrome.
 // Usage: node test/run.mjs
-// [dev|prod|document|entries|endpoint|configure|no-middleware|middleware|preview|base|builder-order|builder-prepare|babel-hmr|frames]
+// [dev|prod|document|css-filter|entries|endpoint|configure|no-middleware|middleware|preview|base|builder-order|builder-prepare|babel-hmr|frames]
 // (default: all)
 
 import { spawn, execSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import path from 'node:path';
-import { rmSync, existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, rmSync, existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import {
   createServer,
@@ -1127,30 +1134,131 @@ async function runDocumentMode() {
   }
 }
 
+// Distinctive rule from the temp test-css-lib package's stylesheet: proves a
+// node_modules graph's CSS was opted into the dev SSR crawl by
+// `start.css.filter.include`. Keep in sync with CSS_LIB_FIXTURES below.
+const LIB_CSS_COLOR = 'rgb(7, 140, 210)';
+
+// Temp fixtures for the css-filter mode (written before the sub-runs,
+// removed after): a real — not symlinked — node_modules package whose JS
+// imports its own CSS (the JS module is what the filter sees; CSS files
+// themselves bypass it), plus an app wrapper that pulls the package into
+// the entry graph. Real directory matters: Vite resolves symlinks, and a
+// `file:` dependency would resolve outside node_modules, dodging the
+// default exclusion under test.
+const CSS_LIB_FIXTURES = {
+  'node_modules/test-css-lib/package.json': JSON.stringify(
+    { name: 'test-css-lib', version: '0.0.0', type: 'module', main: 'index.js' },
+    null,
+    2,
+  ),
+  'node_modules/test-css-lib/index.js': `import './styles.css';\nexport const cssLibReady = true;\n`,
+  'node_modules/test-css-lib/styles.css': `#lib-probe {\n  color: ${LIB_CSS_COLOR};\n}\n`,
+  'src/CssLibApp.tsx': `import 'test-css-lib';
+import App from './App';
+
+export default function CssLibApp() {
+  return <App />;
+}
+`,
+};
+
 async function runCssFilterMode() {
   const mode = 'css-filter';
   console.log(`\n=== ${mode.toUpperCase()} ===`);
-  const port = 3172;
-  const origin = `http://localhost:${port}`;
-  const server = startProcess('pnpm', ['exec', 'vite', '--port', String(port), '--strictPort'], {
-    cwd: exampleDir,
-    env: { ...process.env, CSS_FILTER: '1' },
-  });
-  let serverLog = '';
-  server.stdout.on('data', (d) => (serverLog += d));
-  server.stderr.on('data', (d) => (serverLog += d));
+
+  for (const [file, source] of Object.entries(CSS_LIB_FIXTURES)) {
+    mkdirSync(path.dirname(path.join(exampleDir, file)), { recursive: true });
+    writeFileSync(path.join(exampleDir, file), source);
+  }
+
+  // One dev server per filter shape (the option is config-time); each
+  // sub-run asserts on the streamed dev SSR HTML only.
+  const subRuns = [
+    {
+      filter: 'exclude',
+      port: 3172,
+      checks: (html) => {
+        record(mode, 'exclude', 'excluded module graph is not crawled for CSS', !html.includes(APP_CSS_COLOR));
+        record(mode, 'exclude', 'filter does not prevent app rendering', html.includes('SSR Start Mode'));
+      },
+    },
+    {
+      filter: 'include',
+      port: 3173,
+      checks: (html) => {
+        record(
+          mode,
+          'include',
+          'included node_modules graph is crawled for CSS',
+          html.includes(LIB_CSS_COLOR),
+        );
+        record(
+          mode,
+          'include',
+          'include-only filter keeps collecting app CSS',
+          html.includes(APP_CSS_COLOR),
+        );
+        record(mode, 'include', 'filter does not prevent app rendering', html.includes('SSR Start Mode'));
+      },
+    },
+    {
+      filter: 'conflict',
+      port: 3174,
+      checks: (html) => {
+        record(
+          mode,
+          'conflict',
+          'file matching include and exclude stays excluded',
+          !html.includes(APP_CSS_COLOR),
+        );
+        record(mode, 'conflict', 'filter does not prevent app rendering', html.includes('SSR Start Mode'));
+      },
+    },
+    {
+      filter: 'default',
+      port: 3175,
+      checks: (html) => {
+        record(
+          mode,
+          'default',
+          'node_modules graph is pruned without a filter',
+          !html.includes(LIB_CSS_COLOR),
+        );
+        record(mode, 'default', 'app CSS is collected without a filter', html.includes(APP_CSS_COLOR));
+      },
+    },
+  ];
 
   try {
-    await waitForHttp(origin + '/src/api.ts', 30000);
-    const { html } = await fetchStreamed(origin + '/');
-    record(mode, 'css', 'excluded module graph is not crawled for CSS', !html.includes(APP_CSS_COLOR));
-    record(mode, 'ssr', 'filter does not prevent app rendering', html.includes('SSR Start Mode'));
-  } catch (error) {
-    record(mode, 'run', 'mode completed', false, String(error) + serverLog.slice(-2000));
+    for (const { filter, port, checks } of subRuns) {
+      const origin = `http://localhost:${port}`;
+      const server = startProcess(
+        'pnpm',
+        ['exec', 'vite', '--port', String(port), '--strictPort'],
+        {
+          cwd: exampleDir,
+          env: { ...process.env, CSS_FILTER: filter },
+        },
+      );
+      let serverLog = '';
+      server.stdout.on('data', (d) => (serverLog += d));
+      server.stderr.on('data', (d) => (serverLog += d));
+      try {
+        await waitForHttp(origin + '/src/api.ts', 30000);
+        const { html } = await fetchStreamed(origin + '/');
+        checks(html);
+      } catch (error) {
+        record(mode, filter, 'sub-run completed', false, String(error) + serverLog.slice(-2000));
+      } finally {
+        try {
+          process.kill(-server.pid, 'SIGTERM');
+        } catch {}
+      }
+    }
   } finally {
-    try {
-      process.kill(-server.pid, 'SIGTERM');
-    } catch {}
+    rmSync(path.join(exampleDir, 'node_modules/test-css-lib'), { recursive: true, force: true });
+    rmSync(path.join(exampleDir, 'src/CssLibApp.tsx'), { force: true });
   }
 }
 
