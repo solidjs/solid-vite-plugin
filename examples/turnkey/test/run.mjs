@@ -951,6 +951,16 @@ async function runProdMode() {
       fetchableHtml.includes('SSR Start Mode') &&
       !fetchableHtml.includes('provider-argument-must-not-be-forwarded'),
   );
+  const nonceResponse = await builtHandler.handleRequest(new Request(origin + '/'), {
+    nonce: 'test"<&',
+  });
+  const nonceHtml = await nonceResponse.text();
+  record(
+    mode,
+    'build',
+    'client entry carries the escaped CSP nonce',
+    nonceHtml.includes('<script type="module" nonce="test&quot;&lt;&amp;" src="'),
+  );
   record(
     mode,
     'build',
