@@ -8,9 +8,7 @@
   "compilerOptions": {
     "target": "ESNext",
     "module": "ESNext",
-    "moduleResolution": "bundler",
-    "jsx": "preserve",
-    "jsxImportSource": "@solidjs/web",
+    "moduleResolution": "node",
     "strict": false,
     "declaration": true,
     "noUnusedLocals": true,
