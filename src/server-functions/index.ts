@@ -17,7 +17,7 @@ import {
   type Plugin,
   type ViteDevServer,
 } from 'vite';
-import { isRunnableEnvironment } from '../environment.js';
+import { getEnvironmentConsumer, isRunnableEnvironment } from '../environment.js';
 import { joinBase, sendWebResponse, webRequestFromNode } from '../http.js';
 import { compile, type CompileOptions } from './compile.js';
 import xxHash32 from './xxhash32.js';
@@ -487,7 +487,7 @@ export function serverFunctions(
       enforce: 'pre',
       resolveId(source, _importer, opts) {
         if (source === HANDLER_ID) {
-          if (!opts?.ssr) {
+          if (getEnvironmentConsumer(this.environment, opts) !== 'server') {
             this.error(
               `${HANDLER_ID} is server-only; import it from your server entry (SSR build).`,
             );
@@ -497,7 +497,7 @@ export function serverFunctions(
         return null;
       },
       load(id, opts) {
-        if (id === HANDLER_ID && opts?.ssr) {
+        if (id === HANDLER_ID && getEnvironmentConsumer(this.environment, opts) === 'server') {
           const externalDev =
             this.environment.mode === 'dev' &&
             (internal.externalDevServer || !isRunnableEnvironment(this.environment));
@@ -633,7 +633,7 @@ export function serverFunctions(
         return null;
       },
       async load(id, opts) {
-        const mode = opts?.ssr ? 'server' : 'client';
+        const mode = getEnvironmentConsumer(this.environment, opts);
         if (id === manifestId) {
           if (isBuild && mode === 'server') {
             // Merge the client build's persisted discoveries at load time,
@@ -659,7 +659,7 @@ export function serverFunctions(
       name: 'solid:server-functions/compiler',
       enforce: 'pre',
       async transform(code, fileId, opts) {
-        const mode = opts?.ssr ? 'server' : 'client';
+        const mode = getEnvironmentConsumer(this.environment, opts);
         const [id] = fileId.split('?');
         if (!filter(id)) {
           return null;

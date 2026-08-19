@@ -26,7 +26,7 @@ export type { StartOptions };
 import path from 'path';
 import type { FilterPattern, Plugin, ViteDevServer } from 'vite';
 import { createFilter, version } from 'vite';
-import { isRunnableEnvironment } from './environment.js';
+import { getEnvironmentConsumer, isRunnableEnvironment } from './environment.js';
 import { crawlFrameworkPkgs } from 'vitefu';
 
 const require = createRequire(import.meta.url);
@@ -993,7 +993,7 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
     },
 
     async transform(source, id, transformOptions) {
-      const isSsr = transformOptions && transformOptions.ssr;
+      const isSsr = getEnvironmentConsumer(this.environment, transformOptions) === 'server';
       const currentFileExtension = getExtension(id);
 
       const extensionsToWatch = options.extensions || [];

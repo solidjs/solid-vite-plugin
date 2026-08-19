@@ -13,3 +13,13 @@
 export function isRunnableEnvironment(environment: unknown): boolean {
   return !!environment && typeof environment === 'object' && 'runner' in environment;
 }
+
+export function getEnvironmentConsumer(
+  environment: unknown,
+  options?: { ssr?: boolean },
+): 'client' | 'server' {
+  const consumer = (environment as { config?: { consumer?: string } } | undefined)?.config
+    ?.consumer;
+  if (consumer === 'client' || consumer === 'server') return consumer;
+  return options?.ssr ? 'server' : 'client';
+}

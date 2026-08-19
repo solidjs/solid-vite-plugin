@@ -3,6 +3,8 @@ import { promisify } from 'node:util';
 
 const execAsync = promisify(exec);
 const examples = ['vite-6', 'vite-7', 'vite-8'];
+const pluginHookSsrDeprecation =
+  "Plugin hook `options.ssr` is replaced with `this.environment.config.consumer === 'server'`.";
 const PORT = 4173;
 const TEST_TIMEOUT = 5 * 60 * 1000; // 5 minutes
 const cypressEnv = { ...process.env, ELECTRON_RUN_AS_NODE: undefined };
@@ -29,7 +31,10 @@ async function runExample(example) {
   try {
     // Install and build
     await execAsync('pnpm install', { cwd: examplePath });
-    await execAsync('pnpm run build', { cwd: examplePath });
+    const { stdout, stderr } = await execAsync('pnpm run build', { cwd: examplePath });
+    if (`${stdout}\n${stderr}`.includes(pluginHookSsrDeprecation)) {
+      throw new Error(`Vite's deprecated plugin hook SSR argument was used in ${example}`);
+    }
 
     // Start preview server with timeout
     const server = spawn('pnpm', ['run', 'preview'], { cwd: examplePath });

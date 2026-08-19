@@ -51,7 +51,7 @@ import {
   type PreviewServer,
   type ViteDevServer,
 } from 'vite';
-import { isRunnableEnvironment } from '../environment.js';
+import { getEnvironmentConsumer, isRunnableEnvironment } from '../environment.js';
 import {
   collectDevStyles,
   collectDevStyleSources,
@@ -1035,8 +1035,9 @@ export function startServe(
         return null;
       },
       async load(id, opts) {
+        const consumer = getEnvironmentConsumer(this.environment, opts);
         if (id === HANDLER_ID) {
-          if (!opts?.ssr) {
+          if (consumer !== 'server') {
             this.error(`${HANDLER_ID} is server-only; import it from server code (SSR build).`);
           }
           const externalDev =
@@ -1046,7 +1047,7 @@ export function startServe(
           return handlerModuleCode(externalDev);
         }
         if (id === RESOLVED_DEV_STYLES_ID) {
-          if (!opts?.ssr || this.environment.mode !== 'dev') {
+          if (consumer !== 'server' || this.environment.mode !== 'dev') {
             this.error(`${DEV_STYLES_ID} is only available to the development server handler.`);
           }
           return devStylesModuleCode(this.environment, (file) => this.addWatchFile(file));
