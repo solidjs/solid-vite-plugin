@@ -1,5 +1,30 @@
 # Changelog
 
+## 3.0.0-next.31
+
+### Minor Changes
+
+- 8459560: New `start.devtools` option: a development toolbar with runtime errors and a
+  server function inspector, backed by the new optional-peer package
+  `@solidjs/start-devtools`. By default the toolbar turns on in `vite dev`
+  whenever the package resolves (install it as a dev dependency) and stays off
+  otherwise; `start: { devtools: true }` makes the package required (a missing
+  install becomes an error) and `start: { devtools: false }` opts out entirely.
+  Generated client entries wrap the app in the toolbar's `DevToolbar` component,
+  authored client entries get an injected mount import instead, and either way
+  the wiring is dev-serve-only codegen — production builds and previews contain
+  none of it. The package itself is resolved from the app graph first and from
+  the plugin's own location as a fallback, and the virtual toolbar modules
+  delegate their imports to that captured resolution, so pnpm-isolated installs
+  work without the package being hoisted to the app root.
+
+### Patch Changes
+
+- c8615ed: Apply the request CSP nonce to start mode's generated client-entry script.
+- 7c10d3b: Add a generic production error boundary to generated Start entries. It returns a 500 response for uncaught SSR errors and provides a fallback for uncaught client errors. Set `start.errorBoundary` to `false` when application middleware owns error handling.
+- e607db7: Add `start.css.filter` to control which module graphs are traversed while collecting development CSS. `exclude` prunes matching graphs (defaults to `/node_modules/`; providing one replaces the default), and `include` opts matching files in on top of that baseline — e.g. `{ include: /node_modules\/some-ui-lib/ }` server-inlines that dependency's CSS in dev. A file matching both patterns stays excluded.
+- 450d0e5: Add Vite 9 forward compatibility by using the per-environment consumer in plugin hooks and accepting Vite 9 as a peer.
+
 ## 3.0.0-next.30
 
 ### Patch Changes
