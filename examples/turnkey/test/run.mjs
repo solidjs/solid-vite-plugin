@@ -1024,6 +1024,14 @@ async function runProdMode() {
     );
     record(mode, 'prod', 'no dev injections leaked', !html.includes('/@vite/client'));
 
+    const boom = await fetchStreamed(origin + '/boom');
+    record(
+      mode,
+      'errors',
+      'uncaught render errors return the production fallback',
+      boom.status === 500 && boom.html.includes('500 | Internal Server Error'),
+      `status ${boom.status}`,
+    );
     // clientOnly preload contract (compiler 0.50.0-next.35 + @solidjs/web
     // 2.0): the module-URL pass annotates the clientOnly() call,
     // the server half resolves the chunk through the client manifest and
