@@ -194,6 +194,14 @@ export interface StartOptions {
    */
   env?: boolean | string;
   /**
+   * Add the default production error boundary to generated entries.
+   * Disable this when application middleware owns error handling. Authored
+   * entries are unaffected.
+   *
+   * @default true
+   */
+  errorBoundary?: boolean;
+  /**
    * Let a host integration own the server environment — build wiring and
    * HTTP serving alike. The plugin skips its start-mode server-build config and
    * stands its dev middlewares down (SSR serving and the server-function
@@ -248,6 +256,7 @@ const RESOLVED_DEV_STYLES_ID = '\0' + DEV_STYLES_ID;
 const ENTRY_SERVER_ID = 'virtual:solid-ssr-entry-server.tsx';
 const ENTRY_CLIENT_ID = 'virtual:solid-ssr-entry-client.tsx';
 const DOCUMENT_ID = 'virtual:solid-ssr-document.tsx';
+const ERROR_BOUNDARY_ID = 'virtual:solid-ssr-error-boundary.tsx';
 
 const MANIFEST_ID = 'virtual:solid-manifest';
 const SERVER_FUNCTION_HANDLER_ID = 'virtual:solid-server-function-handler';
@@ -401,6 +410,7 @@ export function startServe(
   // the server-function handler module either way). Everything is gated
   // codegen: with the option off, none of these imports exist anywhere.
   const serverComponents = !!internal.serverComponents;
+  const errorBoundary = options.errorBoundary !== false;
   // `external` is server-mode-only (documented no-op in client mode, so a
   // host-integrated config survives the `ssr` boolean flip untouched).
   const externalServer = !clientMode && !!options.external;
@@ -476,6 +486,26 @@ export function startServe(
     ].join('\n');
   }
 
+  function errorBoundaryImport(): string[] {
+    return isBuild && errorBoundary
+      ? [`import { DefaultErrorBoundary } from ${JSON.stringify(ERROR_BOUNDARY_ID)};`]
+      : [];
+  }
+
+  function documentTree(root: string): string[] {
+    return isBuild && errorBoundary
+      ? [
+          `  <DefaultErrorBoundary>`,
+          `    <Document>`,
+          `      <DefaultErrorBoundary>`,
+          `        <${root} />`,
+          `      </DefaultErrorBoundary>`,
+          `    </Document>`,
+          `  </DefaultErrorBoundary>`,
+        ]
+      : [`  <Document>`, `    <${root} />`, `  </Document>`];
+  }
+
   function generatedEntryServerCode(): string {
     if (clientMode) {
       // The client-mode shell: the document without the app. Rendered per
@@ -486,9 +516,18 @@ export function startServe(
         `import { renderToStream } from '@solidjs/web';`,
         `import manifest from ${JSON.stringify(MANIFEST_ID)};`,
         `import Document from ${JSON.stringify(documentSpec())};`,
+        ...errorBoundaryImport(),
         ``,
         `export function render(request, context) {`,
-        `  return renderToStream(() => <Document />, { manifest });`,
+        `  return renderToStream(() => (`,
+        ...(isBuild && errorBoundary
+          ? [
+              `  <DefaultErrorBoundary>`,
+              `    <Document />`,
+              `  </DefaultErrorBoundary>`,
+            ]
+          : [`  <Document />`]),
+        `  ), { manifest });`,
         `}`,
       ].join('\n');
     }
@@ -505,6 +544,7 @@ export function startServe(
       `import manifest from ${JSON.stringify(MANIFEST_ID)};`,
       `import Document from ${JSON.stringify(documentSpec())};`,
       `import App from ${JSON.stringify(app)};`,
+      ...errorBoundaryImport(),
       ...(setupPath ? [`import setup from ${JSON.stringify(setupPath)};`] : []),
       ``,
       ...(setupPath
@@ -546,18 +586,14 @@ export function startServe(
             ``,
             `function renderApp(Root) {`,
             `  return renderToStream(() => (`,
-            `    <Document>`,
-            `      <Root />`,
-            `    </Document>`,
+            ...documentTree('Root'),
             `  ), ${streamOptions});`,
             `}`,
           ]
         : [
             `export function render(request, context) {`,
             `  return renderToStream(() => (`,
-            `    <Document>`,
-            `      <App />`,
-            `    </Document>`,
+            ...documentTree('App'),
             `  ), ${streamOptions});`,
             `}`,
           ]),
@@ -574,9 +610,14 @@ export function startServe(
       // complete when this runs.
       return [
         `import { render } from '@solidjs/web';`,
+        ...errorBoundaryImport(),
         `import App from ${JSON.stringify(app)};`,
         ``,
-        `render(() => <App />, document.body);`,
+        `render(() => ${
+          isBuild && errorBoundary
+            ? '<DefaultErrorBoundary><App /></DefaultErrorBoundary>'
+            : '<App />'
+        }, document.body);`,
       ].join('\n');
     }
     return [
@@ -584,6 +625,7 @@ export function startServe(
       ...(serverComponents
         ? [`import { installServerComponents } from '@solidjs/web/frames';`]
         : []),
+      ...errorBoundaryImport(),
       `import Document from ${JSON.stringify(documentSpec())};`,
       `import App from ${JSON.stringify(app)};`,
       ``,
@@ -597,9 +639,7 @@ export function startServe(
           ]
         : []),
       `hydrate(() => (`,
-      `  <Document>`,
-      `    <App />`,
-      `  </Document>`,
+      ...documentTree('App'),
       `), document);`,
     ].join('\n');
   }
@@ -623,6 +663,29 @@ export function startServe(
     `      </head>`,
     `      <body>{props.children}</body>`,
     `    </html>`,
+    `  );`,
+    `}`,
+  ].join('\n');
+
+  const errorBoundaryCode = [
+    `import { Errored } from 'solid-js';`,
+    `import { httpStatus, isServer } from '@solidjs/web';`,
+    ``,
+    `function ErrorFallback(props) {`,
+    `  console.error(props.error());`,
+    `  httpStatus(500);`,
+    `  return (`,
+    `    <span style="font-size:1.5em;text-align:center;position:fixed;left:0;bottom:55%;width:100%">`,
+    `      {isServer ? '500 | Internal Server Error' : 'Error | Uncaught Client Exception'}`,
+    `    </span>`,
+    `  );`,
+    `}`,
+    ``,
+    `export function DefaultErrorBoundary(props) {`,
+    `  return (`,
+    `    <Errored fallback={(error) => <ErrorFallback error={error} />}>`,
+    `      {props.children}`,
+    `    </Errored>`,
     `  );`,
     `}`,
   ].join('\n');
@@ -1034,7 +1097,12 @@ export function startServe(
         if (source === DEV_STYLES_ID) {
           return { id: RESOLVED_DEV_STYLES_ID, moduleSideEffects: true };
         }
-        if (source === ENTRY_SERVER_ID || source === ENTRY_CLIENT_ID || source === DOCUMENT_ID) {
+        if (
+          source === ENTRY_SERVER_ID ||
+          source === ENTRY_CLIENT_ID ||
+          source === DOCUMENT_ID ||
+          source === ERROR_BOUNDARY_ID
+        ) {
           return { id: source, moduleSideEffects: source === ENTRY_CLIENT_ID };
         }
         return null;
@@ -1060,6 +1128,7 @@ export function startServe(
         if (id === ENTRY_SERVER_ID) return generatedEntryServerCode();
         if (id === ENTRY_CLIENT_ID) return generatedEntryClientCode();
         if (id === DOCUMENT_ID) return documentShellCode;
+        if (id === ERROR_BOUNDARY_ID) return errorBoundaryCode;
         return null;
       },
       configurePreviewServer(server: PreviewServer) {

@@ -112,7 +112,9 @@ export default defineConfig({
               // SSR_MIDDLEWARE=1 (middleware/preview modes): a fetch-style
               // chain fronting every dispatch path — page SSR, /_server,
               // preview — with getRequestEvent() live inside it.
-              ...(process.env.SSR_MIDDLEWARE ? { middleware: './src/middleware.ts' } : {}),
+              ...(process.env.SSR_MIDDLEWARE
+                ? { middleware: './src/middleware.ts', errorBoundary: false }
+                : {}),
               // SSR_SETUP=1 (middleware mode): the per-request app-setup
               // hook — src/setup.tsx runs between the middleware chain and
               // renderToStream, receiving the event and returning the
