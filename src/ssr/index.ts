@@ -224,7 +224,13 @@ export interface StartOptions {
    * @default undefined (probe env.ts / env.js; off when absent)
    */
   env?: boolean | string;
-  /** Enable the development toolbar. @default true */
+  /**
+   * Enable the development toolbar. By default it is enabled when
+   * `@solidjs/start-devtools` is installed. Setting this to `true` requires
+   * the package, while `false` disables it.
+   *
+   * @default undefined
+   */
   devtools?: boolean;
   /**
    * Add the default production error boundary to generated entries.
@@ -450,7 +456,8 @@ export function startServe(
   const serverComponents = !!internal.serverComponents;
   const errorBoundary = options.errorBoundary !== false;
   const styleFilter = internal.styleFilter;
-  const devtools = options.devtools !== false;
+  let devtools: boolean | undefined = false;
+  let devtoolsResolution: Promise<boolean> | undefined;
   // `external` is server-mode-only (documented no-op in client mode, so a
   // host-integrated config survives the `ssr` boolean flip untouched).
   const externalServer = !clientMode && !!options.external;
@@ -467,6 +474,19 @@ export function startServe(
     // config() always runs before resolveId/load/configureServer.
     if (!entries) throw new Error('[@solidjs/vite-plugin] SSR entries not resolved yet');
     return entries;
+  }
+
+  async function resolveDevtools(resolve: () => Promise<unknown>): Promise<boolean> {
+    if (devtools !== undefined) return devtools;
+    devtoolsResolution ??= resolve().then(Boolean);
+    devtools = await devtoolsResolution;
+    if (!devtools && options.devtools === true) {
+      throw new Error(
+        '[@solidjs/vite-plugin] start.devtools requires @solidjs/start-devtools. ' +
+          'Install it as a development dependency or set start.devtools to false.',
+      );
+    }
+    return devtools;
   }
 
   /** Import specifier for generated code: absolute for files, id for virtuals. */
@@ -646,9 +666,8 @@ export function startServe(
     ].join('\n');
   }
 
-  function generatedEntryClientCode(): string {
+  function generatedEntryClientCode(toolbar: boolean): string {
     const { app } = requireEntries();
-    const toolbar = devtools && !isBuild;
     if (clientMode) {
       // render(), not hydrate(): the shell's body is empty, the app mounts
       // fresh. Client code compiles non-hydratable in client mode, so the
@@ -1016,6 +1035,11 @@ export function startServe(
       enforce: 'pre',
       config(userConfig, env) {
         root = path.resolve(userConfig.root || process.cwd());
+        devtools =
+          env.command === 'serve' && !env.isPreview && options.devtools !== false
+            ? undefined
+            : false;
+        devtoolsResolution = undefined;
         entries = resolveEntries(root, options, clientMode);
         middlewarePath = options.middleware
           ? path.resolve(root, normalizeUserPath(root, options.middleware, 'middleware'))
@@ -1156,7 +1180,7 @@ export function startServe(
         ) {
           return { id: source, moduleSideEffects: source === ENTRY_CLIENT_ID };
         }
-        if (!isBuild && devtools && (source === DEVTOOLS_ID || source === DEVTOOLS_MOUNT_ID)) {
+        if (devtools && (source === DEVTOOLS_ID || source === DEVTOOLS_MOUNT_ID)) {
           return { id: source, moduleSideEffects: true };
         }
         return null;
@@ -1180,7 +1204,12 @@ export function startServe(
           return devStylesModuleCode(this.environment, (file) => this.addWatchFile(file));
         }
         if (id === ENTRY_SERVER_ID) return generatedEntryServerCode();
-        if (id === ENTRY_CLIENT_ID) return generatedEntryClientCode();
+        if (id === ENTRY_CLIENT_ID) {
+          const toolbar = await resolveDevtools(() =>
+            this.resolve('@solidjs/start-devtools', requireEntries().app!, { skipSelf: true }),
+          );
+          return generatedEntryClientCode(toolbar);
+        }
         if (id === DOCUMENT_ID) return documentShellCode;
         if (id === ERROR_BOUNDARY_ID) return errorBoundaryCode;
         if (id === DEVTOOLS_ID || id === DEVTOOLS_MOUNT_ID) {
@@ -1191,13 +1220,17 @@ export function startServe(
         }
         return null;
       },
-      transform(code, id, opts) {
-        if (isBuild || !devtools) return null;
+      async transform(code, id, opts) {
+        if (isBuild || devtools === false) return null;
         const current = requireEntries();
         if (current.generated || getEnvironmentConsumer(this.environment, opts) !== 'client') {
           return null;
         }
         if (id.split('?')[0] !== path.resolve(root, current.entryClient)) return null;
+        const toolbar = await resolveDevtools(() =>
+          this.resolve('@solidjs/start-devtools', id, { skipSelf: true }),
+        );
+        if (!toolbar) return null;
         return {
           code: `import ${JSON.stringify(DEVTOOLS_MOUNT_ID)};\n${code}`,
           map: null,
