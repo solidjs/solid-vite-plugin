@@ -31,7 +31,7 @@ const OnlyClient = clientOnly(() => import('./ClientOnlyWidget'));
 // - a module outside the Vite root — its dev URL must be a base-prefixed
 //   /@fs/ URL, not "/../…" (#298).
 const LazyQuery = lazy(() => import('./QueryLazy.tsx?variant=a'));
-const LazyOutside = lazy(() => import('../../turnkey-external/LazyOutside'));
+const LazyOutside = lazy(() => import('../../start-ssr-external/LazyOutside'));
 
 function LazyAssetsSection() {
   return (

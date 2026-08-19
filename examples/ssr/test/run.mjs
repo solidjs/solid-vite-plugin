@@ -2,7 +2,7 @@
 // path (`ssr: true` + your own middleware-mode dev server and production
 // server, see server.js) still works end to end. Deliberately lean — the
 // heavy assertions (streaming order, hydration, HMR, server functions, CSS
-// dedup) live in the turnkey suite; this one guards the escape hatch the
+// dedup) live in the start-ssr suite; this one guards the escape hatch the
 // `start` option is built on:
 //   - dev: `node server.js` (Vite in middleware mode) serves the SSR'd
 //     document with the Vite client injected,

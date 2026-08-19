@@ -481,7 +481,7 @@ export function serverFunctions(
     return relative.startsWith('..') ? '/@fs/' + entry : '/' + relative;
   }
 
-  const turnkeyPlugins: Plugin[] = [
+  const startPlugins: Plugin[] = [
     {
       name: 'solid:server-functions/handler',
       enforce: 'pre',
@@ -509,7 +509,7 @@ export function serverFunctions(
   ];
 
   if (installDevMiddleware) {
-    turnkeyPlugins.push({
+    startPlugins.push({
       name: 'solid:server-functions/dev-middleware',
       apply: 'serve',
       configureServer(server) {
@@ -700,6 +700,6 @@ export function serverFunctions(
         return null;
       },
     },
-    ...turnkeyPlugins,
+    ...startPlugins,
   ];
 }

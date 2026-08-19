@@ -118,7 +118,7 @@ async function poll(predicate, ms = 3000) {
 }
 
 // ---------------------------------------------------------------------------
-// The dev server: root the turnkey app, TLS on — exactly Vite's
+// The dev server: root the start-ssr app, TLS on — exactly Vite's
 // `server.https` shape (http2 secure server with h1 fallback).
 // ---------------------------------------------------------------------------
 const server = await createServer({

@@ -51,8 +51,8 @@ jobs:
         working-directory: examples/css-matrix
         run: pnpm run test
 
-      - name: Turnkey suite
-        working-directory: examples/turnkey
+      - name: Start SSR suite
+        working-directory: examples/start-ssr
         run: pnpm run test
 
       - name: Start client suite

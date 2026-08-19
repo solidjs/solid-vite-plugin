@@ -460,7 +460,7 @@ async function runLazyAssetChecks(mode, origin, { dev, basePrefix = '' } = {}) {
       'root-external module preloaded via base-prefixed /@fs/ URL',
       !!externalHref &&
         externalHref.startsWith(`${basePrefix}/@fs/`) &&
-        externalHref.endsWith('turnkey-external/LazyOutside.tsx'),
+        externalHref.endsWith('start-ssr-external/LazyOutside.tsx'),
       `modulepreloads: ${preloads.join(', ') || '(none)'}`,
     );
   } else {
@@ -482,7 +482,7 @@ async function runLazyAssetChecks(mode, origin, { dev, basePrefix = '' } = {}) {
       !!queryEntry?.file && queryHref === `${basePrefix}/${queryEntry.file}`,
       `modulepreloads: ${preloads.join(', ') || '(none)'}`,
     );
-    const externalEntry = clientManifest['../turnkey-external/LazyOutside.tsx'];
+    const externalEntry = clientManifest['../start-ssr-external/LazyOutside.tsx'];
     record(
       mode,
       'lazy',
@@ -639,7 +639,7 @@ async function runBrowserChecks(mode, origin, { hmr, devCss, expectCompiler } = 
   const chrome = startProcess(CHROME, [
     '--headless=new',
     `--remote-debugging-port=${CDP_PORT}`,
-    `--user-data-dir=/tmp/turnkey-chrome-${mode}`,
+    `--user-data-dir=/tmp/start-ssr-chrome-${mode}`,
     '--no-first-run',
     '--disable-extensions',
     'about:blank',
@@ -750,7 +750,7 @@ async function runBrowserChecks(mode, origin, { hmr, devCss, expectCompiler } = 
     } catch {}
     await Promise.race([exited, new Promise((r) => setTimeout(r, 3000))]);
     try {
-      rmSync(`/tmp/turnkey-chrome-${mode}`, { recursive: true, force: true, maxRetries: 5 });
+      rmSync(`/tmp/start-ssr-chrome-${mode}`, { recursive: true, force: true, maxRetries: 5 });
     } catch {}
   }
 }
@@ -801,7 +801,7 @@ async function runDevMode() {
     // from the query string when no instance header is present.
     const cold = functionId
       ? await fetch(
-          `${origin}/_server?id=${encodeURIComponent(functionId)}&args=${encodeURIComponent('["turnkey"]')}`,
+          `${origin}/_server?id=${encodeURIComponent(functionId)}&args=${encodeURIComponent('["start-ssr"]')}`,
           { method: 'POST' },
         )
       : null;
@@ -810,7 +810,7 @@ async function runDevMode() {
       mode,
       'sf',
       'cold dispatch before any SSR render (dev middleware)',
-      coldText === 'hello turnkey from the server',
+      coldText === 'hello start-ssr from the server',
       functionId ? `got ${JSON.stringify(coldText)}` : 'could not extract function id',
     );
     const bogus = await fetch(origin + '/_server?id=bogus-0');
@@ -1829,7 +1829,7 @@ async function runFramesChecks(mode, origin) {
   const chrome = startProcess(CHROME, [
     '--headless=new',
     `--remote-debugging-port=${CDP_PORT}`,
-    `--user-data-dir=/tmp/turnkey-chrome-${mode}`,
+    `--user-data-dir=/tmp/start-ssr-chrome-${mode}`,
     '--no-first-run',
     '--disable-extensions',
     'about:blank',
@@ -2042,7 +2042,7 @@ async function runFramesChecks(mode, origin) {
     } catch {}
     await Promise.race([exited, new Promise((r) => setTimeout(r, 3000))]);
     try {
-      rmSync(`/tmp/turnkey-chrome-${mode}`, { recursive: true, force: true, maxRetries: 5 });
+      rmSync(`/tmp/start-ssr-chrome-${mode}`, { recursive: true, force: true, maxRetries: 5 });
     } catch {}
   }
 }
@@ -2857,7 +2857,7 @@ async function runBabelHmrMode() {
     const chrome = startProcess(CHROME, [
       '--headless=new',
       `--remote-debugging-port=${CDP_PORT}`,
-      `--user-data-dir=/tmp/turnkey-chrome-${mode}`,
+      `--user-data-dir=/tmp/start-ssr-chrome-${mode}`,
       '--no-first-run',
       '--disable-extensions',
       'about:blank',
@@ -2873,7 +2873,7 @@ async function runBabelHmrMode() {
       } catch {}
       await Promise.race([exited, new Promise((r) => setTimeout(r, 3000))]);
       try {
-        rmSync(`/tmp/turnkey-chrome-${mode}`, { recursive: true, force: true, maxRetries: 5 });
+        rmSync(`/tmp/start-ssr-chrome-${mode}`, { recursive: true, force: true, maxRetries: 5 });
       } catch {}
     }
   } catch (e) {

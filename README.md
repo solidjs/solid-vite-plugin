@@ -529,7 +529,7 @@ the plugin strips its script from the served shell — nothing hydrates, so
 a shared `Document` costs nothing — and the built-in shell omits it.)
 
 Start-mode serving is opt-in via `start`, so bare `ssr: true` setups keep the
-transform-only behavior. See `examples/turnkey` for a complete SSR app
+transform-only behavior. See `examples/start-ssr` for a complete SSR app
 (including a one-file production server and server functions),
 `examples/start-client` for client mode (whose test flips the same app
 between the modes), and `examples/ssr` for the manual `ssr: true` wiring.
@@ -590,7 +590,7 @@ plugin's own runtime configuration.
 Meta-frameworks that need to control plugin ordering and dispatch requests
 through their own server should use the standalone `serverFunctions()`
 export instead, which never installs the dev middleware. See
-`examples/turnkey` for a complete app.
+`examples/start-ssr` for a complete app.
 
 **Server components (experimental):** `serverFunctions: { components: true }`
 lets a `"use server"` function return a component. Server components ride
@@ -605,7 +605,7 @@ SSR'd document and are adopted
 at boot with zero endpoint requests. With authored entries, the app-side
 pieces (the render plugin, the bootstrap script, and the client's
 `installServerComponents()` call, all from `@solidjs/web/frames`) live in
-your entry files instead. See `examples/turnkey` for a complete page.
+your entry files instead. See `examples/start-ssr` for a complete page.
 
 #### options.compiler
 

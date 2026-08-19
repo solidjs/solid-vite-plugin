@@ -554,7 +554,7 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
   // `start: true` is sugar for the empty options bag — one start mode,
   // two spellings — so normalize here and let everything downstream see a
   // single shape (`false` behaves exactly like omission).
-  const turnkey: StartOptions | null =
+  const startOptions: StartOptions | null =
     options.start === true ? {} : options.start || null;
   const styleFilterOptions = turnkey?.css?.filter;
   let styleFilter = createFilter(
@@ -564,7 +564,7 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
   const filterDevStyles = (id: string) => styleFilter(id);
   // `start.external` only means something when a server side exists to hand
   // over (SSR start mode); in client mode it is a documented no-op.
-  const externalDevServer = !!options.ssr && !!turnkey?.external;
+  const externalDevServer = !!options.ssr && !!startOptions?.external;
 
   let needHmr = false;
   let replaceDev = false;
@@ -1183,7 +1183,7 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
           // With start mode on (either variant), the dev middleware dispatches
           // the endpoint through the SSR handler so user middleware and the
           // stub-backed request event front it exactly like page SSR.
-          ...(turnkey ? { ssrHandler: SSR_HANDLER_ID } : {}),
+          ...(startOptions ? { ssrHandler: SSR_HANDLER_ID } : {}),
         }),
         mainPlugin,
       ]
@@ -1192,13 +1192,13 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
   // The `start` option opts into start-mode serving on top of the transforms;
   // the `ssr` boolean picks the mode (a bare `ssr: true` keeps the
   // historical transform-only behavior).
-  if (turnkey) {
+  if (startOptions) {
     plugins.push(
       // Typed env (`start.env`) rides both start modes: config-time
       // validation, the virtual:env/{server,client} modules, generated
       // types, and the client-bundle leak scan.
-      ...startEnv(turnkey.env),
-      ...startServe(turnkey, {
+      ...startEnv(startOptions.env),
+      ...startServe(startOptions, {
         serverFunctions: !!options.serverFunctions,
         serverComponents,
         ssr: !!options.ssr,

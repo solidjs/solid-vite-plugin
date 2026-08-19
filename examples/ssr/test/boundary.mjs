@@ -91,7 +91,7 @@ async function runBuild({ entry, ssr }) {
 // must succeed quietly (still claiming the specifier, so the scanner does
 // not chase it as a missing bare dependency, which would abort the scan all
 // the same). Regression: cold-start "Failed to run dependency scan" banners
-// on apps whose 'use server' modules reach server-only code (the turnkey
+// on apps whose 'use server' modules reach server-only code (the start-ssr
 // suite's dev mode covers the end-to-end cold start).
 {
   const server = await createServer({

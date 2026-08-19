@@ -27,6 +27,6 @@ it runs, instead of preempting a post-order orchestrator's staged build
 and knows which environments to skip). Plain `builder: {}` setups keep the
 reinstated build-everything fallback, unchanged.
 
-Covered by a new `examples/turnkey` e2e mode (builder-prepare) that builds against a
+Covered by a new `examples/start-ssr` e2e mode (builder-prepare) that builds against a
 nitro-shaped host: a pre-order output-wiping hook plus a post-order
 ssr-building orchestrator that skips already-built environments.

@@ -160,7 +160,7 @@ function readDistFiles(dir) {
 }
 
 // ---------------------------------------------------------------------------
-// CDP driver (compact copy of the turnkey harness's)
+// CDP driver (compact copy of the start-ssr harness's)
 // ---------------------------------------------------------------------------
 async function connectChrome() {
   let target;
