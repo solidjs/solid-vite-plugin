@@ -458,7 +458,7 @@ export function startServe(
   const serverComponents = !!internal.serverComponents;
   const errorBoundary = options.errorBoundary !== false;
   const styleFilter = internal.styleFilter;
-  let devtools: boolean | undefined = false;
+  let devtoolsEnabled = false;
   let devtoolsResolutions: Partial<
     Record<'client' | 'server', Promise<string | null>>
   > = {};
@@ -486,7 +486,7 @@ export function startServe(
     importer: string,
     consumer: 'client' | 'server',
   ): Promise<boolean> {
-    if (devtools === false) return false;
+    if (!devtoolsEnabled) return false;
     // Detect from the app graph first (the documented install location), then
     // from the plugin's own file: in pnpm-isolated apps a copy that is only a
     // dependency of the plugin is not reachable from the app's importers. The
@@ -499,14 +499,12 @@ export function startServe(
       )?.id ?? null)();
     const id = await devtoolsResolutions[consumer];
     devtoolsIds[consumer] = id;
-    if (id) devtools = true;
     if (!id && options.devtools === true) {
       throw new Error(
         '[@solidjs/vite-plugin] start.devtools requires @solidjs/start-devtools. ' +
           'Install it as a development dependency or set start.devtools to false.',
       );
     }
-    if (!id && !Object.values(devtoolsIds).some(Boolean)) devtools = false;
     return id !== null;
   }
 
@@ -1076,10 +1074,8 @@ export function startServe(
       enforce: 'pre',
       config(userConfig, env) {
         root = path.resolve(userConfig.root || process.cwd());
-        devtools =
-          env.command === 'serve' && !env.isPreview && options.devtools !== false
-            ? undefined
-            : false;
+        devtoolsEnabled =
+          env.command === 'serve' && !env.isPreview && options.devtools !== false;
         devtoolsResolutions = {};
         devtoolsIds = {};
         entries = resolveEntries(root, options, clientMode);
@@ -1205,7 +1201,7 @@ export function startServe(
                   // crawls, so pre-bundle it (and the server-functions runtime
                   // the virtual module pulls in) up front — first-request
                   // discovery would re-optimize and full-reload the page.
-                  ...(devtools === undefined && devtoolsReachableFromRoot(root)
+                  ...(devtoolsEnabled && devtoolsReachableFromRoot(root)
                     ? { include: [DEVTOOLS_PACKAGE, '@solidjs/web/server-functions'] }
                     : {}),
                 },
@@ -1232,7 +1228,7 @@ export function startServe(
         ) {
           return { id: source, moduleSideEffects: source === ENTRY_CLIENT_ID };
         }
-        if (source === DEVTOOLS_ID || (devtools && source === DEVTOOLS_MOUNT_ID)) {
+        if (source === DEVTOOLS_ID || (devtoolsEnabled && source === DEVTOOLS_MOUNT_ID)) {
           return { id: source, moduleSideEffects: true };
         }
         // The virtual devtools modules import the package by its bare name,
@@ -1240,12 +1236,13 @@ export function startServe(
         // specifier would only resolve from the Vite root — which fails in
         // pnpm-isolated apps where the package is not a root-level install.
         // Delegate to the resolution captured at detection time instead.
+        const devtoolsId = devtoolsIds[getEnvironmentConsumer(this.environment, opts)];
         if (
-          devtoolsIds[getEnvironmentConsumer(this.environment, opts)] &&
+          devtoolsId &&
           source === DEVTOOLS_PACKAGE &&
           (importer === DEVTOOLS_ID || importer === DEVTOOLS_MOUNT_ID)
         ) {
-          return { id: devtoolsIds[getEnvironmentConsumer(this.environment, opts)]! };
+          return { id: devtoolsId };
         }
         return null;
       },
@@ -1292,7 +1289,7 @@ export function startServe(
           // module before the entry has triggered detection — run it here so
           // first-touch order doesn't matter.
           let enabled = false;
-          if (!isBuild && devtools !== false) {
+          if (devtoolsEnabled) {
             const { app, entryClient } = requireEntries();
             enabled = await resolveDevtools(
               (source, importer) => this.resolve(source, importer, { skipSelf: true }),
@@ -1303,15 +1300,16 @@ export function startServe(
           return devtoolsModuleCode(consumer, enabled);
         }
         if (id === DEVTOOLS_MOUNT_ID) {
-          if (!isBuild && consumer === 'client' && devtools !== false) {
+          let enabled = false;
+          if (devtoolsEnabled && consumer === 'client') {
             const { app, entryClient } = requireEntries();
-            await resolveDevtools(
+            enabled = await resolveDevtools(
               (source, importer) => this.resolve(source, importer, { skipSelf: true }),
               app ?? path.resolve(root, entryClient),
               'client',
             );
           }
-          if (isBuild || !devtools || consumer !== 'client') {
+          if (!enabled) {
             this.error(`${id} is only available to the development client.`);
           }
           return devtoolsMountModuleCode();
@@ -1319,7 +1317,7 @@ export function startServe(
         return null;
       },
       async transform(code, id, opts) {
-        if (isBuild || devtools === false) return null;
+        if (isBuild || !devtoolsEnabled) return null;
         const current = requireEntries();
         if (current.generated || getEnvironmentConsumer(this.environment, opts) !== 'client') {
           return null;

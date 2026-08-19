@@ -798,7 +798,7 @@ async function runBrowserChecks(
   }
 }
 
-async function runAuthoredDevtoolsChecks(mode, origin) {
+async function runCustomEntryDevtoolsChecks(mode, origin) {
   const chrome = startProcess(CHROME, [
     '--headless=new',
     `--remote-debugging-port=${CDP_PORT}`,
@@ -814,16 +814,16 @@ async function runAuthoredDevtoolsChecks(mode, origin) {
     record(
       mode,
       'devtools',
-      'authored entry renders one toolbar',
+      'custom entry renders one toolbar',
       await cdp.waitFor('document.querySelectorAll("[data-solid-dev-toolbar]").length === 1'),
     );
     await cdp.evalJs('document.querySelector("#authored-error").click()');
     record(
       mode,
       'devtools',
-      'authored entry boundary reports client errors',
+      'custom entry boundary reports client errors',
       await cdp.waitFor(
-        'document.querySelector("[data-solid-error-viewer-error-info-message]")?.textContent === "authored-dev-error"',
+        'document.querySelector("[data-solid-error-viewer-error-info-message]")?.textContent === "custom-entry-dev-error"',
       ),
     );
   } finally {
@@ -1031,7 +1031,7 @@ async function runDevMode() {
       record(
         mode,
         'devtools',
-        'devtools: false serves only the authored-entry passthrough',
+        'devtools: false serves only the production passthrough',
         offModule.ok &&
           offModuleSource.includes('return props.children') &&
           !offModuleSource.includes('@solidjs/start-devtools'),
@@ -1442,7 +1442,7 @@ import { DevToolbar } from 'virtual:solid-devtools';
 import App from './App';
 
 function Broken() {
-  throw new Error('authored-dev-error');
+  throw new Error('custom-entry-dev-error');
 }
 
 export default function TestShell() {
@@ -1511,7 +1511,7 @@ async function runEntriesMode() {
       html.includes('src="/src/entry-client.tsx"') &&
         !html.includes('virtual:solid-ssr-entry-client'),
     );
-    await runAuthoredDevtoolsChecks(mode, origin);
+    await runCustomEntryDevtoolsChecks(mode, origin);
     try {
       process.kill(-server.pid, 'SIGTERM');
     } catch {}
@@ -1519,22 +1519,22 @@ async function runEntriesMode() {
 
     console.log('  building…');
     execSync('pnpm run build', { cwd: exampleDir, stdio: 'pipe' });
-    const authoredBundles = [
+    const customEntryBundles = [
       ...readdirSync(path.join(exampleDir, 'dist/client/assets')).map((file) =>
         path.join(exampleDir, 'dist/client/assets', file),
       ),
       path.join(exampleDir, 'dist/server/server.js'),
     ];
-    const authoredDevtoolsLeaks = authoredBundles.filter((file) => {
+    const customEntryDevtoolsLeaks = customEntryBundles.filter((file) => {
       const source = readFileSync(file, 'utf-8');
       return source.includes('data-solid-dev-toolbar') || source.includes('start-devtools');
     });
     record(
       mode,
       'prod',
-      'authored devtools wrapper is removed from production',
-      authoredDevtoolsLeaks.length === 0,
-      authoredDevtoolsLeaks.join(', '),
+      'custom entry devtools code is removed from production',
+      customEntryDevtoolsLeaks.length === 0,
+      customEntryDevtoolsLeaks.join(', '),
     );
     server = startProcess('node', ['server.js'], {
       cwd: exampleDir,

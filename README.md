@@ -207,12 +207,13 @@ import { DevToolbar } from "virtual:solid-devtools";
 </body>;
 ```
 
-The virtual component becomes a children-only passthrough in production, so
-the development package is not included in either production bundle. Add its
-ambient declaration to an `env.d.ts`:
+Use the virtual module instead of importing `@solidjs/start-devtools` directly.
+It becomes a children-only passthrough in production, so the development
+package is not included in either production bundle. Add its ambient
+declaration to an `env.d.ts`:
 
 ```ts
-/// <reference types="@solidjs/vite-plugin/start-devtools" />
+/// <reference types="@solidjs/vite-plugin/virtual-start-devtools" />
 ```
 
 ```tsx
