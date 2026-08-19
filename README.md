@@ -193,8 +193,9 @@ Start mode detects the package automatically. Set `start: { devtools: true }`
 to require it or `start: { devtools: false }` to disable it. The package is an
 optional peer and the toolbar is not included in production builds.
 
-Generated entries wrap the app automatically. With authored entries, place
-the development boundary around the app in the shared document or root:
+Generated entries wrap the app automatically. With custom server and client
+entries, place the development boundary around the app in the shared document
+or root:
 
 ```tsx
 import { DevToolbar } from "virtual:solid-devtools";
