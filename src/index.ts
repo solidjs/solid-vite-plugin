@@ -556,7 +556,7 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
   // single shape (`false` behaves exactly like omission).
   const startOptions: StartOptions | null =
     options.start === true ? {} : options.start || null;
-  const styleFilterOptions = turnkey?.css?.filter;
+  const styleFilterOptions = startOptions?.css?.filter;
   let styleFilter = createFilter(
     styleFilterOptions?.include,
     styleFilterOptions?.exclude ?? DEFAULT_STYLE_EXCLUDE,
