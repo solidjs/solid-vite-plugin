@@ -721,7 +721,12 @@ export function startServe(
     // every positional claim after it.
     lines.push(
       ``,
-      `function createHtmlChunkTransform(clientEntry, extraHead) {`,
+      `function escapeAttribute(value) {`,
+      `  return value.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');`,
+      `}`,
+      ``,
+      `function createHtmlChunkTransform(clientEntry, extraHead, nonce) {`,
+      `  const nonceAttr = nonce ? ' nonce="' + escapeAttribute(nonce) + '"' : '';`,
       `  let first = true;`,
       `  let injected = false;`,
       `  return (chunk) => {`,
@@ -767,7 +772,7 @@ export function startServe(
       // fresh render-into-body mount (hydration, by contrast, wants to
       // start as early as possible).
       headParts.push(
-        `(clientEntry ? '<script type="module" src="' + clientEntry + '"${clientMode ? '' : ' async'}></' + 'script>' : '')`,
+        `(clientEntry ? '<script type="module"' + nonceAttr + ' src="' + clientEntry + '"${clientMode ? '' : ' async'}></' + 'script>' : '')`,
       );
     }
     if (headParts.length) {
@@ -851,7 +856,7 @@ export function startServe(
       `  return createSSRResponse(result, event, {`,
       `    responseInit: options.responseInit,`,
       `    nonce: options.nonce,`,
-      `    transformChunk: createHtmlChunkTransform(clientEntry, options.devHead),`,
+      `    transformChunk: createHtmlChunkTransform(clientEntry, options.devHead, options.nonce),`,
       `  });`,
       `}`,
       ``,
