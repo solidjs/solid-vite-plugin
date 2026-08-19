@@ -951,20 +951,13 @@ async function runDevMode() {
 
     // Devtools default-on: the workspace's @solidjs/start-devtools install is
     // auto-detected, so the generated client entry must wrap the app in the
-    // toolbar and pull the virtual devtools module (whose transformed source
-    // wires the server-function observer).
+    // toolbar and import the package.
     record(
       mode,
       'devtools',
       'generated client entry wraps the app in DevToolbar',
-      generatedEntry.includes('DevToolbar') && generatedEntry.includes('virtual:solid-devtools'),
-    );
-    const devtoolsModule = await (await fetch(origin + '/@id/virtual:solid-devtools')).text();
-    record(
-      mode,
-      'devtools',
-      'server function observer wired in the devtools module',
-      devtoolsModule.includes('observeServerFunctionCalls'),
+      generatedEntry.includes('DevToolbar') &&
+        /@solidjs(?:\/|_)start-devtools/.test(generatedEntry),
     );
 
     await runHttpChecks(mode, origin);
@@ -1007,7 +1000,7 @@ async function runDevMode() {
 
     // ---- Devtools opt-out sub-run (SSR_DEVTOOLS=0 → devtools: false) -----
     // The package still resolves, but the option must win: no toolbar wrap in
-    // the generated entry and the virtual devtools module stays unclaimed.
+    // the generated entry.
     const offPort = 3176;
     const offOrigin = `http://localhost:${offPort}`;
     const offServer = startProcess(
@@ -1024,18 +1017,7 @@ async function runDevMode() {
         mode,
         'devtools',
         'devtools: false strips the toolbar from the generated entry',
-        !offEntry.includes('DevToolbar') && !offEntry.includes('virtual:solid-devtools'),
-      );
-      const offModule = await fetch(offOrigin + '/@id/virtual:solid-devtools');
-      const offModuleSource = await offModule.text();
-      record(
-        mode,
-        'devtools',
-        'devtools: false serves only the production passthrough',
-        offModule.ok &&
-          offModuleSource.includes('return props.children') &&
-          !offModuleSource.includes('@solidjs/start-devtools'),
-        `status ${offModule.status}`,
+        !offEntry.includes('DevToolbar') && !offEntry.includes('@solidjs/start-devtools'),
       );
     } finally {
       try {
@@ -1438,7 +1420,7 @@ async function runCssFilterMode() {
 const ENTRY_FIXTURES = {
   'src/TestShell.tsx': `import { createSignal, Show } from 'solid-js';
 import { HydrationScript } from '@solidjs/web';
-import { DevToolbar } from 'virtual:solid-devtools';
+import { DevToolbar } from '@solidjs/start-devtools';
 import App from './App';
 
 function Broken() {

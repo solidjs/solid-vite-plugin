@@ -190,15 +190,16 @@ pnpm add -D @solidjs/start-devtools@next
 ```
 
 Start mode detects the package automatically. Set `start: { devtools: true }`
-to require it or `start: { devtools: false }` to disable it. The package is an
-optional peer and the toolbar is not included in production builds.
+to require it or `start: { devtools: false }` to disable automatic integration.
+The package is an optional peer and the toolbar is not included in production
+builds.
 
 Generated entries wrap the app automatically. With custom server and client
 entries, place the development boundary around the app in the shared document
 or root:
 
 ```tsx
-import { DevToolbar } from "virtual:solid-devtools";
+import { DevToolbar } from "@solidjs/start-devtools";
 
 <body>
   <DevToolbar>
@@ -207,14 +208,8 @@ import { DevToolbar } from "virtual:solid-devtools";
 </body>;
 ```
 
-Use the virtual module instead of importing `@solidjs/start-devtools` directly.
-It becomes a children-only passthrough in production, so the development
-package is not included in either production bundle. Add its ambient
-declaration to an `env.d.ts`:
-
-```ts
-/// <reference types="@solidjs/vite-plugin/virtual-start-devtools" />
-```
+The package becomes a children-only passthrough in production, so no toolbar
+code is included in either production bundle.
 
 ```tsx
 // src/App.tsx — the entire app: a plain content component

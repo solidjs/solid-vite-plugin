@@ -55,10 +55,8 @@ import {
 } from 'vite';
 import { getEnvironmentConsumer, isRunnableEnvironment } from '../environment.js';
 import {
-  DEVTOOLS_ID,
   DEVTOOLS_MOUNT_ID,
   DEVTOOLS_PACKAGE,
-  devtoolsModuleCode,
   devtoolsMountModuleCode,
 } from '../devtools/index.js';
 import {
@@ -490,8 +488,7 @@ export function startServe(
     // Detect from the app graph first (the documented install location), then
     // from the plugin's own file: in pnpm-isolated apps a copy that is only a
     // dependency of the plugin is not reachable from the app's importers. The
-    // resolved id is kept so the virtual modules' imports of the package can
-    // be delegated to it (see resolveId).
+    // resolved id is kept so imports from generated modules can use it.
     devtoolsResolutions[consumer] ??= (async () =>
       (
         (await resolve(DEVTOOLS_PACKAGE, importer)) ??
@@ -648,7 +645,7 @@ export function startServe(
       `import manifest from ${JSON.stringify(MANIFEST_ID)};`,
       `import Document from ${JSON.stringify(documentSpec())};`,
       `import App from ${JSON.stringify(app)};`,
-      ...(toolbar ? [`import { DevToolbar } from ${JSON.stringify(DEVTOOLS_ID)};`] : []),
+      ...(toolbar ? [`import { DevToolbar } from ${JSON.stringify(DEVTOOLS_PACKAGE)};`] : []),
       ...errorBoundaryImport(),
       ...(setupPath ? [`import setup from ${JSON.stringify(setupPath)};`] : []),
       ``,
@@ -716,7 +713,7 @@ export function startServe(
       return [
         `import { render } from '@solidjs/web';`,
         ...errorBoundaryImport(),
-        ...(toolbar ? [`import { DevToolbar } from ${JSON.stringify(DEVTOOLS_ID)};`] : []),
+        ...(toolbar ? [`import { DevToolbar } from ${JSON.stringify(DEVTOOLS_PACKAGE)};`] : []),
         `import App from ${JSON.stringify(app)};`,
         ``,
         `render(() => ${
@@ -730,7 +727,7 @@ export function startServe(
     }
     return [
       `import { hydrate } from '@solidjs/web';`,
-      ...(toolbar ? [`import { DevToolbar } from ${JSON.stringify(DEVTOOLS_ID)};`] : []),
+      ...(toolbar ? [`import { DevToolbar } from ${JSON.stringify(DEVTOOLS_PACKAGE)};`] : []),
       ...(serverComponents
         ? [`import { installServerComponents } from '@solidjs/web/frames';`]
         : []),
@@ -1197,10 +1194,8 @@ export function startServe(
                 optimizeDeps: {
                   entries: scanEntries,
                   // Like the refresh runtime in the main plugin: the toolbar
-                  // graph is injected behind virtual modules the scanner never
-                  // crawls, so pre-bundle it (and the server-functions runtime
-                  // the virtual module pulls in) up front — first-request
-                  // discovery would re-optimize and full-reload the page.
+                  // graph is injected behind modules the scanner never crawls,
+                  // so pre-bundle it and the server-functions runtime up front.
                   ...(devtoolsEnabled && devtoolsReachableFromRoot(root)
                     ? { include: [DEVTOOLS_PACKAGE, '@solidjs/web/server-functions'] }
                     : {}),
@@ -1228,19 +1223,18 @@ export function startServe(
         ) {
           return { id: source, moduleSideEffects: source === ENTRY_CLIENT_ID };
         }
-        if (source === DEVTOOLS_ID || (devtoolsEnabled && source === DEVTOOLS_MOUNT_ID)) {
+        if (devtoolsEnabled && source === DEVTOOLS_MOUNT_ID) {
           return { id: source, moduleSideEffects: true };
         }
-        // The virtual devtools modules import the package by its bare name,
-        // but a virtual importer gives Vite no directory to walk, so the
-        // specifier would only resolve from the Vite root — which fails in
-        // pnpm-isolated apps where the package is not a root-level install.
-        // Delegate to the resolution captured at detection time instead.
+        // Generated modules have no directory for bare-package resolution.
+        // Reuse the app-relative id captured during detection.
         const devtoolsId = devtoolsIds[getEnvironmentConsumer(this.environment, opts)];
         if (
           devtoolsId &&
           source === DEVTOOLS_PACKAGE &&
-          (importer === DEVTOOLS_ID || importer === DEVTOOLS_MOUNT_ID)
+          (importer === ENTRY_SERVER_ID ||
+            importer === ENTRY_CLIENT_ID ||
+            importer === DEVTOOLS_MOUNT_ID)
         ) {
           return { id: devtoolsId };
         }
@@ -1284,21 +1278,6 @@ export function startServe(
         }
         if (id === DOCUMENT_ID) return documentShellCode;
         if (id === ERROR_BOUNDARY_ID) return errorBoundaryCode;
-        if (id === DEVTOOLS_ID) {
-          // A cold direct request (stale tab reload) can reach the virtual
-          // module before the entry has triggered detection — run it here so
-          // first-touch order doesn't matter.
-          let enabled = false;
-          if (devtoolsEnabled) {
-            const { app, entryClient } = requireEntries();
-            enabled = await resolveDevtools(
-              (source, importer) => this.resolve(source, importer, { skipSelf: true }),
-              app ?? path.resolve(root, entryClient),
-              consumer,
-            );
-          }
-          return devtoolsModuleCode(consumer, enabled);
-        }
         if (id === DEVTOOLS_MOUNT_ID) {
           let enabled = false;
           if (devtoolsEnabled && consumer === 'client') {
