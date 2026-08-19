@@ -2,6 +2,9 @@ import { defineConfig } from 'vite';
 import solidPlugin from '@solidjs/vite-plugin';
 
 export default defineConfig({
+  future: {
+    removePluginHookSsrArgument: 'warn',
+  },
   plugins: [
     {
       name: 'simulate-eliminated-lazy-importer',
