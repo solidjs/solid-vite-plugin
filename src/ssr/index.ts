@@ -47,6 +47,7 @@ import path from 'path';
 import { pathToFileURL } from 'node:url';
 import {
   type DevEnvironment,
+  type FilterPattern,
   type Plugin,
   type PreviewServer,
   type ViteDevServer,
@@ -55,6 +56,7 @@ import { getEnvironmentConsumer, isRunnableEnvironment } from '../environment.js
 import {
   collectDevStyles,
   collectDevStyleSources,
+  type DevStyleFilter,
   devStylePatch,
   renderDevStyleTag,
 } from '../dev-manifest.js';
@@ -77,6 +79,14 @@ export interface StartOptions {
    * @default "src/App.{tsx,jsx,ts,js}" (also probes lowercase "src/app.*")
    */
   app?: string;
+  /** Options for development CSS crawling. */
+  css?: {
+    /** Filter files traversed while collecting CSS. */
+    filter?: {
+      include?: FilterPattern;
+      exclude?: FilterPattern;
+    };
+  };
   /**
    * Server entry module. Must export `render(request?, context?)` returning
    * a `renderToStream` result, an HTML string, or a `Response`.
@@ -389,7 +399,12 @@ function resolveEntries(root: string, options: StartOptions, clientMode: boolean
 
 export function startServe(
   options: StartOptions,
-  internal: { serverFunctions?: boolean; serverComponents?: boolean; ssr?: boolean } = {},
+  internal: {
+    serverFunctions?: boolean;
+    serverComponents?: boolean;
+    ssr?: boolean;
+    styleFilter?: DevStyleFilter;
+  } = {},
 ): Plugin[] {
   // Client mode (the `start` option without `ssr: true`) rides this exact
   // plugin with three deltas: the generated server entry renders the
@@ -411,6 +426,7 @@ export function startServe(
   // codegen: with the option off, none of these imports exist anywhere.
   const serverComponents = !!internal.serverComponents;
   const errorBoundary = options.errorBoundary !== false;
+  const styleFilter = internal.styleFilter;
   // `external` is server-mode-only (documented no-op in client mode, so a
   // host-integrated config survives the `ssr` boolean flip untouched).
   const externalServer = !clientMode && !!options.external;
@@ -466,7 +482,12 @@ export function startServe(
     environment: DevEnvironment,
     watchFile: (file: string) => void,
   ): Promise<string> {
-    const styles = await collectDevStyleSources(environment, styleRoots(), watchFile);
+    const styles = await collectDevStyleSources(
+      environment,
+      styleRoots(),
+      watchFile,
+      styleFilter,
+    );
     if (!styles.length) return `export default '';`;
 
     const imports = styles.map((style, index) => {
@@ -1211,7 +1232,9 @@ export function startServe(
               // Loaded through the SSR environment so the app, the request
               // event storage, and the handler share one module registry.
               const handler = await server.ssrLoadModule(HANDLER_ID);
-              const styles = pageRequest ? await collectDevStyles(server, styleRoots()) : [];
+              const styles = pageRequest
+                ? await collectDevStyles(server, styleRoots(), styleFilter)
+                : [];
               const devHead = styles.map(renderDevStyleTag).join('');
               // Post middlewares run after Vite's base middleware stripped
               // the configured `base` from req.url; restore it so the app

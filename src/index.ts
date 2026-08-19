@@ -52,6 +52,7 @@ const REFRESH_RUNTIME_SOURCE = 'solid-js/refresh';
 
 const viteVersionMajor = +version.split('.')[0];
 const isVite8 = viteVersionMajor >= 8;
+const DEFAULT_STYLE_EXCLUDE = /node_modules/;
 
 const VIRTUAL_MANIFEST_ID = 'virtual:solid-manifest';
 const RESOLVED_VIRTUAL_MANIFEST_ID = '\0' + VIRTUAL_MANIFEST_ID;
@@ -555,6 +556,12 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
   // single shape (`false` behaves exactly like omission).
   const turnkey: StartOptions | null =
     options.start === true ? {} : options.start || null;
+  const styleFilterOptions = turnkey?.css?.filter;
+  let styleFilter = createFilter(
+    styleFilterOptions?.include,
+    styleFilterOptions?.exclude ?? DEFAULT_STYLE_EXCLUDE,
+  );
+  const filterDevStyles = (id: string) => styleFilter(id);
   // `start.external` only means something when a server side exists to hand
   // over (SSR start mode); in client mode it is a documented no-op.
   const externalDevServer = !!options.ssr && !!turnkey?.external;
@@ -845,6 +852,11 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
       base = config.base;
       projectRoot = config.root;
       filter = createFilter(options.include, options.exclude, { resolve: projectRoot });
+      styleFilter = createFilter(
+        styleFilterOptions?.include,
+        styleFilterOptions?.exclude ?? DEFAULT_STYLE_EXCLUDE,
+        { resolve: projectRoot },
+      );
       if (serverComponents && !(options.start && options.ssr)) {
         config.logger.warn(
           '[@solidjs/vite-plugin] serverFunctions.components is set without SSR start mode (the `start` ' +
@@ -870,7 +882,10 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
       // that don't share globals with this process, through the HTTP bridge
       // endpoint the middleware serves.
       if (options.ssr || options.start) {
-        registerDevAssetResolver(server.config.root, createDevAssetResolver(server));
+        registerDevAssetResolver(
+          server.config.root,
+          createDevAssetResolver(server, filterDevStyles),
+        );
         installDevManifestBridge(server);
       }
       if (!needHmr) return;
@@ -1187,6 +1202,7 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
         serverFunctions: !!options.serverFunctions,
         serverComponents,
         ssr: !!options.ssr,
+        styleFilter: filterDevStyles,
       }),
     );
   }

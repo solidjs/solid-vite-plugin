@@ -20,6 +20,9 @@ import { joinBase } from './http.js';
 
 export type DevStyleDescriptor = { id: string; content: string; attrs?: Record<string, string> };
 export type DevStyleSource = { id: string; url: string };
+export type DevStyleFilter = (id: string) => boolean;
+
+const defaultStyleFilter: DevStyleFilter = (id) => !id.includes('node_modules');
 
 export type ResolvedAssets = {
   js: string[];
@@ -215,6 +218,7 @@ async function collectModuleDeps(
   file: string,
   deps: Set<EnvironmentModuleNode>,
   crawled: Set<string>,
+  filter: DevStyleFilter,
   onFile?: (file: string) => void,
   importer?: string,
 ): Promise<void> {
@@ -222,9 +226,11 @@ async function collectModuleDeps(
   const node = await getModuleNode(env, file, importer);
   if (!node?.id || deps.has(node)) return;
   deps.add(node);
-  if (node.file && !node.id.includes('node_modules')) onFile?.(node.file);
 
-  if (cssFileRegExp.test(node.url.split('?')[0]) || node.id.includes('node_modules')) return;
+  const isCss = cssFileRegExp.test(node.url.split('?')[0]);
+  if (!isCss && node.file && !node.id.startsWith('\0') && !filter(node.file)) return;
+  if (node.file) onFile?.(node.file);
+  if (isCss) return;
 
   if (!node.transformResult) {
     await env.transformRequest(node.url).catch(() => {});
@@ -236,7 +242,7 @@ async function collectModuleDeps(
   // from dynamicDeps — dynamic imports load their own styles when rendered.
   for (const dep of directDeps) {
     if (crawled.has(dep)) continue;
-    await collectModuleDeps(env, dep, deps, crawled, onFile, node.id);
+    await collectModuleDeps(env, dep, deps, crawled, filter, onFile, node.id);
   }
 }
 
@@ -249,11 +255,12 @@ export async function collectDevStyleSources(
   env: DevEnvironment,
   files: string[],
   onFile?: (file: string) => void,
+  filter: DevStyleFilter = defaultStyleFilter,
 ): Promise<DevStyleSource[]> {
   const deps = new Set<EnvironmentModuleNode>();
   const crawled = new Set<string>();
   for (const file of files) {
-    await collectModuleDeps(env, file, deps, crawled, onFile);
+    await collectModuleDeps(env, file, deps, crawled, filter, onFile);
   }
 
   const css: DevStyleSource[] = [];
@@ -281,6 +288,7 @@ export async function collectDevStyleSources(
 export async function collectDevStyles(
   server: ViteDevServer,
   files: string[],
+  filter: DevStyleFilter = defaultStyleFilter,
 ): Promise<DevStyleDescriptor[]> {
   const ssrEnv = server.environments?.ssr;
   const clientEnv = server.environments?.client;
@@ -289,6 +297,8 @@ export async function collectDevStyles(
   const sources = await collectDevStyleSources(
     ssrEnv,
     files.map((file) => path.resolve(server.config.root, file)),
+    undefined,
+    filter,
   );
 
   const css: DevStyleDescriptor[] = [];
@@ -348,7 +358,10 @@ export function devModuleUrl(root: string, base: string, key: string): string {
   return joinBase(base, '/@fs/' + absolute.replace(/^\//, '') + query);
 }
 
-export function createDevAssetResolver(server: ViteDevServer): DevAssetResolver {
+export function createDevAssetResolver(
+  server: ViteDevServer,
+  filter: DevStyleFilter = defaultStyleFilter,
+): DevAssetResolver {
   // Server-side lazy() re-requests a module's assets on every retry of a
   // suspended render pass (retries re-create the component). The build
   // manifest answers those repeats synchronously and the pass converges; an
@@ -382,7 +395,7 @@ export function createDevAssetResolver(server: ViteDevServer): DevAssetResolver 
         // The module's dev URL doubles as its client entry: modulepreload
         // hint and hydration module-map value.
         const js = [devModuleUrl(root, base, key)];
-        const css = await collectDevStyles(server, [key]);
+        const css = await collectDevStyles(server, [key], filter);
         return { js, css };
       })().then(
         (assets) => {
