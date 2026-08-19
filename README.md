@@ -193,6 +193,27 @@ Start mode detects the package automatically. Set `start: { devtools: true }`
 to require it or `start: { devtools: false }` to disable it. The package is an
 optional peer and the toolbar is not included in production builds.
 
+Generated entries wrap the app automatically. With authored entries, place
+the development boundary around the app in the shared document or root:
+
+```tsx
+import { DevToolbar } from "virtual:solid-devtools";
+
+<body>
+  <DevToolbar>
+    <App />
+  </DevToolbar>
+</body>;
+```
+
+The virtual component becomes a children-only passthrough in production, so
+the development package is not included in either production bundle. Add its
+ambient declaration to an `env.d.ts`:
+
+```ts
+/// <reference types="@solidjs/vite-plugin/start-devtools" />
+```
+
 ```tsx
 // src/App.tsx — the entire app: a plain content component
 export default function App() {

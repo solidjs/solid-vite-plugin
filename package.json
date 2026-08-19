@@ -6,7 +6,8 @@
   "files": [
     "dist",
     "virtual-solid-manifest.d.ts",
-    "boundary-modules.d.ts"
+    "boundary-modules.d.ts",
+    "start-devtools.d.ts"
   ],
   "main": "dist/cjs/index.cjs",
   "module": "dist/esm/index.mjs",
@@ -24,6 +25,9 @@
     },
     "./boundary-modules": {
       "types": "./boundary-modules.d.ts"
+    },
+    "./start-devtools": {
+      "types": "./start-devtools.d.ts"
     }
   },
   "scripts": {

@@ -459,9 +459,10 @@ export function startServe(
   const errorBoundary = options.errorBoundary !== false;
   const styleFilter = internal.styleFilter;
   let devtools: boolean | undefined = false;
-  let devtoolsResolution: Promise<string | null> | undefined;
-  /** Resolved module id of `@solidjs/start-devtools` once detection succeeds. */
-  let devtoolsId: string | null = null;
+  let devtoolsResolutions: Partial<
+    Record<'client' | 'server', Promise<string | null>>
+  > = {};
+  let devtoolsIds: Partial<Record<'client' | 'server', string | null>> = {};
   // `external` is server-mode-only (documented no-op in client mode, so a
   // host-integrated config survives the `ssr` boolean flip untouched).
   const externalServer = !clientMode && !!options.external;
@@ -483,27 +484,30 @@ export function startServe(
   async function resolveDevtools(
     resolve: (source: string, importer: string) => Promise<{ id: string } | null>,
     importer: string,
+    consumer: 'client' | 'server',
   ): Promise<boolean> {
-    if (devtools !== undefined) return devtools;
+    if (devtools === false) return false;
     // Detect from the app graph first (the documented install location), then
     // from the plugin's own file: in pnpm-isolated apps a copy that is only a
     // dependency of the plugin is not reachable from the app's importers. The
     // resolved id is kept so the virtual modules' imports of the package can
     // be delegated to it (see resolveId).
-    devtoolsResolution ??= (async () =>
+    devtoolsResolutions[consumer] ??= (async () =>
       (
         (await resolve(DEVTOOLS_PACKAGE, importer)) ??
         (await resolve(DEVTOOLS_PACKAGE, fileURLToPath(import.meta.url)))
       )?.id ?? null)();
-    devtoolsId = await devtoolsResolution;
-    devtools = devtoolsId !== null;
-    if (!devtools && options.devtools === true) {
+    const id = await devtoolsResolutions[consumer];
+    devtoolsIds[consumer] = id;
+    if (id) devtools = true;
+    if (!id && options.devtools === true) {
       throw new Error(
         '[@solidjs/vite-plugin] start.devtools requires @solidjs/start-devtools. ' +
           'Install it as a development dependency or set start.devtools to false.',
       );
     }
-    return devtools;
+    if (!id && !Object.values(devtoolsIds).some(Boolean)) devtools = false;
+    return id !== null;
   }
 
   /**
@@ -608,7 +612,7 @@ export function startServe(
       : [`  <Document>`, `    ${content}`, `  </Document>`];
   }
 
-  function generatedEntryServerCode(): string {
+  function generatedEntryServerCode(toolbar: boolean): string {
     if (clientMode) {
       // The client-mode shell: the document without the app. Rendered per
       // request in dev (any HTML GET gets it — history-fallback semantics)
@@ -646,6 +650,7 @@ export function startServe(
       `import manifest from ${JSON.stringify(MANIFEST_ID)};`,
       `import Document from ${JSON.stringify(documentSpec())};`,
       `import App from ${JSON.stringify(app)};`,
+      ...(toolbar ? [`import { DevToolbar } from ${JSON.stringify(DEVTOOLS_ID)};`] : []),
       ...errorBoundaryImport(),
       ...(setupPath ? [`import setup from ${JSON.stringify(setupPath)};`] : []),
       ``,
@@ -688,14 +693,14 @@ export function startServe(
             ``,
             `function renderApp(Root) {`,
             `  return renderToStream(() => (`,
-            ...documentTree('Root'),
+            ...documentTree('Root', toolbar ? 'DevToolbar' : undefined),
             `  ), ${streamOptions});`,
             `}`,
           ]
         : [
             `export function render(request, context) {`,
             `  return renderToStream(() => (`,
-            ...documentTree('App'),
+            ...documentTree('App', toolbar ? 'DevToolbar' : undefined),
             `  ), ${streamOptions});`,
             `}`,
           ]),
@@ -1075,8 +1080,8 @@ export function startServe(
           env.command === 'serve' && !env.isPreview && options.devtools !== false
             ? undefined
             : false;
-        devtoolsResolution = undefined;
-        devtoolsId = null;
+        devtoolsResolutions = {};
+        devtoolsIds = {};
         entries = resolveEntries(root, options, clientMode);
         middlewarePath = options.middleware
           ? path.resolve(root, normalizeUserPath(root, options.middleware, 'middleware'))
@@ -1212,7 +1217,7 @@ export function startServe(
         base = config.base;
         isBuild = config.command === 'build';
       },
-      resolveId(source, importer) {
+      resolveId(source, importer, opts) {
         if (source === HANDLER_ID) {
           return { id: HANDLER_ID, moduleSideEffects: true };
         }
@@ -1227,7 +1232,7 @@ export function startServe(
         ) {
           return { id: source, moduleSideEffects: source === ENTRY_CLIENT_ID };
         }
-        if (devtools && (source === DEVTOOLS_ID || source === DEVTOOLS_MOUNT_ID)) {
+        if (source === DEVTOOLS_ID || (devtools && source === DEVTOOLS_MOUNT_ID)) {
           return { id: source, moduleSideEffects: true };
         }
         // The virtual devtools modules import the package by its bare name,
@@ -1236,11 +1241,11 @@ export function startServe(
         // pnpm-isolated apps where the package is not a root-level install.
         // Delegate to the resolution captured at detection time instead.
         if (
-          devtoolsId &&
+          devtoolsIds[getEnvironmentConsumer(this.environment, opts)] &&
           source === DEVTOOLS_PACKAGE &&
           (importer === DEVTOOLS_ID || importer === DEVTOOLS_MOUNT_ID)
         ) {
-          return { id: devtoolsId };
+          return { id: devtoolsIds[getEnvironmentConsumer(this.environment, opts)]! };
         }
         return null;
       },
@@ -1262,31 +1267,54 @@ export function startServe(
           }
           return devStylesModuleCode(this.environment, (file) => this.addWatchFile(file));
         }
-        if (id === ENTRY_SERVER_ID) return generatedEntryServerCode();
+        if (id === ENTRY_SERVER_ID) {
+          const toolbar = clientMode
+            ? false
+            : await resolveDevtools(
+                (source, importer) => this.resolve(source, importer, { skipSelf: true }),
+                requireEntries().app!,
+                'server',
+              );
+          return generatedEntryServerCode(toolbar);
+        }
         if (id === ENTRY_CLIENT_ID) {
           const toolbar = await resolveDevtools(
             (source, importer) => this.resolve(source, importer, { skipSelf: true }),
             requireEntries().app!,
+            'client',
           );
           return generatedEntryClientCode(toolbar);
         }
         if (id === DOCUMENT_ID) return documentShellCode;
         if (id === ERROR_BOUNDARY_ID) return errorBoundaryCode;
-        if (id === DEVTOOLS_ID || id === DEVTOOLS_MOUNT_ID) {
+        if (id === DEVTOOLS_ID) {
           // A cold direct request (stale tab reload) can reach the virtual
           // module before the entry has triggered detection — run it here so
           // first-touch order doesn't matter.
-          if (!isBuild && consumer === 'client' && devtools === undefined) {
+          let enabled = false;
+          if (!isBuild && devtools !== false) {
+            const { app, entryClient } = requireEntries();
+            enabled = await resolveDevtools(
+              (source, importer) => this.resolve(source, importer, { skipSelf: true }),
+              app ?? path.resolve(root, entryClient),
+              consumer,
+            );
+          }
+          return devtoolsModuleCode(consumer, enabled);
+        }
+        if (id === DEVTOOLS_MOUNT_ID) {
+          if (!isBuild && consumer === 'client' && devtools !== false) {
             const { app, entryClient } = requireEntries();
             await resolveDevtools(
               (source, importer) => this.resolve(source, importer, { skipSelf: true }),
               app ?? path.resolve(root, entryClient),
+              'client',
             );
           }
           if (isBuild || !devtools || consumer !== 'client') {
             this.error(`${id} is only available to the development client.`);
           }
-          return id === DEVTOOLS_ID ? devtoolsModuleCode() : devtoolsMountModuleCode();
+          return devtoolsMountModuleCode();
         }
         return null;
       },
@@ -1304,6 +1332,7 @@ export function startServe(
         const toolbar = await resolveDevtools(
           (source, importer) => this.resolve(source, importer, { skipSelf: true }),
           id,
+          'client',
         );
         if (!toolbar) return null;
         return {
