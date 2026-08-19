@@ -76,7 +76,7 @@
     "@rollup/plugin-commonjs": "^25.0.7",
     "@rollup/plugin-node-resolve": "^15.2.3",
     "@skypack/package-check": "^0.2.2",
-    "@solidjs/start-devtools": "^1.0.0-next.0",
+    "@solidjs/start-devtools": "^1.0.0-next.1",
     "@types/node": "^18.18.4",
     "cypress": "^14.0.0",
     "cypress-visual-regression": "^5.2.2",
@@ -90,7 +90,7 @@
     "vite": "^7.0.0"
   },
   "peerDependencies": {
-    "@solidjs/start-devtools": "^1.0.0-next.0",
+    "@solidjs/start-devtools": "^1.0.0-next.1",
     "@solidjs/web": "^2.0.0-rc.0",
     "@testing-library/jest-dom": "^5.16.6 || ^5.17.0 || ^6.*",
     "solid-js": "^2.0.0-rc.0",

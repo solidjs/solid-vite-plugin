@@ -67,8 +67,8 @@ importers:
         specifier: ^0.2.2
         version: 0.2.2
       '@solidjs/start-devtools':
-        specifier: ^1.0.0-next.0
-        version: 1.0.0-next.0(@solidjs/web@2.0.0-rc.0(solid-js@2.0.0-rc.0))(solid-js@2.0.0-rc.0)
+        specifier: ^1.0.0-next.1
+        version: 1.0.0-next.1(@solidjs/web@2.0.0-rc.0(solid-js@2.0.0-rc.0))(solid-js@2.0.0-rc.0)
       '@types/node':
         specifier: ^18.18.4
         version: 18.19.130
@@ -1639,8 +1639,8 @@ packages:
   '@solidjs/signals@2.0.0-rc.0':
     resolution: {integrity: sha512-oKZSfvsCcKw1uJjOGbUkJ+OqlhXLHtZ+rShSyu9KH0lUH7UUwfMfsKeh81JPiQxDDg4YLhEwI38hg0JkwzTdvA==}
 
-  '@solidjs/start-devtools@1.0.0-next.0':
-    resolution: {integrity: sha512-rcmAl7j3Bni4c8tICQhecF8Pgi8vebmR5XzBLhadv0WznDNdSZ5uRAuuaSCnk/GOa+y9wR/mstbnoxao47Ssng==}
+  '@solidjs/start-devtools@1.0.0-next.1':
+    resolution: {integrity: sha512-A7NCaHxhsESwLb+jEi7FqTTKBPS36aj0/hwb1VuBNLCSv69Kq8ZB2LQjGYNcvW2J8HNGTXtFGFb2rdV/DOtZKw==}
     peerDependencies:
       '@solidjs/web': ^2.0.0-rc.0
       solid-js: ^2.0.0-rc.0
@@ -4900,7 +4900,7 @@ snapshots:
 
   '@solidjs/signals@2.0.0-rc.0': {}
 
-  '@solidjs/start-devtools@1.0.0-next.0(@solidjs/web@2.0.0-rc.0(solid-js@2.0.0-rc.0))(solid-js@2.0.0-rc.0)':
+  '@solidjs/start-devtools@1.0.0-next.1(@solidjs/web@2.0.0-rc.0(solid-js@2.0.0-rc.0))(solid-js@2.0.0-rc.0)':
     dependencies:
       '@solidjs/web': 2.0.0-rc.0(solid-js@2.0.0-rc.0)
       solid-js: 2.0.0-rc.0
