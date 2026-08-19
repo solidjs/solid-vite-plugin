@@ -54,6 +54,12 @@ import {
 } from 'vite';
 import { getEnvironmentConsumer, isRunnableEnvironment } from '../environment.js';
 import {
+  DEVTOOLS_ID,
+  DEVTOOLS_MOUNT_ID,
+  devtoolsModuleCode,
+  devtoolsMountModuleCode,
+} from '../devtools/index.js';
+import {
   collectDevStyles,
   collectDevStyleSources,
   type DevStyleFilter,
@@ -218,6 +224,8 @@ export interface StartOptions {
    * @default undefined (probe env.ts / env.js; off when absent)
    */
   env?: boolean | string;
+  /** Enable the development toolbar. @default true */
+  devtools?: boolean;
   /**
    * Add the default production error boundary to generated entries.
    * Disable this when application middleware owns error handling. Authored
@@ -442,6 +450,7 @@ export function startServe(
   const serverComponents = !!internal.serverComponents;
   const errorBoundary = options.errorBoundary !== false;
   const styleFilter = internal.styleFilter;
+  const devtools = options.devtools !== false;
   // `external` is server-mode-only (documented no-op in client mode, so a
   // host-integrated config survives the `ssr` boolean flip untouched).
   const externalServer = !clientMode && !!options.external;
@@ -528,18 +537,19 @@ export function startServe(
       : [];
   }
 
-  function documentTree(root: string): string[] {
+  function documentTree(root: string, wrapper?: string): string[] {
+    const content = wrapper ? `<${wrapper}><${root} /></${wrapper}>` : `<${root} />`;
     return isBuild && errorBoundary
       ? [
           `  <DefaultErrorBoundary>`,
           `    <Document>`,
           `      <DefaultErrorBoundary>`,
-          `        <${root} />`,
+          `        ${content}`,
           `      </DefaultErrorBoundary>`,
           `    </Document>`,
           `  </DefaultErrorBoundary>`,
         ]
-      : [`  <Document>`, `    <${root} />`, `  </Document>`];
+      : [`  <Document>`, `    ${content}`, `  </Document>`];
   }
 
   function generatedEntryServerCode(): string {
@@ -638,6 +648,7 @@ export function startServe(
 
   function generatedEntryClientCode(): string {
     const { app } = requireEntries();
+    const toolbar = devtools && !isBuild;
     if (clientMode) {
       // render(), not hydrate(): the shell's body is empty, the app mounts
       // fresh. Client code compiles non-hydratable in client mode, so the
@@ -647,17 +658,21 @@ export function startServe(
       return [
         `import { render } from '@solidjs/web';`,
         ...errorBoundaryImport(),
+        ...(toolbar ? [`import { DevToolbar } from ${JSON.stringify(DEVTOOLS_ID)};`] : []),
         `import App from ${JSON.stringify(app)};`,
         ``,
         `render(() => ${
           isBuild && errorBoundary
             ? '<DefaultErrorBoundary><App /></DefaultErrorBoundary>'
-            : '<App />'
+            : toolbar
+              ? '<DevToolbar><App /></DevToolbar>'
+              : '<App />'
         }, document.body);`,
       ].join('\n');
     }
     return [
       `import { hydrate } from '@solidjs/web';`,
+      ...(toolbar ? [`import { DevToolbar } from ${JSON.stringify(DEVTOOLS_ID)};`] : []),
       ...(serverComponents
         ? [`import { installServerComponents } from '@solidjs/web/frames';`]
         : []),
@@ -675,7 +690,7 @@ export function startServe(
           ]
         : []),
       `hydrate(() => (`,
-      ...documentTree('App'),
+      ...documentTree('App', toolbar ? 'DevToolbar' : undefined),
       `), document);`,
     ].join('\n');
   }
@@ -1141,6 +1156,9 @@ export function startServe(
         ) {
           return { id: source, moduleSideEffects: source === ENTRY_CLIENT_ID };
         }
+        if (!isBuild && devtools && (source === DEVTOOLS_ID || source === DEVTOOLS_MOUNT_ID)) {
+          return { id: source, moduleSideEffects: true };
+        }
         return null;
       },
       async load(id, opts) {
@@ -1165,7 +1183,25 @@ export function startServe(
         if (id === ENTRY_CLIENT_ID) return generatedEntryClientCode();
         if (id === DOCUMENT_ID) return documentShellCode;
         if (id === ERROR_BOUNDARY_ID) return errorBoundaryCode;
+        if (id === DEVTOOLS_ID || id === DEVTOOLS_MOUNT_ID) {
+          if (isBuild || !devtools || consumer !== 'client') {
+            this.error(`${id} is only available to the development client.`);
+          }
+          return id === DEVTOOLS_ID ? devtoolsModuleCode() : devtoolsMountModuleCode();
+        }
         return null;
+      },
+      transform(code, id, opts) {
+        if (isBuild || !devtools) return null;
+        const current = requireEntries();
+        if (current.generated || getEnvironmentConsumer(this.environment, opts) !== 'client') {
+          return null;
+        }
+        if (id.split('?')[0] !== path.resolve(root, current.entryClient)) return null;
+        return {
+          code: `import ${JSON.stringify(DEVTOOLS_MOUNT_ID)};\n${code}`,
+          map: null,
+        };
       },
       configurePreviewServer(server: PreviewServer) {
         // `vite build && vite preview` runs the production artifact as-is:

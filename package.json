@@ -19,6 +19,11 @@
       "require": "./dist/cjs/index.cjs",
       "default": "./dist/cjs/index.cjs"
     },
+    "./devtools": {
+      "types": "./dist/types/src/devtools/client/index.d.ts",
+      "import": "./dist/devtools/client.js",
+      "default": "./dist/devtools/client.js"
+    },
     "./virtual-solid-manifest": {
       "types": "./virtual-solid-manifest.d.ts"
     },
@@ -77,10 +82,16 @@
     "cypress-visual-regression": "^5.2.2",
     "cypress-vite": "^1.6.0",
     "cypress-wait-until": "^3.0.2",
+    "error-stack-parser": "^2.1.4",
+    "html-to-image": "^1.11.13",
     "prettier": "^3.1.0",
     "rollup": "^4.5.0",
     "rollup-plugin-cleaner": "^1.0.0",
+    "seroval": "^1.6.0",
+    "shiki": "^4.3.1",
     "solid-js": "^2.0.0-rc.0",
+    "source-map-js": "^1.2.1",
+    "terracotta": "2.0.0-next.6",
     "typescript": "^5.2.2",
     "vite": "^7.0.0"
   },

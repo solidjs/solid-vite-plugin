@@ -179,8 +179,12 @@ same server functions.
 The object form carries the options (`start: true` is pure sugar for
 `start: {}` — both mean the identical start mode with defaults, and
 `false`/absent means off): `app`, `document`, `entryServer`, `entryClient`,
-`middleware`, `setup`, `env`, `errorBoundary`, `css`, `external`, all
+`middleware`, `setup`, `env`, `devtools`, `errorBoundary`, `css`, `external`, all
 documented below.
+
+Start mode includes a development toolbar with runtime errors and server
+function calls. Set `start: { devtools: false }` to disable it. The toolbar is
+not included in production builds.
 
 ```tsx
 // src/App.tsx — the entire app: a plain content component
