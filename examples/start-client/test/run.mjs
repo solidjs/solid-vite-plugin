@@ -245,6 +245,31 @@ async function runBrowserChecks(mode, origin) {
         `getComputedStyle(document.querySelector("#title")).color === ${JSON.stringify(APP_CSS_COLOR)}`,
       ),
     );
+    record(
+      mode,
+      'browser',
+      mode === 'dev' ? 'development toolbar mounted' : 'development toolbar omitted',
+      mode === 'dev'
+        ? await cdp.waitFor('document.querySelector("[data-solid-dev-toolbar]")')
+        : !(await cdp.evalJs('document.querySelector("[data-solid-dev-toolbar]")')),
+    );
+    if (mode === 'dev') {
+      const message = 'DEV_TOOLBAR_TEST_ERROR';
+      await cdp.evalJs(
+        `window.dispatchEvent(new ErrorEvent("error", { error: new Error(${JSON.stringify(message)}) }))`,
+      );
+      record(
+        mode,
+        'browser',
+        'runtime error shown in toolbar',
+        await cdp.waitFor(
+          `document.querySelector("[data-solid-error-viewer-error-info-message]")?.textContent === ${JSON.stringify(message)}`,
+        ),
+      );
+      for (let i = cdp.exceptions.length - 1; i >= 0; i--) {
+        if (cdp.exceptions[i].includes(message)) cdp.exceptions.splice(i, 1);
+      }
+    }
 
     // Deep-link boot: the same shell must boot the app on a non-root path.
     await cdp.send('Page.navigate', { url: origin + '/deep/link' });
@@ -287,6 +312,17 @@ async function devMode() {
     'shell',
     "entry graph CSS inlined (App.css style tag)",
     /<style[^>]*data-vite-dev-id="[^"]*App\.css"/.test(html),
+  );
+  const entry = await fetch(origin + '/@id/virtual:solid-ssr-entry-client.tsx').then((res) =>
+    res.text(),
+  );
+  record('dev', 'entry', 'toolbar wraps the generated app', entry.includes('DevToolbar'));
+  const devtools = await fetch(origin + '/@id/virtual:solid-devtools').then((res) => res.text());
+  record(
+    'dev',
+    'entry',
+    'server function observer connected',
+    devtools.includes('observeServerFunctionCalls'),
   );
 
   await runBrowserChecks('dev', origin);

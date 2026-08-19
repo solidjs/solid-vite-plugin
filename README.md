@@ -179,8 +179,19 @@ same server functions.
 The object form carries the options (`start: true` is pure sugar for
 `start: {}` — both mean the identical start mode with defaults, and
 `false`/absent means off): `app`, `document`, `entryServer`, `entryClient`,
-`middleware`, `setup`, `env`, `errorBoundary`, `css`, `external`, all
-documented below.
+`middleware`, `setup`, `env`, `devtools`, `errorBoundary`, `css`, `external`,
+all documented below.
+
+Install `@solidjs/start-devtools` as a development dependency to add the
+development toolbar with runtime errors and server function calls:
+
+```sh
+pnpm add -D @solidjs/start-devtools@next
+```
+
+Start mode detects the package automatically. Set `start: { devtools: true }`
+to require it or `start: { devtools: false }` to disable it. The package is an
+optional peer and the toolbar is not included in production builds.
 
 ```tsx
 // src/App.tsx — the entire app: a plain content component

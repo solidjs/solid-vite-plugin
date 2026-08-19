@@ -66,6 +66,9 @@ importers:
       '@skypack/package-check':
         specifier: ^0.2.2
         version: 0.2.2
+      '@solidjs/start-devtools':
+        specifier: ^1.0.0-next.0
+        version: 1.0.0-next.0(@solidjs/web@2.0.0-rc.0(solid-js@2.0.0-rc.0))(solid-js@2.0.0-rc.0)
       '@types/node':
         specifier: ^18.18.4
         version: 18.19.130
@@ -1635,6 +1638,12 @@ packages:
 
   '@solidjs/signals@2.0.0-rc.0':
     resolution: {integrity: sha512-oKZSfvsCcKw1uJjOGbUkJ+OqlhXLHtZ+rShSyu9KH0lUH7UUwfMfsKeh81JPiQxDDg4YLhEwI38hg0JkwzTdvA==}
+
+  '@solidjs/start-devtools@1.0.0-next.0':
+    resolution: {integrity: sha512-rcmAl7j3Bni4c8tICQhecF8Pgi8vebmR5XzBLhadv0WznDNdSZ5uRAuuaSCnk/GOa+y9wR/mstbnoxao47Ssng==}
+    peerDependencies:
+      '@solidjs/web': ^2.0.0-rc.0
+      solid-js: ^2.0.0-rc.0
 
   '@solidjs/testing-library@1.0.0-beta.2':
     resolution: {integrity: sha512-TLhQ5IUT/fdDfqa4X2rkQWB28Y+zEwi6mK/TVTeiQlEHG63eK2jfgwNYf2NtQoPh2c3ihLilsCzxABiSTP3JoQ==}
@@ -4890,6 +4899,11 @@ snapshots:
       yargs-parser: 20.2.9
 
   '@solidjs/signals@2.0.0-rc.0': {}
+
+  '@solidjs/start-devtools@1.0.0-next.0(@solidjs/web@2.0.0-rc.0(solid-js@2.0.0-rc.0))(solid-js@2.0.0-rc.0)':
+    dependencies:
+      '@solidjs/web': 2.0.0-rc.0(solid-js@2.0.0-rc.0)
+      solid-js: 2.0.0-rc.0
 
   '@solidjs/testing-library@1.0.0-beta.2(@solidjs/web@2.0.0-rc.0(solid-js@2.0.0-rc.0))(solid-js@2.0.0-rc.0)':
     dependencies:

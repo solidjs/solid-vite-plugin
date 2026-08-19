@@ -13,7 +13,7 @@ const external = [
   'babel-preset-solid',
   'merge-anything',
   'vitefu',
-  'vite'
+  'vite',
 ];
 
 /**
