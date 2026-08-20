@@ -11,7 +11,7 @@
     "test": "node test/run.mjs && node test/bridge.mjs"
   },
   "devDependencies": {
-    "vite": "^7.0.0",
+    "vite": "^8.2.1",
     "@solidjs/vite-plugin": "workspace:*"
   },
   "dependencies": {

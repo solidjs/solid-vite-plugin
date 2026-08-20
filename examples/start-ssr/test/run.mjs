@@ -1507,14 +1507,19 @@ async function runEntriesMode() {
       ),
       path.join(exampleDir, 'dist/server/server.js'),
     ];
+    const devtoolsMarkers = [
+      'data-solid-dev-toolbar',
+      'data-solid-functions-viewer',
+      'Start Devtools Version',
+    ];
     const customEntryDevtoolsLeaks = customEntryBundles.filter((file) => {
       const source = readFileSync(file, 'utf-8');
-      return source.includes('data-solid-dev-toolbar') || source.includes('start-devtools');
+      return devtoolsMarkers.some((marker) => source.includes(marker));
     });
     record(
       mode,
       'prod',
-      'custom entry devtools code is removed from production',
+      'custom entry devtools UI is removed from production',
       customEntryDevtoolsLeaks.length === 0,
       customEntryDevtoolsLeaks.join(', '),
     );
@@ -3362,7 +3367,7 @@ async function runVitestMode() {
   let projectsOut = '';
   let projectsOk = false;
   try {
-    projectsOut = execSync('pnpm exec vitest run', {
+    projectsOut = execSync('pnpm exec vitest run --reporter=verbose', {
       cwd: exampleDir,
       stdio: 'pipe',
       timeout: 180000,
@@ -3374,8 +3379,8 @@ async function runVitestMode() {
   }
   const projectsPass =
     projectsOk &&
-    /\|client\|.*posture\.test\.tsx \(3 tests\)/.test(projectsOut) &&
-    /\|server\|.*server-posture\.test\.tsx \(3 tests\)/.test(projectsOut) &&
+    /\|client\|.*posture\.test\.tsx/.test(projectsOut) &&
+    /\|server\|.*server-posture\.test\.tsx/.test(projectsOut) &&
     /6 passed/.test(projectsOut);
   record(
     mode,

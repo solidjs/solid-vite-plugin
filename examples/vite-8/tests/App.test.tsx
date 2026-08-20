@@ -1,6 +1,6 @@
 /// <reference types="@vitest/browser/providers/playwright" />
 import { render } from '@solidjs/testing-library';
-import { page } from '@vitest/browser/context';
+import { page } from 'vitest/browser';
 import { expect, test } from 'vitest';
 
 import App from '../src/App.jsx';

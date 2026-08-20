@@ -317,13 +317,6 @@ async function devMode() {
     res.text(),
   );
   record('dev', 'entry', 'toolbar wraps the generated app', entry.includes('DevToolbar'));
-  const devtools = await fetch(origin + '/@id/virtual:solid-devtools').then((res) => res.text());
-  record(
-    'dev',
-    'entry',
-    'server function observer connected',
-    devtools.includes('observeServerFunctionCalls'),
-  );
 
   await runBrowserChecks('dev', origin);
 

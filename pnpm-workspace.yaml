@@ -16,7 +16,7 @@ ignoredBuiltDependencies:
 
 minimumReleaseAgeExclude:
   - '@solidjs/signals@2.0.0-beta.30 || 2.0.0-beta.31 || 2.0.0-beta.32 || 2.0.0-rc.0'
-  - '@solidjs/start-devtools@1.0.0-next.1 || 1.0.0-next.2'
+  - '@solidjs/start-devtools@1.0.0-next.1 || 1.0.0-next.2 || 1.0.0-next.3'
   - '@solidjs/web@2.0.0-beta.30 || 2.0.0-beta.31 || 2.0.0-beta.32 || 2.0.0-rc.0'
   - babel-preset-solid@2.0.0-beta.30 || 2.0.0-beta.31 || 2.0.0-beta.32 || 2.0.0-rc.0
   - solid-js@2.0.0-beta.30 || 2.0.0-beta.31 || 2.0.0-beta.32 || 2.0.0-rc.0
