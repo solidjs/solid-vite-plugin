@@ -9,9 +9,9 @@
     "test": "node test/run.mjs"
   },
   "devDependencies": {
-    "vite": "^7.0.0",
+    "vite": "^8.2.1",
     "@solidjs/vite-plugin": "workspace:*",
-    "esbuild": "^0.25.0"
+    "esbuild": "^0.28.0"
   },
   "dependencies": {
     "solid-js": "catalog:",

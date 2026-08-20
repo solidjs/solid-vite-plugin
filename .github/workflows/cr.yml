@@ -24,10 +24,10 @@ jobs:
           # https://github.com/pnpm/pnpm/issues/8953
           version: 9.15.3
 
-      - name: Use Node.js 20
+      - name: Use Node.js 24
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           cache: "pnpm"
 
       - name: Install dependencies
