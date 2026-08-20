@@ -506,14 +506,13 @@ export function startServe(
   }
 
   /**
-   * Cheap root-walk probe mirroring how the optimizer resolves bare
+   * Cheap walk-up probe mirroring how the optimizer resolves bare
    * `optimizeDeps.include` entries: is @solidjs/start-devtools reachable from
-   * the Vite root? Detection proper (resolveDevtools) runs later with a real
+   * this directory? Detection proper (resolveDevtools) runs later with a real
    * importer; this only decides whether the toolbar graph can be pre-bundled
-   * at scan time — it hangs off virtual modules the scanner never sees, so
-   * first-request discovery would force a re-optimize + full page reload.
+   * at scan time.
    */
-  function devtoolsReachableFromRoot(dir: string): boolean {
+  function devtoolsReachableFrom(dir: string): boolean {
     for (let current = dir; ; ) {
       if (existsSync(path.join(current, 'node_modules', DEVTOOLS_PACKAGE, 'package.json'))) {
         return true;
@@ -522,6 +521,26 @@ export function startServe(
       if (parent === current) return false;
       current = parent;
     }
+  }
+
+  /**
+   * The `optimizeDeps.include` spec that pre-bundles the toolbar graph, or
+   * null when it cannot be resolved at all. Pre-bundling it is not just a
+   * warm-start nicety: the toolbar hangs off virtual modules the scanner
+   * never crawls, so without an include the optimizer only discovers it on
+   * first request. That re-optimize can pair chunks from different passes
+   * whose shared minified exports disagree, taking down the whole client
+   * entry graph. The spec must therefore cover every install shape
+   * resolveDevtools accepts: bare when the app installs the package, and
+   * Vite's nested-include form (`plugin > dep`) when it is only a dependency
+   * of this plugin (pnpm-isolated installs).
+   */
+  function devtoolsIncludeSpec(rootDir: string): string | null {
+    if (devtoolsReachableFrom(rootDir)) return DEVTOOLS_PACKAGE;
+    if (devtoolsReachableFrom(path.dirname(fileURLToPath(import.meta.url)))) {
+      return `@solidjs/vite-plugin > ${DEVTOOLS_PACKAGE}`;
+    }
+    return null;
   }
 
   /** Import specifier for generated code: absolute for files, id for virtuals. */
@@ -1196,9 +1215,10 @@ export function startServe(
                   // Like the refresh runtime in the main plugin: the toolbar
                   // graph is injected behind modules the scanner never crawls,
                   // so pre-bundle it and the server-functions runtime up front.
-                  ...(devtoolsEnabled && devtoolsReachableFromRoot(root)
-                    ? { include: [DEVTOOLS_PACKAGE, '@solidjs/web/server-functions'] }
-                    : {}),
+                  ...(() => {
+                    const spec = devtoolsEnabled ? devtoolsIncludeSpec(root) : null;
+                    return spec ? { include: [spec, '@solidjs/web/server-functions'] } : {};
+                  })(),
                 },
               }),
         };
