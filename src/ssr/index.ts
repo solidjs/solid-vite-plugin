@@ -12,7 +12,7 @@
 //   Both paths inject the Vite client, dev style patch, and entry CSS as
 //   `<style data-vite-dev-id>` tags before the body can paint.
 // - Prod: the plugin configures a full-app build (client + server bundles
-//   via the Vite 6+ environments/builder API — a single `vite build` builds
+//   via the Vite environments/builder API — a single `vite build` builds
 //   both) whose server entry is `virtual:solid-ssr-handler`: an
 //   adapter-agnostic named `handleRequest(Request) => Promise<Response>` plus
 //   a default Fetchable `{ fetch(request) }` export. Both scope each request
@@ -1167,7 +1167,7 @@ export function startServe(
                     },
                   },
                   // Presence of `builder` makes a plain `vite build` build the
-                  // whole app (all environments: client then ssr) on Vite 6+.
+                  // whole app (all environments: client then ssr).
                   // A classic `vite build --ssr` invocation must stay a
                   // single-environment build, so it doesn't get the flag.
                   ...(env.isSsrBuild ? {} : { builder: {} }),
@@ -1390,7 +1390,7 @@ export function startServe(
         // that gets the streamed SSR render.
         return () => {
           const ssrEnvironment = server.environments.ssr;
-          if (externalServer || (ssrEnvironment && !isRunnableEnvironment(ssrEnvironment))) {
+          if (externalServer || !isRunnableEnvironment(ssrEnvironment)) {
             return;
           }
           server.middlewares.use((req, res, next) => {
@@ -1407,7 +1407,7 @@ export function startServe(
             (async () => {
               // Loaded through the SSR environment so the app, the request
               // event storage, and the handler share one module registry.
-              const handler = await server.ssrLoadModule(HANDLER_ID);
+              const handler = await ssrEnvironment.runner.import(HANDLER_ID);
               const styles = pageRequest
                 ? await collectDevStyles(server, styleRoots(), styleFilter)
                 : [];
@@ -1435,7 +1435,6 @@ export function startServe(
               if (response.headers.has(DEV_FALLTHROUGH_HEADER)) return next();
               await sendWebResponse(res, response);
             })().catch((error) => {
-              if (error instanceof Error) server.ssrFixStacktrace(error);
               // Vite's error middleware renders the overlay-enabled 500 page.
               next(error);
             });

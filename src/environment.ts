@@ -1,3 +1,5 @@
+import type { RunnableDevEnvironment } from 'vite';
+
 /**
  * Cross-instance-safe stand-in for vite's `isRunnableDevEnvironment`.
  *
@@ -10,7 +12,9 @@
  * member (`RunnableDevEnvironment` is exactly "a DevEnvironment with a
  * runner"), so presence-check it instead of trusting class identity.
  */
-export function isRunnableEnvironment(environment: unknown): boolean {
+export function isRunnableEnvironment(
+  environment: unknown,
+): environment is RunnableDevEnvironment {
   return !!environment && typeof environment === 'object' && 'runner' in environment;
 }
 

@@ -41,13 +41,13 @@
 // https://github.com/pyyupsk/vite-env), the design-correct prior art. The
 // implementation is fresh against this plugin's machinery: Standard Schema
 // is the only contract (no zod dependency or zod-specific paths), the
-// schema file loads through Vite's own `runnerImport`/`loadConfigFromFile`
+// schema file loads through Vite's own `runnerImport`
 // (no jiti), server-graph protection keys off the environment *consumer*
 // rather than environment-name lists, and the types are inferred from the
 // user's schema instead of introspected per-library.
 import { existsSync, readFileSync, writeFileSync } from 'fs';
 import path from 'path';
-import { loadEnv, type Plugin, type ResolvedConfig, type ViteDevServer } from 'vite';
+import { loadEnv, runnerImport, type Plugin, type ResolvedConfig, type ViteDevServer } from 'vite';
 
 export const CLIENT_ENV_ID = 'virtual:env/client';
 export const SERVER_ENV_ID = 'virtual:env/server';
@@ -151,43 +151,21 @@ function formatValidationError(
   );
 }
 
-/**
- * Loads the schema module at config time through Vite itself: `runnerImport`
- * (Vite 6.1+) evaluates TypeScript in-process with project resolution;
- * older Vite 6 falls back to `loadConfigFromFile`, the exact machinery that
- * loads vite.config.ts.
- */
+/** Loads the schema module through Vite with project resolution. */
 async function importSchemaModule(
   envFileAbs: string,
   root: string,
   mode: string,
 ): Promise<{ exported: unknown; dependencies: string[] }> {
-  const vite = await import('vite');
-  if (typeof (vite as any).runnerImport === 'function') {
-    const { module, dependencies } = await (vite as any).runnerImport(envFileAbs, {
-      root,
-      mode,
-    });
-    return {
-      exported: (module as Record<string, unknown> | undefined)?.default,
-      dependencies: (dependencies || [])
-        .map((dep: string) => path.resolve(root, dep))
-        .filter((dep: string) => existsSync(dep)),
-    };
-  }
-  const result = await vite.loadConfigFromFile(
-    { command: 'serve', mode },
-    envFileAbs,
+  const { module, dependencies } = await runnerImport<Record<string, unknown>>(envFileAbs, {
     root,
-  );
-  if (!result) {
-    throw new Error(`[@solidjs/vite-plugin] failed to load env schema from ${envFileAbs}`);
-  }
+    mode,
+  });
   return {
-    exported: result.config as unknown,
-    dependencies: (result.dependencies || [])
-      .map((dep) => path.resolve(root, dep))
-      .filter((dep) => existsSync(dep)),
+    exported: module?.default,
+    dependencies: dependencies
+      .map((dep: string) => path.resolve(root, dep))
+      .filter((dep: string) => existsSync(dep)),
   };
 }
 

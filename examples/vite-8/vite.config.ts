@@ -3,7 +3,9 @@ import solidPlugin from '@solidjs/vite-plugin';
 
 export default defineConfig({
   future: {
+    removePluginHookHandleHotUpdate: 'warn',
     removePluginHookSsrArgument: 'warn',
+    removeSsrLoadModule: 'warn',
   },
   plugins: [
     {

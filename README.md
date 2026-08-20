@@ -27,13 +27,13 @@ Join [solid discord](https://discord.com/invite/solidjs) and check the [troubles
 
 ## Requirements
 
-This module is 100% ESM compatible and requires NodeJS `14.18.0` or later.
+This module is 100% ESM compatible and requires Node.js `^20.19.0 || >=22.12.0`.
 
-You can check your current version of NodeJS by typing `node -v` in your terminal. If your version is below that one version I'd encourage you to either do an update globally or use a NodeJS version management tool such as [Volta](https://volta.sh/) or [nvm](https://github.com/nvm-sh/nvm).
+You can check your current Node.js version by running `node -v`. Use a version
+manager such as [Volta](https://volta.sh/) or [nvm](https://github.com/nvm-sh/nvm)
+to update it.
 
-Supported Vite versions: **Vite 6, 7 and 8**. Support for Vite 3–5 was
-dropped; if you are on an older Vite, stay on an earlier release of this
-plugin (2.x) or upgrade Vite.
+Supported Vite versions: **Vite 8 and 9**.
 
 ## Quickstart
 
@@ -230,7 +230,7 @@ With `ssr: true` — **SSR start mode**:
   classic `vite build` + `vite build --ssr` two-step, work too.)
 - **Build ordering**: server builds read the client manifest, so with `ssr`
   enabled the plugin also orders builder-mode (environments API) app builds
-  client-first via a `buildApp` hook (Vite 7.1+). That covers composed
+  client-first via a `buildApp` hook. That covers composed
   setups whose own orchestrator builds server environments before the
   client — e.g. @cloudflare/vite-plugin — with no hand-written ordering
   plugin; setups without another orchestrator keep Vite's stock

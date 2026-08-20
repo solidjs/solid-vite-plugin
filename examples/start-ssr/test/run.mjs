@@ -40,7 +40,7 @@
 //   - `serverFunctions.devMiddleware: false` keeps compilation on while the
 //     middleware no longer intercepts `/_server` (a dev POST 404s), and a
 //     host emulation (test/host-dispatch.mjs) proves the manifest + handler
-//     virtual modules still dispatch through `ssrLoadModule`,
+//     virtual modules still dispatch through the SSR module runner,
 //   - builder-order: with an adversarial `builder.buildApp` that builds the
 //     ssr environment first (mimicking e.g. @cloudflare/vite-plugin), the
 //     plugin's client-build-first hook still gets the client manifest baked
@@ -1791,7 +1791,7 @@ async function runConfigureMode() {
 // 404. Then test/host-dispatch.mjs emulates the host that owns dispatch
 // instead (a metaframework or an environment plugin like
 // @cloudflare/vite-plugin): manifest + handler virtual modules loaded
-// through `ssrLoadModule`, request dispatched like production.
+// through the SSR module runner, request dispatched like production.
 async function runNoMiddlewareMode() {
   const mode = 'no-middleware';
   console.log(`\n=== ${mode.toUpperCase()} ===`);
@@ -2721,7 +2721,9 @@ async function runMiddlewareMode() {
       // middleware route reading getRequestEvent()) carries exactly those
       // fields — createRequestEvent(request, options.event) spreads them
       // over the event defaults.
-      const handlerModule = await probe.ssrLoadModule('virtual:solid-ssr-handler');
+      const handlerModule = await probe.environments.ssr.runner.import(
+        'virtual:solid-ssr-handler',
+      );
       const seamResponse = await handlerModule.handleRequest(
         new Request('http://localhost/api/native', { headers: { accept: 'application/json' } }),
         { event: { nativeEvent: { socket: { remoteAddress: '203.0.113.7' } } } },
@@ -3193,7 +3195,7 @@ async function runExternalMode() {
     server = await createServer({ root: exampleDir, server: { middlewareMode: true } });
     const clientModule = await server.environments.client.transformRequest('/src/api.ts');
     const functionId = extractFunctionId(clientModule?.code || '', 'getServerMessage');
-    const handler = await server.ssrLoadModule('virtual:solid-ssr-handler');
+    const handler = await server.environments.ssr.runner.import('virtual:solid-ssr-handler');
     const response = await handler.handleRequest(new Request('http://localhost/'));
     const html = await response.text();
     record(

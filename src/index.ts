@@ -25,7 +25,7 @@ export type { ServerFunctionsFilter } from './server-functions/index.js';
 export type { StartOptions };
 import path from 'path';
 import type { FilterPattern, Plugin, ViteDevServer } from 'vite';
-import { createFilter, version } from 'vite';
+import { createFilter, defaultClientConditions, defaultServerConditions } from 'vite';
 import { getEnvironmentConsumer, isRunnableEnvironment } from './environment.js';
 import { crawlFrameworkPkgs } from 'vitefu';
 
@@ -50,8 +50,6 @@ const LAZY_PLACEHOLDER_PREFIX = '__SOLID_LAZY_MODULE__:';
  */
 const REFRESH_RUNTIME_SOURCE = 'solid-js/refresh';
 
-const viteVersionMajor = +version.split('.')[0];
-const isVite8 = viteVersionMajor >= 8;
 const DEFAULT_STYLE_EXCLUDE = /node_modules/;
 
 const VIRTUAL_MANIFEST_ID = 'virtual:solid-manifest';
@@ -803,30 +801,17 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
             ...solidPkgsConfig.optimizeDeps.include,
           ],
           exclude: solidPkgsConfig.optimizeDeps.exclude,
-          // Vite 8+ uses Rolldown for dependency scanning. Rolldown defaults to
-          // React's automatic JSX runtime for .tsx files, injecting a
-          // react/jsx-dev-runtime import that fails to resolve and aborts the
-          // scan. 'preserve' is no fix: the scanner re-parses the transformed
-          // output as plain JS, so any preserved JSX is a hard parse error
-          // (issue #262). The classic runtime is the only scan-safe lowering:
-          // it emits bare `React.createElement` calls without injecting any
-          // import, and the scan output is never executed — it only exists so
-          // rolldown can walk the import graph.
-          ...(isVite8
-            ? { rolldownOptions: { transform: { jsx: { runtime: 'classic' as const } } } }
-            : {}),
+          // Keep Solid TSX from injecting React's automatic runtime during scanning.
+          rolldownOptions: { transform: { jsx: { runtime: 'classic' as const } } },
         },
         ...(Object.keys(test).length ? { test } : {}),
       };
     },
 
-    // @ts-ignore This hook only works in Vite 6
-    async configEnvironment(name, config, opts) {
+    configEnvironment(name, config, opts) {
       config.resolve ??= {};
       // Emulate Vite default fallback for `resolve.conditions` if not set
       if (config.resolve.conditions == null) {
-        // @ts-ignore These exports only exist in Vite 6
-        const { defaultClientConditions, defaultServerConditions } = await import('vite');
         if (config.consumer === 'client' || name === 'client' || opts.isSsrTargetWebworker) {
           config.resolve.conditions = [...defaultClientConditions];
         } else {
@@ -1230,8 +1215,7 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
   // would bake a manifest-less fallback into the server bundle. Every user
   // of such a setup had to hand-write this ordering plugin; absorb it.
   //
-  // Semantics (Vite 7.1+; Vite 6 has no plugin `buildApp` hook and ignores
-  // these, keeping its build-everything default):
+  // Semantics:
   // - The first hook builds the client environment first, but only where
   //   the ordering matters: a client build that emits a manifest and
   //   actually has an input. It runs at *normal* order, deliberately not

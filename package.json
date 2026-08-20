@@ -3,6 +3,9 @@
   "version": "3.0.0-next.31",
   "description": "solid-js integration plugin for Vite",
   "type": "module",
+  "engines": {
+    "node": "^20.19.0 || >=22.12.0"
+  },
   "files": [
     "dist",
     "virtual-solid-manifest.d.ts",
@@ -90,7 +93,7 @@
     "@solidjs/web": "^2.0.0-rc.0",
     "@testing-library/jest-dom": "^5.16.6 || ^5.17.0 || ^6.*",
     "solid-js": "^2.0.0-rc.0",
-    "vite": "^6.0.0 || ^7.0.0 || ^8.0.0 || ^9.0.0"
+    "vite": "^8.0.0 || ^9.0.0"
   },
   "peerDependenciesMeta": {
     "@solidjs/start-devtools": {
