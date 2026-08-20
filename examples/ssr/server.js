@@ -58,7 +58,7 @@ async function start() {
 
       let render;
       if (!isProduction) {
-        ({ render } = await vite.ssrLoadModule('/src/entry-server.tsx'));
+        ({ render } = await vite.environments.ssr.runner.import('/src/entry-server.tsx'));
       } else {
         ({ render } = await import('./dist/server/entry-server.js'));
       }
@@ -90,7 +90,6 @@ async function start() {
         },
       });
     } catch (e) {
-      if (!isProduction) vite.ssrFixStacktrace(e);
       console.error(e);
       res.statusCode = 500;
       res.end(e.message);

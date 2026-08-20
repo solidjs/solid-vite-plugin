@@ -54,6 +54,11 @@ const jsxCompiler =
 const serverComponents = !!process.env.SOLID_SERVER_COMPONENTS;
 
 export default defineConfig({
+  future: {
+    removePluginHookHandleHotUpdate: 'warn',
+    removePluginHookSsrArgument: 'warn',
+    removeSsrLoadModule: 'warn',
+  },
   // SOLID_BASE (base mode) serves and builds the app under a non-root Vite
   // `base` (e.g. /app/): preview endpoint mounting, dev lazy asset URLs, and
   // request-URL shapes must all stay base-correct.

@@ -2,9 +2,12 @@ import { spawn, exec, ChildProcess } from 'node:child_process';
 import { promisify } from 'node:util';
 
 const execAsync = promisify(exec);
-const examples = ['vite-6', 'vite-7', 'vite-8'];
-const pluginHookSsrDeprecation =
-  "Plugin hook `options.ssr` is replaced with `this.environment.config.consumer === 'server'`.";
+const examples = ['vite-8'];
+const futureDeprecations = [
+  "Plugin hook `options.ssr` is replaced with `this.environment.config.consumer === 'server'`.",
+  'Plugin hook `handleHotUpdate()` is replaced with `hotUpdate()`.',
+  'The `server.ssrLoadModule` is replaced with Environment Runner.',
+];
 const PORT = 4173;
 const TEST_TIMEOUT = 5 * 60 * 1000; // 5 minutes
 const cypressEnv = { ...process.env, ELECTRON_RUN_AS_NODE: undefined };
@@ -32,8 +35,10 @@ async function runExample(example) {
     // Install and build
     await execAsync('pnpm install', { cwd: examplePath });
     const { stdout, stderr } = await execAsync('pnpm run build', { cwd: examplePath });
-    if (`${stdout}\n${stderr}`.includes(pluginHookSsrDeprecation)) {
-      throw new Error(`Vite's deprecated plugin hook SSR argument was used in ${example}`);
+    const output = `${stdout}\n${stderr}`;
+    const deprecation = futureDeprecations.find((message) => output.includes(message));
+    if (deprecation) {
+      throw new Error(`Vite future deprecation in ${example}: ${deprecation}`);
     }
 
     // Start preview server with timeout

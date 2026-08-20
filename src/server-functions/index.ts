@@ -285,8 +285,6 @@ function invalidateModules(
   result: ReturnType<typeof mergeManifestRecord>,
   manifest: string,
 ): void {
-  // `environments` requires Vite 6+; older versions just miss the eager
-  // manifest invalidation (the debounced reload still converges).
   if (server?.environments && result.invalidPreload) {
     invalidateModule(server.environments.client.moduleGraph, manifest);
     invalidateModule(server.environments.ssr.moduleGraph, manifest);
@@ -514,10 +512,7 @@ export function serverFunctions(
       apply: 'serve',
       configureServer(server) {
         const ssrEnvironment = server.environments.ssr;
-        if (
-          internal.externalDevServer ||
-          (ssrEnvironment && !isRunnableEnvironment(ssrEnvironment))
-        ) {
+        if (internal.externalDevServer || !isRunnableEnvironment(ssrEnvironment)) {
           return;
         }
         server.middlewares.use((req, res, next) => {
@@ -543,7 +538,7 @@ export function serverFunctions(
               url.searchParams.get('id');
             if (functionId) {
               const entry = moduleForFunctionId(functionId);
-              if (entry) await server.ssrLoadModule(moduleDevUrl(entry));
+              if (entry) await ssrEnvironment.runner.import(moduleDevUrl(entry));
             }
             // Dispatch through a module evaluated in the SSR environment so
             // the handler shares the registry instance with the app modules.
@@ -551,7 +546,7 @@ export function serverFunctions(
             // in, and dispatch goes through `handleRequest` instead — one
             // middleware chain and one stub-backed request event front the
             // endpoint exactly as they front page SSR.
-            const handler = await server.ssrLoadModule(internal.ssrHandler ?? HANDLER_ID);
+            const handler = await ssrEnvironment.runner.import(internal.ssrHandler ?? HANDLER_ID);
             // Both dispatch shapes carry the raw Node request on the event
             // (the `options.event` seam), matching the SSR dev middleware
             // and what a production Node entry passes.
@@ -567,7 +562,6 @@ export function serverFunctions(
                 );
             await sendWebResponse(res, response);
           })().catch((error) => {
-            if (error instanceof Error) server.ssrFixStacktrace(error);
             next(error);
           });
         });

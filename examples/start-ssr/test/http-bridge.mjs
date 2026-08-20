@@ -193,8 +193,7 @@ try {
   );
 
   // ---- Abort propagation ----------------------------------------------------
-  // The middleware runs in-process (ssrLoadModule), so the probe global it
-  // records on is this very globalThis.
+  // The middleware shares this process, including the probe global.
   const probe = () => globalThis.__solidBridgeProbe ?? { aborts: 0, cancels: 0 };
   {
     const abortsBefore = probe().aborts;

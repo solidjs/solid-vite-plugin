@@ -8,11 +8,7 @@ on:
 
 jobs:
   vitest:
-    name: 'Vitest (${{ matrix.example }})'
-    strategy:
-      fail-fast: false
-      matrix:
-        example: [vite-6, vite-7, vite-8]
+    name: 'Vitest (Vite 8)'
 
     runs-on: ubuntu-22.04
     steps:
@@ -30,9 +26,9 @@ jobs:
         run: pnpm i
 
       - name: Install playwright browser
-        working-directory: examples/${{ matrix.example }}
+        working-directory: examples/vite-8
         run: pnpm exec playwright install chromium
 
       - name: Run tests
-        working-directory: examples/${{ matrix.example }}
+        working-directory: examples/vite-8
         run: pnpm run test

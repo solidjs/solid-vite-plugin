@@ -20,6 +20,11 @@ import solidPlugin from '@solidjs/vite-plugin';
 //   server key (config-time error — boot validation is synchronous so the
 //   server chunk carries no top-level await).
 export default defineConfig({
+  future: {
+    removePluginHookHandleHotUpdate: 'warn',
+    removePluginHookSsrArgument: 'warn',
+    removeSsrLoadModule: 'warn',
+  },
   plugins: [
     solidPlugin({
       start: {

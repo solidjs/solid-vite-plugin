@@ -26,8 +26,9 @@ try {
   const match = /createServerReference\w*\("([^"]*-getServerMessage)"/.exec(transformed?.code || '');
   if (!match) throw new Error('could not extract function id from transformed module');
 
-  await server.ssrLoadModule('virtual:solid-server-function-manifest');
-  const handler = await server.ssrLoadModule('virtual:solid-server-function-handler');
+  const runner = server.environments.ssr.runner;
+  await runner.import('virtual:solid-server-function-manifest');
+  const handler = await runner.import('virtual:solid-server-function-handler');
   const response = await handler.handleServerFunctionRequest(
     new Request(
       `http://localhost${handler.endpoint}?id=${encodeURIComponent(match[1])}&args=${encodeURIComponent('["host"]')}`,

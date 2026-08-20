@@ -71,7 +71,7 @@ try {
   const loadManifestModule = async () => {
     const node = ssrEnv.moduleGraph.getModuleById('\0virtual:solid-manifest');
     if (node) ssrEnv.moduleGraph.invalidateModule(node);
-    return (await server.ssrLoadModule('virtual:solid-manifest')).default;
+    return (await ssrEnv.runner.import('virtual:solid-manifest')).default;
   };
 
   // ---- Protocol over plain HTTP ------------------------------------------
