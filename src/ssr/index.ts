@@ -1203,6 +1203,17 @@ export function startServe(
               }),
         };
       },
+      configEnvironment(name, config) {
+        if (name !== 'ssr') return;
+        config.resolve ??= {};
+        const noExternal = config.resolve.noExternal;
+        if (noExternal !== true) {
+          config.resolve.noExternal = [
+            ...(Array.isArray(noExternal) ? noExternal : noExternal ? [noExternal] : []),
+            DEVTOOLS_PACKAGE,
+          ];
+        }
+      },
       configResolved(config) {
         root = config.root;
         base = config.base;

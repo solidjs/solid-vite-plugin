@@ -2650,7 +2650,7 @@ async function runMiddlewareMode() {
   // SSR_SETUP rides the middleware mode: the hook's contract (ordering
   // after the chain, shared locals) is only observable with a middleware
   // in front anyway.
-  const env = { ...process.env, SSR_MIDDLEWARE: '1', SSR_SETUP: '1' };
+  const env = { ...process.env, SSR_MIDDLEWARE: '1', SSR_SETUP: '1', SSR_DEVTOOLS: '0' };
 
   let server;
   let serverLog = '';
