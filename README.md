@@ -190,8 +190,26 @@ pnpm add -D @solidjs/start-devtools@next
 ```
 
 Start mode detects the package automatically. Set `start: { devtools: true }`
-to require it or `start: { devtools: false }` to disable it. The package is an
-optional peer and the toolbar is not included in production builds.
+to require it or `start: { devtools: false }` to disable automatic integration.
+The package is an optional peer and the toolbar is not included in production
+builds.
+
+Generated entries wrap the app automatically. With custom server and client
+entries, place the development boundary around the app in the shared document
+or root:
+
+```tsx
+import { DevToolbar } from "@solidjs/start-devtools";
+
+<body>
+  <DevToolbar>
+    <App />
+  </DevToolbar>
+</body>;
+```
+
+The package becomes a children-only passthrough in production, so no toolbar
+code is included in either production bundle.
 
 ```tsx
 // src/App.tsx — the entire app: a plain content component

@@ -642,7 +642,11 @@ async function runHmrChecks(mode, cdp, origin, { expectCompiler } = {}) {
   }
 }
 
-async function runBrowserChecks(mode, origin, { hmr, devCss, expectCompiler, devtools } = {}) {
+async function runBrowserChecks(
+  mode,
+  origin,
+  { hmr, devCss, expectCompiler, devtools, ssrError } = {},
+) {
   const chrome = startProcess(CHROME, [
     '--headless=new',
     `--remote-debugging-port=${CDP_PORT}`,
@@ -768,6 +772,60 @@ async function runBrowserChecks(mode, origin, { hmr, devCss, expectCompiler, dev
     if (hmr) {
       await runHmrChecks(mode, cdp, origin, { expectCompiler });
     }
+
+    if (ssrError) {
+      await cdp.send('Page.navigate', { url: origin + '/boom' });
+      await cdp.waitFor('document.readyState === "complete"');
+      record(
+        mode,
+        'devtools',
+        'SSR errors hydrate into the development overlay',
+        await cdp.waitFor(
+          'document.querySelector("[data-solid-error-viewer-error-info-message]")?.textContent === "boom-page"',
+        ),
+      );
+    }
+  } finally {
+    cdp.close();
+    const exited = new Promise((r) => chrome.once('exit', r));
+    try {
+      process.kill(-chrome.pid, 'SIGTERM');
+    } catch {}
+    await Promise.race([exited, new Promise((r) => setTimeout(r, 3000))]);
+    try {
+      rmSync(`/tmp/start-ssr-chrome-${mode}`, { recursive: true, force: true, maxRetries: 5 });
+    } catch {}
+  }
+}
+
+async function runCustomEntryDevtoolsChecks(mode, origin) {
+  const chrome = startProcess(CHROME, [
+    '--headless=new',
+    `--remote-debugging-port=${CDP_PORT}`,
+    `--user-data-dir=/tmp/start-ssr-chrome-${mode}`,
+    '--no-first-run',
+    '--disable-extensions',
+    'about:blank',
+  ]);
+  const cdp = await connectChrome();
+  try {
+    await cdp.send('Page.navigate', { url: origin + '/' });
+    await cdp.waitFor('document.readyState === "complete"');
+    record(
+      mode,
+      'devtools',
+      'custom entry renders one toolbar',
+      await cdp.waitFor('document.querySelectorAll("[data-solid-dev-toolbar]").length === 1'),
+    );
+    await cdp.evalJs('document.querySelector("#authored-error").click()');
+    record(
+      mode,
+      'devtools',
+      'custom entry boundary reports client errors',
+      await cdp.waitFor(
+        'document.querySelector("[data-solid-error-viewer-error-info-message]")?.textContent === "custom-entry-dev-error"',
+      ),
+    );
   } finally {
     cdp.close();
     const exited = new Promise((r) => chrome.once('exit', r));
@@ -893,23 +951,25 @@ async function runDevMode() {
 
     // Devtools default-on: the workspace's @solidjs/start-devtools install is
     // auto-detected, so the generated client entry must wrap the app in the
-    // toolbar and pull the virtual devtools module (whose transformed source
-    // wires the server-function observer).
+    // toolbar and import the package.
     record(
       mode,
       'devtools',
       'generated client entry wraps the app in DevToolbar',
-      generatedEntry.includes('DevToolbar') && generatedEntry.includes('virtual:solid-devtools'),
-    );
-    const devtoolsModule = await (await fetch(origin + '/@id/virtual:solid-devtools')).text();
-    record(
-      mode,
-      'devtools',
-      'server function observer wired in the devtools module',
-      devtoolsModule.includes('observeServerFunctionCalls'),
+      generatedEntry.includes('DevToolbar') &&
+        /@solidjs(?:\/|_)start-devtools/.test(generatedEntry),
     );
 
     await runHttpChecks(mode, origin);
+
+    const boom = await fetchStreamed(origin + '/boom');
+    record(mode, 'devtools', 'SSR development boundary returns 500', boom.status === 500);
+    record(
+      mode,
+      'devtools',
+      'SSR development boundary keeps the client entry',
+      boom.html.includes('boom-page') && boom.html.includes('virtual:solid-ssr-entry-client'),
+    );
 
     await runLazyAssetChecks(mode, origin, { dev: true });
 
@@ -918,6 +978,7 @@ async function runDevMode() {
       devCss: true,
       expectCompiler: 'native',
       devtools: true,
+      ssrError: true,
     });
 
     // ---- Cold-start dep scan (boundary-guard false positive) -------------
@@ -939,7 +1000,7 @@ async function runDevMode() {
 
     // ---- Devtools opt-out sub-run (SSR_DEVTOOLS=0 → devtools: false) -----
     // The package still resolves, but the option must win: no toolbar wrap in
-    // the generated entry and the virtual devtools module stays unclaimed.
+    // the generated entry.
     const offPort = 3176;
     const offOrigin = `http://localhost:${offPort}`;
     const offServer = startProcess(
@@ -956,15 +1017,7 @@ async function runDevMode() {
         mode,
         'devtools',
         'devtools: false strips the toolbar from the generated entry',
-        !offEntry.includes('DevToolbar') && !offEntry.includes('virtual:solid-devtools'),
-      );
-      const offModule = await fetch(offOrigin + '/@id/virtual:solid-devtools');
-      record(
-        mode,
-        'devtools',
-        'devtools: false leaves the virtual devtools module unserved',
-        !offModule.ok,
-        `status ${offModule.status}`,
+        !offEntry.includes('DevToolbar') && !offEntry.includes('@solidjs/start-devtools'),
       );
     } finally {
       try {
@@ -1365,11 +1418,17 @@ async function runCssFilterMode() {
 // them as-is; the prod handler rewrites the authored `/src/entry-client.tsx`
 // script reference to the hashed asset (the classic harness convention).
 const ENTRY_FIXTURES = {
-  'src/TestShell.tsx': `import type { ParentProps } from 'solid-js';
+  'src/TestShell.tsx': `import { createSignal, Show } from 'solid-js';
 import { HydrationScript } from '@solidjs/web';
+import { DevToolbar } from '@solidjs/start-devtools';
 import App from './App';
 
+function Broken() {
+  throw new Error('custom-entry-dev-error');
+}
+
 export default function TestShell() {
+  const [broken, setBroken] = createSignal(false);
   return (
     <html lang="en">
       <head>
@@ -1378,7 +1437,11 @@ export default function TestShell() {
         <HydrationScript />
       </head>
       <body>
-        <App />
+        <DevToolbar>
+          <button id="authored-error" onClick={() => setBroken(true)}>break</button>
+          <Show when={broken()}><Broken /></Show>
+          <App />
+        </DevToolbar>
         <script type="module" src="/src/entry-client.tsx" async />
       </body>
     </html>
@@ -1430,6 +1493,7 @@ async function runEntriesMode() {
       html.includes('src="/src/entry-client.tsx"') &&
         !html.includes('virtual:solid-ssr-entry-client'),
     );
+    await runCustomEntryDevtoolsChecks(mode, origin);
     try {
       process.kill(-server.pid, 'SIGTERM');
     } catch {}
@@ -1437,6 +1501,23 @@ async function runEntriesMode() {
 
     console.log('  building…');
     execSync('pnpm run build', { cwd: exampleDir, stdio: 'pipe' });
+    const customEntryBundles = [
+      ...readdirSync(path.join(exampleDir, 'dist/client/assets')).map((file) =>
+        path.join(exampleDir, 'dist/client/assets', file),
+      ),
+      path.join(exampleDir, 'dist/server/server.js'),
+    ];
+    const customEntryDevtoolsLeaks = customEntryBundles.filter((file) => {
+      const source = readFileSync(file, 'utf-8');
+      return source.includes('data-solid-dev-toolbar') || source.includes('start-devtools');
+    });
+    record(
+      mode,
+      'prod',
+      'custom entry devtools code is removed from production',
+      customEntryDevtoolsLeaks.length === 0,
+      customEntryDevtoolsLeaks.join(', '),
+    );
     server = startProcess('node', ['server.js'], {
       cwd: exampleDir,
       env: { ...process.env, PORT: String(port), NODE_ENV: 'production' },
@@ -1456,7 +1537,7 @@ async function runEntriesMode() {
       !prod.html.includes('/src/entry-client.tsx') &&
         /<script type="module" src="\/assets\/[^"]+\.js" async>/.test(prod.html),
     );
-    await runBrowserChecks(mode, origin);
+    await runBrowserChecks(mode, origin, { devtools: false });
   } catch (e) {
     record(mode, 'run', 'mode completed', false, String(e));
   } finally {
@@ -2569,7 +2650,7 @@ async function runMiddlewareMode() {
   // SSR_SETUP rides the middleware mode: the hook's contract (ordering
   // after the chain, shared locals) is only observable with a middleware
   // in front anyway.
-  const env = { ...process.env, SSR_MIDDLEWARE: '1', SSR_SETUP: '1' };
+  const env = { ...process.env, SSR_MIDDLEWARE: '1', SSR_SETUP: '1', SSR_DEVTOOLS: '0' };
 
   let server;
   let serverLog = '';
