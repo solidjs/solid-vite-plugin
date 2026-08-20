@@ -123,7 +123,7 @@ async function waitForHttp(url, timeoutMs = 30000, init) {
   while (Date.now() - start < timeoutMs) {
     try {
       const res = await fetch(url, init);
-      if (res.ok || res.status === 404 || res.status === 500) return;
+      if (res.ok || res.status === 404 || res.status === 500) return res;
     } catch {}
     await new Promise((r) => setTimeout(r, 250));
   }
@@ -439,10 +439,15 @@ async function prodMode() {
     child.stderr.on('data', (d) => (log += d));
     return { child, getLog: () => log };
   };
-  const stop = (child) => {
+  const stop = async (child) => {
+    if (child.exitCode !== null || child.signalCode !== null) return;
+    const exited = new Promise((resolve) => child.once('exit', resolve));
     try {
       process.kill(-child.pid, 'SIGTERM');
-    } catch {}
+    } catch {
+      child.kill('SIGTERM');
+    }
+    await exited;
   };
   const origin = `http://localhost:${PREVIEW_PORT}`;
 
@@ -455,7 +460,7 @@ async function prodMode() {
   record('prod', 'preview', 'app SSRs with the client env value', html.includes('EnvApp'));
   record('prod', 'preview', 'server secret never in HTML', !html.includes(SECRET));
   checkEnvHeaders('prod', 'preview', headers);
-  stop(server);
+  await stop(server);
 
   // 2. Rotation without rebuild: the same artifact, a different secret in
   //    the process environment (real env wins over the .env fold) — the
@@ -465,18 +470,19 @@ async function prodMode() {
   await waitForHttp(origin + '/', 30000, { headers: { accept: 'text/html' } });
   const rotated = await fetchPage(origin + '/');
   record('prod', 'rotation', 'rotated secret visible without a rebuild (runtime env)', rotated.headers.get('x-env-secret-len') === String(ROTATED.length), `len ${rotated.headers.get('x-env-secret-len')}, want ${ROTATED.length}`);
-  stop(server);
+  await stop(server);
 
   // 3. Boot validation: the same artifact with an invalid environment (no
   //    SESSION_SECRET anywhere) must fail at boot with the per-key report.
   writeFileSync(ENV_FILE, ENV_CONTENT.replace(/^SESSION_SECRET=.*$/m, ''));
   const failing = preview({});
-  await waitForHttp(origin + '/', 30000, { headers: { accept: 'text/html' } });
-  const boot = await fetchPage(origin + '/');
-  const bootReport = boot.html + failing.getLog();
+  const boot = await waitForHttp(origin + '/', 30000, {
+    headers: { accept: 'text/html' },
+  });
+  const bootReport = (await boot.text().catch(() => '')) + failing.getLog();
   record('prod', 'boot', 'invalid runtime env fails boot (no page served)', boot.status !== 200, `status ${boot.status}`);
   record('prod', 'boot', 'boot failure carries the per-key report', /server env validation failed at boot/.test(bootReport) && /SESSION_SECRET/.test(bootReport), bootReport.slice(0, 300));
-  stop(failing.child);
+  await stop(failing.child);
   writeFileSync(ENV_FILE, ENV_CONTENT);
 }
 
