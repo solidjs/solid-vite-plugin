@@ -238,7 +238,7 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin {
             ? [userTest.setupFiles]
             : userTest.setupFiles || [];
 
-        if (!userTest.environment && !options.ssr) {
+        if (!userTest.environment && !userTest.workspace && !userTest.projects && !options.ssr) {
           test.environment = 'jsdom';
         }
 
