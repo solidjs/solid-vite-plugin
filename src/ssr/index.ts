@@ -489,11 +489,18 @@ export function startServe(
     // from the plugin's own file: in pnpm-isolated apps a copy that is only a
     // dependency of the plugin is not reachable from the app's importers. The
     // resolved id is kept so imports from generated modules can use it.
-    devtoolsResolutions[consumer] ??= (async () =>
-      (
-        (await resolve(DEVTOOLS_PACKAGE, importer)) ??
-        (await resolve(DEVTOOLS_PACKAGE, fileURLToPath(import.meta.url)))
-      )?.id ?? null)();
+    devtoolsResolutions[consumer] ??= (async () => {
+      // Resolving from the plugin's own file never yields null when the
+      // package is absent: it is declared an optional peer dependency, so
+      // Vite answers with its `__vite-optional-peer-dep:` stub (an empty
+      // module). Treat that stub as "not installed".
+      const realId = (resolved: { id: string } | null) =>
+        resolved && !resolved.id.startsWith('__vite-optional-peer-dep:') ? resolved.id : null;
+      return (
+        realId(await resolve(DEVTOOLS_PACKAGE, importer)) ??
+        realId(await resolve(DEVTOOLS_PACKAGE, fileURLToPath(import.meta.url)))
+      );
+    })();
     const id = await devtoolsResolutions[consumer];
     devtoolsIds[consumer] = id;
     if (!id && options.devtools === true) {
