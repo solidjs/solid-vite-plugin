@@ -179,7 +179,12 @@ export interface ExtensionOptions {
 }
 
 export type Compiler = 'babel' | 'native';
-export type SolidOptions = Omit<JsxCompilerOptions, 'filename' | 'sourceMap'>;
+// `serverComponents` ships in @dom-expressions/compiler's TransformOptions
+// from 0.50.0-next.44; the intersection member is redundant (and droppable)
+// once the dependency floor moves past it.
+export type SolidOptions = Omit<JsxCompilerOptions, 'filename' | 'sourceMap'> & {
+  serverComponents?: boolean;
+};
 type NativeCompiler = typeof import('@dom-expressions/compiler');
 let nativeCompilerPromise: Promise<NativeCompiler> | undefined;
 
@@ -465,12 +470,21 @@ function getSolidOptions(
     solidOptions = { generate: 'dom', hydratable: false };
   }
 
+  // Server components (serverFunctions.components) turn on the SSR-side
+  // behavior-claims transform: ref/on* positions on intrinsic elements
+  // compile to guarded `_bnd` claim holes instead of dropping. SSR-only
+  // by construction (the dom generate ignores the flag), and apps without
+  // the flag compile byte-for-byte as before.
+  const serverComponents =
+    typeof options.serverFunctions === 'object' && !!options.serverFunctions.components;
+
   return {
     moduleName: '@solidjs/web',
     builtIns: SOLID_BUILT_INS,
     contextToCustomElements: true,
     wrapConditionals: true,
     ...solidOptions,
+    ...(serverComponents && solidOptions.generate === 'ssr' ? { serverComponents: true } : {}),
     dev,
     ...(options.solid || {}),
   };
