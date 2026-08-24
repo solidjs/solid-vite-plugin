@@ -179,12 +179,7 @@ export interface ExtensionOptions {
 }
 
 export type Compiler = 'babel' | 'native';
-// `serverComponents` ships in @dom-expressions/compiler's TransformOptions
-// from 0.50.0-next.44; the intersection member is redundant (and droppable)
-// once the dependency floor moves past it.
-export type SolidOptions = Omit<JsxCompilerOptions, 'filename' | 'sourceMap'> & {
-  serverComponents?: boolean;
-};
+export type SolidOptions = Omit<JsxCompilerOptions, 'filename' | 'sourceMap'>;
 type NativeCompiler = typeof import('@dom-expressions/compiler');
 let nativeCompilerPromise: Promise<NativeCompiler> | undefined;
 
