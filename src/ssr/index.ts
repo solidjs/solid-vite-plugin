@@ -181,43 +181,6 @@ export interface AppOptions {
    */
   setup?: string;
   /**
-   * Typed, validated environment variables. A schema file — conventionally
-   * `env.ts` (or `env.js`) at the project root, probed automatically —
-   * default-exports `{ server?, client? }` maps of Standard Schema
-   * validators (zod, valibot, arktype, mixable per key), and the plugin
-   * exposes the validated values through `virtual:env/server` (all vars,
-   * server module graphs only — a client-graph import is a hard error) and
-   * `virtual:env/client` (the `VITE_`-prefixed `client` side; the prefix is
-   * enforced at config time). Validation runs at config/build time in node
-   * only against Vite's `loadEnv` merge of the `.env*` files (with
-   * `process.env` winning), which the plugin also folds into `process.env`
-   * itself — no `loadEnv` boilerplate in vite.config. Failures fail the
-   * build / render the dev error overlay with the per-key report, and a
-   * `solid-env.d.ts` is generated next to the schema so both virtual
-   * modules are fully typed by inference.
-   *
-   * Client values are baked as plain JSON (that's what `VITE_` means); no
-   * validator ships in a client bundle, and a client-build leak scan
-   * errors when a server value shows up in a client chunk. Server values
-   * are NOT baked: `virtual:env/server` reads `process.env` at server boot
-   * and validates through your schema (imported into the server bundle
-   * only), so platform-injected vars work and secrets rotate without a
-   * rebuild — no secret exists in any dist artifact. Build-time server
-   * failures are a deferred-to-boot warning; dev failures stay hard.
-   * Boot validation is synchronous — the generated module carries no
-   * top-level await, so server bundles work on non-esnext targets
-   * (Nitro's node-server preset needs no `esnext` override) — which is
-   * why async validators are rejected for `server` keys at config time
-   * (`client` keys may stay async: they are awaited at build time).
-   *
-   * `true` requires the conventional file (error when missing); a string
-   * is an explicit schema path; `false` disables even the probing.
-   * Env is an app-mode feature: without `app` there is no env layer.
-   *
-   * @default undefined (probe env.ts / env.js; off when absent)
-   */
-  env?: boolean | string;
-  /**
    * Enable the development toolbar. By default it is enabled when
    * `@solidjs/start-devtools` is installed. Setting this to `true` requires
    * the package, while `false` disables it.

@@ -1,5 +1,5 @@
-// App-mode typed-env fixture test: proves `app.env` gives an app-mode app
-// first-party typed environment variables from a root env.ts of Standard
+// Typed-env fixture test for the top-level `env` option in both app modes.
+// It uses a root env.ts of Standard
 // Schema validators (zod + valibot mixed per key), with the validator never
 // reaching any bundle:
 //   - dev (ssr mode): the app SSRs with virtual:env/client values, a
@@ -232,7 +232,7 @@ async function browserCheck(mode, origin, checks) {
   const chrome = startProcess(CHROME, [
     '--headless=new',
     `--remote-debugging-port=${CDP_PORT}`,
-    `--user-data-dir=/tmp/app-env-chrome-${mode}`,
+    `--user-data-dir=/tmp/solid-env-chrome-${mode}`,
     '--no-first-run',
     '--disable-extensions',
     'about:blank',
@@ -539,19 +539,30 @@ async function clientMode() {
 // ---------------------------------------------------------------------------
 const requested = process.argv[2];
 const modes = requested ? [requested] : ['dev', 'guards', 'prod', 'client'];
-// Config-level: `app.env: false` removes the env plugin entirely; the
-// default (probe) includes it under app mode; without `app` there is no
-// env layer at all.
+// Config-level: `env: false` removes the env plugin entirely; the default
+// probes for a schema independently of app mode.
 {
   const { default: solid } = await import('@solidjs/vite-plugin');
   const names = (opts) => solid(opts).map((p) => p.name);
   record(
     'config',
     'gating',
-    'env plugin gated on app (+ env: false opt-out)',
-    names({ app: true }).includes('solid:app-env') &&
-      !names({ app: { env: false } }).includes('solid:app-env') &&
-      !names({}).includes('solid:app-env'),
+    'env plugin is top-level (+ env: false opt-out)',
+    names({}).includes('solid:env') &&
+      names({ env: true }).includes('solid:env') &&
+      !names({ env: false }).includes('solid:env'),
+  );
+  let migrationError = '';
+  try {
+    names({ app: { env: true } });
+  } catch (error) {
+    migrationError = String(error);
+  }
+  record(
+    'config',
+    'migration',
+    'app.env reports the top-level replacement',
+    migrationError.includes('`app.env` has moved to the top level'),
   );
 }
 try {

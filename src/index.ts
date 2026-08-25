@@ -16,7 +16,7 @@ import { boundaryModules } from './boundary-modules.js';
 
 import { serverFunctions, type ServerFunctionsOptions } from './server-functions/index.js';
 import { SSR_HANDLER_ID, appServe, type AppOptions } from './ssr/index.js';
-import { appEnv } from './app-env.js';
+import { envPlugin } from './env.js';
 
 export { devStylePatch } from './dev-manifest.js';
 export { serverFunctions };
@@ -245,6 +245,20 @@ export interface Options {
    * @default false
    */
   ssr?: boolean;
+
+  /**
+   * Typed, validated environment variables. A schema file, conventionally
+   * `env.ts` or `env.js` at the project root, default-exports `{ server?,
+   * client? }` maps of Standard Schema validators. Validated values are
+   * exposed through `virtual:env/server` and `virtual:env/client`.
+   *
+   * This capability is independent of app mode. `true` requires the
+   * conventional file, a string selects an explicit schema path, and
+   * `false` disables automatic probing.
+   *
+   * @default undefined (probe env.ts / env.js; off when absent)
+   */
+  env?: boolean | string;
 
   /**
    * App mode lets the plugin own entries, dev
@@ -570,6 +584,12 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
   // single shape (`false` behaves exactly like omission).
   const appOptions: AppOptions | null =
     options.app === true ? {} : options.app || null;
+  if (appOptions && 'env' in appOptions) {
+    throw new Error(
+      '[@solidjs/vite-plugin] `app.env` has moved to the top level. Example: ' +
+        '`solid({ app: { env: true } })` becomes `solid({ app: true, env: true })`.',
+    );
+  }
   const styleFilterOptions = appOptions?.css?.filter;
   // The CSS crawl walks the module graph from the app's own entries, so a
   // plain createFilter allowlist can't express the option's purpose (opting
@@ -1202,15 +1222,13 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
       ]
     : [boundaryModules(), mainPlugin];
 
+  plugins.push(...envPlugin(options.env));
+
   // The `app` option opts into app-mode serving on top of the transforms;
   // the `ssr` boolean picks the mode (a bare `ssr: true` keeps the
   // historical transform-only behavior).
   if (appOptions) {
     plugins.push(
-      // Typed env (`app.env`) rides both app modes: config-time
-      // validation, the virtual:env/{server,client} modules, generated
-      // types, and the client-bundle leak scan.
-      ...appEnv(appOptions.env),
       ...appServe(appOptions, {
         serverFunctions: !!options.serverFunctions,
         serverComponents,
