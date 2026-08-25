@@ -654,6 +654,19 @@ production handler alike), and edits to the module hot-invalidate the
 handler in dev. Config calls merge per key, so it composes with the
 plugin's own runtime configuration.
 
+Server-function requests are same-origin protected by `@solidjs/web`. To
+allow another trusted origin, configure it in the same server-only module:
+
+```ts
+import { configureServerFunctionsServer } from '@solidjs/web/server-functions/server';
+
+configureServerFunctionsServer({
+  csrf: { origin: ['https://app.example.com'] },
+});
+```
+
+Set `csrf: false` only when another trusted layer protects the endpoint.
+
 Meta-frameworks that need to control plugin ordering and dispatch requests
 through their own server should use the standalone `serverFunctions()`
 export instead, which never installs the dev middleware. See

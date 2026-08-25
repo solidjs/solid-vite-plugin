@@ -129,6 +129,15 @@ import {
   resolveConfig,
 } from 'vite';
 
+const nativeFetch = globalThis.fetch;
+function fetch(input, init) {
+  const request = new Request(input, init);
+  if (!request.headers.has('Sec-Fetch-Site')) {
+    request.headers.set('Sec-Fetch-Site', 'same-origin');
+  }
+  return nativeFetch(request);
+}
+
 const exampleDir = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 // Deliberately no process.chdir(exampleDir): the in-process modes (external,
 // detect) create the dev server with `root: exampleDir` while the runner's
@@ -295,6 +304,22 @@ function extractFunctionId(transformedCode, name) {
   // newer compilers pass the function name as a second argument after the id.
   const match = transformedCode.match(new RegExp(`createServerReference\\w*\\("([^"]*-${name})"`));
   return match ? match[1] : null;
+}
+
+async function runCsrfChecks(mode, origin) {
+  const crossSite = await fetch(origin + '/_server?id=csrf-probe', {
+    method: 'POST',
+    headers: { 'Sec-Fetch-Site': 'cross-site' },
+  });
+  record(
+    mode,
+    'csrf',
+    'cross-site server function request rejected',
+    crossSite.status === 403,
+  );
+
+  const sameOrigin = await fetch(origin + '/_server?id=csrf-probe', { method: 'POST' });
+  record(mode, 'csrf', 'same-origin request reaches dispatch', sameOrigin.status === 404);
 }
 
 // Distinctive rule from src/App.css: proves real styles (not just the dev
@@ -899,6 +924,7 @@ async function runDevMode() {
     );
     const bogus = await fetch(origin + '/_server?id=bogus-0');
     record(mode, 'sf', 'dev middleware rejects unknown id', bogus.status === 404);
+    await runCsrfChecks(mode, origin);
 
     const html = await runSsrChecks(mode, origin);
     record(mode, 'dev', 'Vite client injected into <head>', html.includes('/@vite/client'));
@@ -1166,6 +1192,7 @@ async function runProdMode() {
 
     const bogus = await fetch(origin + '/_server?id=bogus-0');
     record(mode, 'sf', 'prod handler rejects unknown id', bogus.status === 404);
+    await runCsrfChecks(mode, origin);
 
     const html = await runSsrChecks(mode, origin);
     record(
