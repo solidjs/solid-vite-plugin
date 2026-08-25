@@ -15,14 +15,14 @@ import {
 import { boundaryModules } from './boundary-modules.js';
 
 import { serverFunctions, type ServerFunctionsOptions } from './server-functions/index.js';
-import { SSR_HANDLER_ID, startServe, type StartOptions } from './ssr/index.js';
-import { startEnv } from './start-env.js';
+import { SSR_HANDLER_ID, appServe, type AppOptions } from './ssr/index.js';
+import { envPlugin } from './env.js';
 
 export { devStylePatch } from './dev-manifest.js';
 export { serverFunctions };
 export type { ServerFunctionsOptions };
 export type { ServerFunctionsFilter } from './server-functions/index.js';
-export type { StartOptions };
+export type { AppOptions };
 import path from 'path';
 import type { FilterPattern, Plugin, ViteDevServer } from 'vite';
 import { createFilter, defaultClientConditions, defaultServerConditions } from 'vite';
@@ -225,40 +225,54 @@ export interface Options {
   /**
    * Whether the app is server-rendered — one meaning everywhere.
    *
-   * Without {@link start}: the legacy transform-only flag, unchanged.
+   * Without {@link app}: the legacy transform-only flag, unchanged.
    * `true` enables the SSR transforms (hydratable client code, SSR server
    * code) — you provide the entries and the server yourself.
    *
-   * With {@link start}: selects the start mode. `true` is SSR start mode
+   * With {@link app}: selects the app mode. `true` is SSR app mode
    * (per-request streaming render + hydration); `false`/omitted is client
-   * mode (a static document shell + client-side `render()`). Flipping a
-   * start-mode project between SPA and SSR is toggling this one boolean.
+   * mode (a static document shell + client-side `render()`). Flipping an
+   * app-mode project between SPA and SSR means toggling this one boolean.
    *
    * The flag describes the app's initial document, not the internal
    * pipelines — client mode still compiles the document shell through the
    * SSR transforms to serve/prerender it.
    *
-   * Objects are no longer accepted: start-mode options moved to {@link start}
+   * Objects are no longer accepted: app-mode options moved to {@link app}
    * (`ssr: { ... }` from 3.0.0-next.23 and earlier becomes
-   * `start: { ... }, ssr: true`).
+   * `app: { ... }, ssr: true`).
    *
    * @default false
    */
   ssr?: boolean;
 
   /**
-   * Start mode — Start as a mode of the plugin: it owns entries, dev
-   * serving, and the build — no index.html, no mount file, no server
-   * wiring. `start: true` is the zero-config spelling, sugar for the empty
-   * options bag `start: {}` (both mean the identical start mode with
+   * Typed, validated environment variables. A schema file, conventionally
+   * `env.ts` or `env.js` at the project root, default-exports `{ server?,
+   * client? }` maps of Standard Schema validators. Validated values are
+   * exposed through `virtual:env/server` and `virtual:env/client`.
+   *
+   * This capability is independent of app mode. `true` requires the
+   * conventional file, a string selects an explicit schema path, and
+   * `false` disables automatic probing.
+   *
+   * @default undefined (probe env.ts / env.js; off when absent)
+   */
+  env?: boolean | string;
+
+  /**
+   * App mode lets the plugin own entries, dev
+   * serving, and the build: no index.html, no mount file, no server
+   * wiring. `app: true` is the zero-config spelling, sugar for the empty
+   * options bag `app: {}` (both mean the identical app mode with
    * defaults; `false`/absent is off). Conventions (shared by both modes,
    * so projects flip between them by toggling {@link ssr}): `src/App.*`
-   * (or `start.app`) is the root component; `src/Document.*` (or
-   * `start.document`) is the optional document shell; authored
-   * `src/entry-server.*` / `src/entry-client.*` (or `start.entryServer` /
-   * `start.entryClient`) replace the generated entries.
+   * (or `app.root`) is the root component; `src/Document.*` (or
+   * `app.document`) is the optional document shell; authored
+   * `src/entry-server.*` / `src/entry-client.*` (or `app.entries.server` /
+   * `app.entries.client`) replace the generated entries.
    *
-   * With `ssr: true` — SSR start mode:
+   * With `ssr: true` — SSR app mode:
    *
    * - Dev: a middleware on the Vite dev server streams the rendered app for
    *   HTML-accepting GET requests — `vite` just works, no server file.
@@ -286,13 +300,13 @@ export interface Options {
    *   `serverFunctions` is enabled, in which case `dist/server` is kept and
    *   its `handleRequest` serves the endpoint (pages stay static).
    * - Client code stays non-hydratable (`generate: 'dom'`), exactly like a
-   *   plain SPA; server-only options (`entryServer`, `external`) are inert.
+   *   plain SPA; server-only options (`entries.server`, `external`) are inert.
    * - `vite preview` serves the static build with history fallback (and
    *   dispatches the server-function endpoint through the kept handler).
    *
    * @default undefined
    */
-  start?: boolean | StartOptions;
+  app?: boolean | AppOptions;
 
   /**
    * JSX compiler backend to use. The default `"native"` compiles through
@@ -376,7 +390,7 @@ export interface Options {
    * components (experimental) — `"use server"` functions returning a
    * component, served over the same endpoint. They come essentially for
    * free: the endpoint transform is installed automatically, and with
-   * SSR start mode (the `start` option with `ssr: true`) and generated entries
+   * SSR app mode (the `app` option with `ssr: true`) and generated entries
    * the document wiring is emitted too. See
    * {@link ServerFunctionsOptions.components}.
    *
@@ -449,8 +463,8 @@ function getSolidOptions(
     // `generate` still follows the transform's own ssr flag, so explicit
     // node-environment tests (renderToString) keep their server codegen.
     solidOptions = { generate: isSsr ? 'ssr' : 'dom', hydratable: false };
-  } else if (options.start && !options.ssr) {
-    // Client start mode: client code compiles exactly like a plain SPA
+  } else if (options.app && !options.ssr) {
+    // Client app mode: client code compiles exactly like a plain SPA
     // (dom, non-hydratable — nothing hydrates); only the document shell
     // render goes through the SSR transforms, also non-hydratable since
     // the shell is inert HTML the client never claims.
@@ -545,11 +559,18 @@ function normalizeEmittedLazyEntries(manifest: Record<string, any>) {
 }
 
 export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
+  if ((options as Partial<Options> & { start?: unknown }).start !== undefined) {
+    throw new Error(
+      '[@solidjs/vite-plugin] `start` has been renamed to `app`. Example: ' +
+        '`solid({ start: true })` becomes `solid({ app: true })`, and ' +
+        '`start: { app: "./src/App.tsx" }` becomes `app: { root: "./src/App.tsx" }`.',
+    );
+  }
   if (typeof options.ssr === 'object') {
     throw new Error(
       '[@solidjs/vite-plugin] `ssr` now only accepts a boolean ("is the app server-rendered"); ' +
-        'move start-mode options to `start: {}` and set `ssr: true`. Example: ' +
-        '`solid({ ssr: { document: … } })` becomes `solid({ start: { document: … }, ssr: true })`.',
+        'move app-mode options to `app: {}` and set `ssr: true`. Example: ' +
+        '`solid({ ssr: { document: … } })` becomes `solid({ app: { document: … }, ssr: true })`.',
     );
   }
   // Recreated in configResolved: relative include/exclude patterns must
@@ -558,12 +579,18 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
   let filter = createFilter(options.include, options.exclude);
   const serverComponents =
     typeof options.serverFunctions === 'object' && !!options.serverFunctions.components;
-  // `start: true` is sugar for the empty options bag — one start mode,
+  // `app: true` is sugar for the empty options bag — one app mode,
   // two spellings — so normalize here and let everything downstream see a
   // single shape (`false` behaves exactly like omission).
-  const startOptions: StartOptions | null =
-    options.start === true ? {} : options.start || null;
-  const styleFilterOptions = startOptions?.css?.filter;
+  const appOptions: AppOptions | null =
+    options.app === true ? {} : options.app || null;
+  if (appOptions && 'env' in appOptions) {
+    throw new Error(
+      '[@solidjs/vite-plugin] `app.env` has moved to the top level. Example: ' +
+        '`solid({ app: { env: true } })` becomes `solid({ app: true, env: true })`.',
+    );
+  }
+  const styleFilterOptions = appOptions?.css?.filter;
   // The CSS crawl walks the module graph from the app's own entries, so a
   // plain createFilter allowlist can't express the option's purpose (opting
   // node_modules graphs in): a bare `include` would reject the app sources
@@ -585,9 +612,9 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
   };
   let styleFilter = createStyleFilter();
   const filterDevStyles = (id: string) => styleFilter(id);
-  // `start.external` only means something when a server side exists to hand
-  // over (SSR start mode); in client mode it is a documented no-op.
-  const externalDevServer = !!options.ssr && !!startOptions?.external;
+  // `app.external` only means something when a server side exists to hand
+  // over (SSR app mode); in client mode it is a documented no-op.
+  const externalDevServer = !!options.ssr && !!appOptions?.external;
 
   let needHmr = false;
   let replaceDev = false;
@@ -863,13 +890,13 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
       projectRoot = config.root;
       filter = createFilter(options.include, options.exclude, { resolve: projectRoot });
       styleFilter = createStyleFilter(projectRoot);
-      if (serverComponents && !(options.start && options.ssr)) {
+      if (serverComponents && !(options.app && options.ssr)) {
         config.logger.warn(
-          '[@solidjs/vite-plugin] serverFunctions.components is set without SSR start mode (the `start` ' +
+          '[@solidjs/vite-plugin] serverFunctions.components is set without SSR app mode (the `app` ' +
             'option with `ssr: true`), so the plugin only installs the endpoint response transform ' +
             '(server functions returning components stream correctly). The document wiring — render ' +
             'plugin, bootstrap script, and the client-side installServerComponents() call — is ' +
-            "emitted by SSR start mode's generated entries; without it, server components only mount " +
+            "emitted by SSR app mode's generated entries; without it, server components only mount " +
             'from post-boot streams and your client code must call installServerComponents() itself.',
         );
       }
@@ -887,7 +914,7 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
       // registry keyed by project root — or, from isolated module runners
       // that don't share globals with this process, through the HTTP bridge
       // endpoint the middleware serves.
-      if (options.ssr || options.start) {
+      if (options.ssr || options.app) {
         registerDevAssetResolver(
           server.config.root,
           createDevAssetResolver(server, filterDevStyles),
@@ -1186,25 +1213,23 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
         ...serverFunctions(options.serverFunctions === true ? {} : options.serverFunctions, {
           devMiddleware: true,
           externalDevServer,
-          // With start mode on (either variant), the dev middleware dispatches
+          // With app mode on (either variant), the dev middleware dispatches
           // the endpoint through the SSR handler so user middleware and the
           // stub-backed request event front it exactly like page SSR.
-          ...(startOptions ? { ssrHandler: SSR_HANDLER_ID } : {}),
+          ...(appOptions ? { ssrHandler: SSR_HANDLER_ID } : {}),
         }),
         mainPlugin,
       ]
     : [boundaryModules(), mainPlugin];
 
-  // The `start` option opts into start-mode serving on top of the transforms;
+  plugins.push(...envPlugin(options.env));
+
+  // The `app` option opts into app-mode serving on top of the transforms;
   // the `ssr` boolean picks the mode (a bare `ssr: true` keeps the
   // historical transform-only behavior).
-  if (startOptions) {
+  if (appOptions) {
     plugins.push(
-      // Typed env (`start.env`) rides both start modes: config-time
-      // validation, the virtual:env/{server,client} modules, generated
-      // types, and the client-bundle leak scan.
-      ...startEnv(startOptions.env),
-      ...startServe(startOptions, {
+      ...appServe(appOptions, {
         serverFunctions: !!options.serverFunctions,
         serverComponents,
         ssr: !!options.ssr,
@@ -1217,7 +1242,7 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
   // Server builds read the client manifest — `virtual:solid-manifest` bakes
   // dist/client/.vite/manifest.json in, and the persisted server-function
   // manifest merges the client build's discoveries — so the client
-  // environment must build first. Start mode's own orchestration already
+  // environment must build first. App mode's own orchestration already
   // orders it that way (environment definition order), but a composed setup
   // whose orchestrator builds server environments first (e.g.
   // @cloudflare/vite-plugin's buildApp, which builds workers before client)
@@ -1244,7 +1269,7 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
   //   exists either way when the server environments build).
   // - Building anything from a hook suppresses Vite's own
   //   build-all-environments fallback (it only runs when *no* environment
-  //   is built), so a setup with no real orchestrator — e.g. start mode's
+  //   is built), so a setup with no real orchestrator — e.g. app mode's
   //   plain `builder: {}` — would end up with only the client built. The
   //   post-order hook reinstates exactly that fallback: when nothing but
   //   our own client build has happened and no other plugin stakes a claim

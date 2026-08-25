@@ -1,0 +1,19 @@
+{
+  "name": "example-app-client",
+  "private": "true",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test": "node test/run.mjs"
+  },
+  "devDependencies": {
+    "vite": "^8.2.1",
+    "@solidjs/vite-plugin": "workspace:*"
+  },
+  "dependencies": {
+    "solid-js": "catalog:",
+    "@solidjs/web": "catalog:"
+  }
+}

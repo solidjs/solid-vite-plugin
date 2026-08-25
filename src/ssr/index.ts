@@ -1,12 +1,12 @@
-// Start-mode serving for plain Vite apps: `solid({ start: {...} })` (or the
-// zero-config sugar `start: true`) adds a serving layer with conventional
+// App-mode serving for plain Vite apps: `solid({ app: {...} })` (or the
+// zero-config sugar `app: true`) adds a serving layer with conventional
 // entries so no hand-rolled wiring is needed, and the plugin's `ssr`
 // boolean picks the mode — `ssr: true` server-renders the app per request;
 // `ssr: false`/omitted is client mode (the same conventions, but the
 // document shell is served/prerendered empty and the app `render()`s
 // client-side). The flip between them is that one boolean.
 //
-// SSR mode (`start` + `ssr: true`):
+// SSR mode (`app` + `ssr: true`):
 // - Dev: runnable SSR environments are served by a Vite middleware. Provider-
 //   owned environments serve through `virtual:solid-ssr-handler` instead.
 //   Both paths inject the Vite client, dev style patch, and entry CSS as
@@ -21,13 +21,13 @@
 // - Entries are conventional with escape hatches: `src/entry-server.*` /
 //   `src/entry-client.*` are used when present (or set explicitly); when
 //   absent, default entries are generated from a single root component
-//   (`start.app`, defaulting to `src/App.*`) wrapped in a document shell
-//   (`start.document`, defaulting to `src/Document.*`, else a built-in one).
+//   (`app.root`, defaulting to `src/App.*`) wrapped in a document shell
+//   (`app.document`, defaulting to `src/Document.*`, else a built-in one).
 // - When `serverFunctions` is also enabled, the handler composes the
 //   endpoint on every surface; the runnable-dev server-function middleware
 //   pre-loads the referenced module, then dispatches through this handler.
 // - Every dispatch runs under a stub-backed request event
-//   (`createRequestEvent`) with the optional `start.middleware` chain fronting
+//   (`createRequestEvent`) with the optional `app.middleware` chain fronting
 //   it, and page responses go through the runtime's `createSSRResponse`
 //   head lifecycle (commit at shell flush, real pre-flush redirects, the
 //   script fallback post-flush).
@@ -35,7 +35,7 @@
 //   else through the built handler — the production path, middleware
 //   included, with no server file needed.
 //
-// Client mode (`start` without `ssr: true`) rides the same machinery with
+// Client mode (`app` without `ssr: true`) rides the same machinery with
 // three deltas: the generated server entry renders the document shell
 // WITHOUT the app (dev serving doubles as history fallback, and a
 // post-build hook prerenders it once into dist/client/index.html), the
@@ -69,22 +69,22 @@ import {
 import { joinBase, sendWebResponse, webRequestFromNode } from '../http.js';
 
 /**
- * Options for the main plugin's `start` option (`start: true` is
+ * Options for the main plugin's `app` option (`app: true` is
  * sugar for the empty bag). One bag serves both modes — the plugin's `ssr`
  * boolean picks between them, so flipping a project between
  * client-rendered and server-rendered is toggling that boolean, never
- * reshaping this object. Server-only options (`entryServer`, `external`)
+ * reshaping this object. Server-only options (`entries.server`, `external`)
  * are documented no-ops in client mode: they stay in the config across a
  * flip instead of erroring.
  */
-export interface StartOptions {
+export interface AppOptions {
   /**
    * Root component module for generated entries (the zero-config path).
    * Resolved relative to the Vite root.
    *
    * @default "src/App.{tsx,jsx,ts,js}" (also probes lowercase "src/app.*")
    */
-  app?: string;
+  root?: string;
   /** Options for development CSS crawling. */
   css?: {
     /**
@@ -108,29 +108,22 @@ export interface StartOptions {
       exclude?: FilterPattern;
     };
   };
-  /**
-   * Server entry module. Must export `render(request?, context?)` returning
-   * a `renderToStream` result, an HTML string, or a `Response`.
-   * `context.clientEntry` carries the resolved client entry URL.
-   *
-   * Server mode only — ignored in client mode, where the server entry is
-   * always generated (it renders the document shell without the app, for
-   * dev serving and the build-time prerender). Conventional
-   * `src/entry-server.*` files are likewise ignored there.
-   *
-   * @default "src/entry-server.{tsx,jsx,ts,js,mjs}" when present, else a
-   * generated entry rendering `<Document><App /></Document>`
-   */
-  entryServer?: string;
-  /**
-   * Client entry module. In SSR mode it hydrates; in client mode it mounts
-   * (a generated one calls `render()`), and it stands alone — no pairing
-   * rule with a server entry.
-   *
-   * @default "src/entry-client.{tsx,jsx,ts,js,mjs}" when present, else a
-   * generated entry
-   */
-  entryClient?: string;
+  /** Explicit rendering entries. Conventional entry files are used when omitted. */
+  entries?: {
+    /**
+     * Client entry module. In SSR mode it hydrates; in client mode it mounts.
+     *
+     * @default "src/entry-client.{tsx,jsx,ts,js,mjs}" when present, else a generated entry
+     */
+    client?: string;
+    /**
+     * Server entry module. Must export `render(request?, context?)`.
+     * Ignored in client mode, where the server entry renders only the shell.
+     *
+     * @default "src/entry-server.{tsx,jsx,ts,js,mjs}" when present, else a generated entry
+     */
+    server?: string;
+  };
   /**
    * Document shell component wrapping the app in generated entries. Receives
    * `props.children` and must render the full `<html>` document including
@@ -188,43 +181,6 @@ export interface StartOptions {
    */
   setup?: string;
   /**
-   * Typed, validated environment variables. A schema file — conventionally
-   * `env.ts` (or `env.js`) at the project root, probed automatically —
-   * default-exports `{ server?, client? }` maps of Standard Schema
-   * validators (zod, valibot, arktype, mixable per key), and the plugin
-   * exposes the validated values through `virtual:env/server` (all vars,
-   * server module graphs only — a client-graph import is a hard error) and
-   * `virtual:env/client` (the `VITE_`-prefixed `client` side; the prefix is
-   * enforced at config time). Validation runs at config/build time in node
-   * only against Vite's `loadEnv` merge of the `.env*` files (with
-   * `process.env` winning), which the plugin also folds into `process.env`
-   * itself — no `loadEnv` boilerplate in vite.config. Failures fail the
-   * build / render the dev error overlay with the per-key report, and a
-   * `solid-env.d.ts` is generated next to the schema so both virtual
-   * modules are fully typed by inference.
-   *
-   * Client values are baked as plain JSON (that's what `VITE_` means); no
-   * validator ships in a client bundle, and a client-build leak scan
-   * errors when a server value shows up in a client chunk. Server values
-   * are NOT baked: `virtual:env/server` reads `process.env` at server boot
-   * and validates through your schema (imported into the server bundle
-   * only), so platform-injected vars work and secrets rotate without a
-   * rebuild — no secret exists in any dist artifact. Build-time server
-   * failures are a deferred-to-boot warning; dev failures stay hard.
-   * Boot validation is synchronous — the generated module carries no
-   * top-level await, so server bundles work on non-esnext targets
-   * (Nitro's node-server preset needs no `esnext` override) — which is
-   * why async validators are rejected for `server` keys at config time
-   * (`client` keys may stay async: they are awaited at build time).
-   *
-   * `true` requires the conventional file (error when missing); a string
-   * is an explicit schema path; `false` disables even the probing.
-   * Env is a start-mode feature: without `start` there is no env layer.
-   *
-   * @default undefined (probe env.ts / env.js; off when absent)
-   */
-  env?: boolean | string;
-  /**
    * Enable the development toolbar. By default it is enabled when
    * `@solidjs/start-devtools` is installed. Setting this to `true` requires
    * the package, while `false` disables it.
@@ -239,10 +195,10 @@ export interface StartOptions {
    *
    * @default true
    */
-  errorBoundary?: boolean;
+  productionErrorBoundary?: boolean;
   /**
    * Let a host integration own the server environment — build wiring and
-   * HTTP serving alike. The plugin skips its start-mode server-build config and
+   * HTTP serving alike. The plugin skips its app-mode server-build config and
    * stands its dev middlewares down (SSR serving and the server-function
    * endpoint); the generated `virtual:solid-ssr-handler` self-serves
    * instead, inlining dev styles through a virtual module and composing the
@@ -268,10 +224,10 @@ export interface StartOptions {
   external?: boolean;
 }
 
-// Server-only start-mode request handler; also the server bundle's entry so a
+// Server-only app-mode request handler; also the server bundle's entry so a
 // production server is one import away from `Request -> Response`. Exported
 // for the main plugin to thread into the server-function dev middleware,
-// which dispatches through it when SSR start mode is active (one middleware
+// which dispatches through it when SSR app mode is active (one middleware
 // chain and one request event across both dispatch paths).
 export const SSR_HANDLER_ID = 'virtual:solid-ssr-handler';
 const HANDLER_ID = SSR_HANDLER_ID;
@@ -282,7 +238,7 @@ const HANDLER_ID = SSR_HANDLER_ID;
 // such seam — every unhandled request renders — but production also has no
 // Vite pipeline to fall back to.
 const DEV_FALLTHROUGH_HEADER = 'x-solid-dev-fallthrough';
-// Private protocol between the two generated modules when `start.setup` is
+// Private protocol between the two generated modules when `app.setup` is
 // async: the entry hands the handler the renderToStream result under this
 // key, because a promise resolving to the stream BARE would adopt the
 // stream's thenable (which waits for the complete render) and buffer it.
@@ -316,11 +272,11 @@ function probe(root: string, stem: string, extensions: string[]): string | null 
 function normalizeUserPath(root: string, spec: string, option: string): string {
   const absolute = path.isAbsolute(spec) ? spec : path.resolve(root, spec);
   if (!existsSync(absolute)) {
-    throw new Error(`[@solidjs/vite-plugin] start.${option} does not exist: ${spec}`);
+    throw new Error(`[@solidjs/vite-plugin] app.${option} does not exist: ${spec}`);
   }
   const relative = path.relative(root, absolute).split(path.sep).join('/');
   if (relative.startsWith('..')) {
-    throw new Error(`[@solidjs/vite-plugin] start.${option} must live inside the Vite root: ${spec}`);
+    throw new Error(`[@solidjs/vite-plugin] app.${option} must live inside the Vite root: ${spec}`);
   }
   return relative;
 }
@@ -338,15 +294,15 @@ interface ResolvedEntries {
   document: string | null;
 }
 
-function resolveEntries(root: string, options: StartOptions, clientMode: boolean): ResolvedEntries {
-  const explicitClient = options.entryClient
-    ? normalizeUserPath(root, options.entryClient, 'entryClient')
+function resolveEntries(root: string, options: AppOptions, clientMode: boolean): ResolvedEntries {
+  const explicitClient = options.entries?.client
+    ? normalizeUserPath(root, options.entries.client, 'entries.client')
     : null;
 
   if (clientMode) {
     // Client mode: the server entry is always generated (it renders the
     // document shell only — no App — for dev serving and the build-time
-    // prerender); `start.entryServer` and conventional src/entry-server.*
+    // prerender); `app.entries.server` and conventional src/entry-server.*
     // files are documented no-ops here, so a project flipping the `ssr`
     // boolean never has to touch them. No entry pairing rule either: an
     // authored client entry stands alone. The document resolves in every
@@ -364,13 +320,13 @@ function resolveEntries(root: string, options: StartOptions, clientMode: boolean
         document: document ? path.resolve(root, document) : null,
       };
     }
-    const app = options.app
-      ? normalizeUserPath(root, options.app, 'app')
+    const app = options.root
+      ? normalizeUserPath(root, options.root, 'root')
       : (probe(root, 'src/App', APP_EXTENSIONS) ?? probe(root, 'src/app', APP_EXTENSIONS));
     if (!app) {
       throw new Error(
-        `[@solidjs/vite-plugin] the \`start\` option needs an app root: add src/App.tsx ` +
-          `(or set start.app), or provide a src/entry-client.* entry.`,
+        `[@solidjs/vite-plugin] the \`app\` option needs a root component: add src/App.tsx ` +
+          `(or set app.root), or provide a src/entry-client.* entry.`,
       );
     }
     return {
@@ -382,8 +338,8 @@ function resolveEntries(root: string, options: StartOptions, clientMode: boolean
     };
   }
 
-  const explicitServer = options.entryServer
-    ? normalizeUserPath(root, options.entryServer, 'entryServer')
+  const explicitServer = options.entries?.server
+    ? normalizeUserPath(root, options.entries.server, 'entries.server')
     : null;
   const entryServer = explicitServer ?? probe(root, 'src/entry-server', ENTRY_EXTENSIONS);
   const entryClient = explicitClient ?? probe(root, 'src/entry-client', ENTRY_EXTENSIONS);
@@ -399,18 +355,18 @@ function resolveEntries(root: string, options: StartOptions, clientMode: boolean
     const missing = entryServer ? 'entry-client' : 'entry-server';
     throw new Error(
       `[@solidjs/vite-plugin] found ${found} but no ${missing}; entry files come in pairs. ` +
-        `Provide both (src/entry-server.* and src/entry-client.*, or the start.entryServer / ` +
-        `start.entryClient options) or neither (to generate both from start.app).`,
+        `Provide both (src/entry-server.* and src/entry-client.*, or app.entries.server / ` +
+        `app.entries.client) or neither (to generate both from app.root).`,
     );
   }
 
-  const app = options.app
-    ? normalizeUserPath(root, options.app, 'app')
+  const app = options.root
+    ? normalizeUserPath(root, options.root, 'root')
     : (probe(root, 'src/App', APP_EXTENSIONS) ?? probe(root, 'src/app', APP_EXTENSIONS));
   if (!app) {
     throw new Error(
-        `[@solidjs/vite-plugin] the \`start\` option needs an app root: add src/App.tsx ` +
-          `(or set start.app), or provide src/entry-server.* and src/entry-client.* entries.`,
+      `[@solidjs/vite-plugin] the \`app\` option needs a root component: add src/App.tsx ` +
+        `(or set app.root), or provide src/entry-server.* and src/entry-client.* entries.`,
     );
   }
   const document = options.document
@@ -426,8 +382,8 @@ function resolveEntries(root: string, options: StartOptions, clientMode: boolean
   };
 }
 
-export function startServe(
-  options: StartOptions,
+export function appServe(
+  options: AppOptions,
   internal: {
     serverFunctions?: boolean;
     serverComponents?: boolean;
@@ -435,7 +391,7 @@ export function startServe(
     styleFilter?: DevStyleFilter;
   } = {},
 ): Plugin[] {
-  // Client mode (the `start` option without `ssr: true`) rides this exact
+  // Client mode (the `app` option without `ssr: true`) rides this exact
   // plugin with three deltas: the generated server entry renders the
   // document shell WITHOUT the app (dev serving doubles as history
   // fallback, and a post-build hook prerenders it once into
@@ -454,7 +410,7 @@ export function startServe(
   // the server-function handler module either way). Everything is gated
   // codegen: with the option off, none of these imports exist anywhere.
   const serverComponents = !!internal.serverComponents;
-  const errorBoundary = options.errorBoundary !== false;
+  const productionErrorBoundary = options.productionErrorBoundary !== false;
   const styleFilter = internal.styleFilter;
   let devtoolsEnabled = false;
   let devtoolsResolutions: Partial<
@@ -505,8 +461,8 @@ export function startServe(
     devtoolsIds[consumer] = id;
     if (!id && options.devtools === true) {
       throw new Error(
-        '[@solidjs/vite-plugin] start.devtools requires @solidjs/start-devtools. ' +
-          'Install it as a development dependency or set start.devtools to false.',
+        '[@solidjs/vite-plugin] app.devtools requires @solidjs/start-devtools. ' +
+          'Install it as a development dependency or set app.devtools to false.',
       );
     }
     return id !== null;
@@ -613,14 +569,14 @@ export function startServe(
   }
 
   function errorBoundaryImport(): string[] {
-    return isBuild && errorBoundary
+    return isBuild && productionErrorBoundary
       ? [`import { DefaultErrorBoundary } from ${JSON.stringify(ERROR_BOUNDARY_ID)};`]
       : [];
   }
 
   function documentTree(root: string, wrapper?: string): string[] {
     const content = wrapper ? `<${wrapper}><${root} /></${wrapper}>` : `<${root} />`;
-    return isBuild && errorBoundary
+    return isBuild && productionErrorBoundary
       ? [
           `  <DefaultErrorBoundary>`,
           `    <Document>`,
@@ -647,7 +603,7 @@ export function startServe(
         ``,
         `export function render(request, context) {`,
         `  return renderToStream(() => (`,
-        ...(isBuild && errorBoundary
+        ...(isBuild && productionErrorBoundary
           ? [
               `  <DefaultErrorBoundary>`,
               `    <Document />`,
@@ -678,7 +634,7 @@ export function startServe(
       ...(setupPath
         ? [
             `if (typeof setup !== 'function') {`,
-            `  throw new Error('[@solidjs/vite-plugin] start.setup must default-export a function ' +`,
+            `  throw new Error('[@solidjs/vite-plugin] app.setup must default-export a function ' +`,
             `    '((event, App) => Component | void | Promise<...>): ' + ${JSON.stringify(options.setup)});`,
             `}`,
             ``,
@@ -743,7 +699,7 @@ export function startServe(
         `import App from ${JSON.stringify(app)};`,
         ``,
         `render(() => ${
-          isBuild && errorBoundary
+          isBuild && productionErrorBoundary
             ? '<DefaultErrorBoundary><App /></DefaultErrorBoundary>'
             : toolbar
               ? '<DevToolbar><App /></DevToolbar>'
@@ -898,7 +854,7 @@ export function startServe(
         `const middlewares = Array.isArray(middlewareModule) ? middlewareModule : [middlewareModule];`,
         `for (const mw of middlewares) {`,
         `  if (typeof mw !== 'function') {`,
-        `    throw new Error('[@solidjs/vite-plugin] start.middleware must default-export a function or an array of functions: ' + ${JSON.stringify(middlewarePath)});`,
+        `    throw new Error('[@solidjs/vite-plugin] app.middleware must default-export a function or an array of functions: ' + ${JSON.stringify(middlewarePath)});`,
         `  }`,
         `}`,
         `const runMiddleware = composeMiddleware(middlewares);`,
@@ -1035,7 +991,7 @@ export function startServe(
       `  }`,
       ...(setupPath
         ? [
-            // start.setup's async path boxes the stream (see the generated
+            // app.setup's async path boxes the stream (see the generated
             // entry): a bare promise resolution would adopt the stream's
             // thenable and buffer the whole render.
             `  if (result && result.${STREAM_BOX}) result = result.${STREAM_BOX};`,
@@ -1105,7 +1061,7 @@ export function startServe(
         middlewarePath = options.middleware
           ? path.resolve(root, normalizeUserPath(root, options.middleware, 'middleware'))
           : null;
-        // Server-mode only, like `entryServer`/`external` (a documented
+        // Server-mode only, like `entries.server`/`external` (a documented
         // no-op in client mode so configs survive the `ssr` boolean flip).
         setupPath =
           !clientMode && options.setup
@@ -1115,9 +1071,9 @@ export function startServe(
           // An authored entry-server owns its render function — the seam the
           // hook needs does not exist there.
           throw new Error(
-            '[@solidjs/vite-plugin] start.setup only applies to generated entries: your ' +
+            '[@solidjs/vite-plugin] app.setup only applies to generated entries: your ' +
               'entry-server owns render() already, so call your setup step there instead ' +
-              `(remove start.setup or the authored entry): ${options.setup}`,
+              `(remove app.setup or the authored entry): ${options.setup}`,
           );
         }
         if (env.isPreview) {
@@ -1360,7 +1316,7 @@ export function startServe(
         // Vite's preview statics serve dist/client (see the config hook) and
         // everything else — pages, the server-function endpoint, middleware
         // included — dispatches through the built handler, exactly like a
-        // deployed server. Hosts owning the server build (`start.external`)
+        // deployed server. Hosts owning the server build (`app.external`)
         // preview through their own runner instead.
         // Client mode: pages are the static index.html (preview's own
         // history fallback serves them before this post middleware runs);
@@ -1427,7 +1383,7 @@ export function startServe(
             const pageRequest = req.method === 'GET' && accept.includes('text/html');
             // Production dispatches every request through the handler, so
             // dev must too or API routes and no-JS form POSTs served by
-            // `start.middleware` are unreachable under `vite dev`. Without
+            // `app.middleware` are unreachable under `vite dev`. Without
             // a middleware chain, non-page requests have nothing to reach —
             // they stay on Vite's pipeline (404s) instead of rendering HTML.
             if (!pageRequest && !middlewarePath) return next();
@@ -1472,7 +1428,7 @@ export function startServe(
     ...(clientMode
       ? [
           {
-            name: 'solid:start/prerender',
+            name: 'solid:app/prerender',
             apply: 'build',
             buildApp: {
               // Post order: this hook owns the whole client-mode app build (the
