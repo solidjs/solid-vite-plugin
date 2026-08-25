@@ -139,24 +139,29 @@ If set to false, it won't inject the runtime in dev.
 
 Whether the app is server-rendered — one meaning everywhere.
 
-Without [`start`](#optionsstart), `ssr: true` enables the SSR transforms
+Without [`app`](#optionsapp), `ssr: true` enables the SSR transforms
 (hydratable client code, SSR server code); you provide the entries and the
-server yourself, as before. With `start`, the boolean selects the start
-mode: `ssr: true` is SSR start mode, `ssr: false`/omitted is client start
+server yourself, as before. With `app`, the boolean selects the app
+mode: `ssr: true` is SSR app mode, `ssr: false`/omitted is client app
 mode — see below.
 
-Objects are no longer accepted (config-time error): the start-mode options
-that used to live on `ssr: { ... }` moved to `start: { ... }`, with
+Objects are no longer accepted (config-time error): the app-mode options
+that used to live on `ssr: { ... }` moved to `app: { ... }`, with
 `ssr: true` set alongside.
 
-#### options.start
+#### options.app
 
 - Type: Boolean | Object
 - Default: undefined
 
-**Start is now a mode of the plugin**: the serving layer that
-replaces SolidStart. The plugin owns entries, dev serving, and the build —
-no entry files, no `index.html`, no dev server script. `start: true` is the
+This option was previously named `start`. Use `app` instead, and rename the
+old `start.app` root-component option to `app.root`. Explicit entry overrides
+now use `app.entries.client` and `app.entries.server`; the production boundary
+switch is `app.productionErrorBoundary`.
+
+The `app` option enables the plugin-managed application layer. The plugin
+owns entries, dev serving, and the build, so no entry files, `index.html`,
+or dev server script are required. `app: true` is the
 zero-config spelling; add `ssr: true` for streaming SSR:
 
 ```ts
@@ -165,7 +170,7 @@ import { defineConfig } from 'vite';
 import solidPlugin from '@solidjs/vite-plugin';
 
 export default defineConfig({
-  plugins: [solidPlugin({ start: true, ssr: true })],
+  plugins: [solidPlugin({ app: true, ssr: true })],
 });
 ```
 
@@ -176,10 +181,10 @@ client-rendered onto a prerendered static shell. Flipping a project between
 SPA and SSR is toggling that one boolean — same `App`, same `Document`,
 same server functions.
 
-The object form carries the options (`start: true` is pure sugar for
-`start: {}` — both mean the identical start mode with defaults, and
-`false`/absent means off): `app`, `document`, `entryServer`, `entryClient`,
-`middleware`, `setup`, `env`, `devtools`, `errorBoundary`, `css`, `external`,
+The object form carries the options (`app: true` is pure sugar for
+`app: {}` — both mean the identical app mode with defaults, and
+`false`/absent means off): `root`, `document`, `entries`, `middleware`,
+`setup`, `env`, `devtools`, `productionErrorBoundary`, `css`, and `external`,
 all documented below.
 
 Install `@solidjs/start-devtools` as a development dependency to add the
@@ -189,8 +194,8 @@ development toolbar with runtime errors and server function calls:
 pnpm add -D @solidjs/start-devtools@next
 ```
 
-Start mode detects the package automatically. Set `start: { devtools: true }`
-to require it or `start: { devtools: false }` to disable automatic integration.
+App mode detects the package automatically. Set `app: { devtools: true }`
+to require it or `app: { devtools: false }` to disable automatic integration.
 The package is an optional peer and the toolbar is not included in production
 builds.
 
@@ -199,7 +204,7 @@ entries, place the development boundary around the app in the shared document
 or root:
 
 ```tsx
-import { DevToolbar } from "@solidjs/start-devtools";
+import { DevToolbar } from '@solidjs/start-devtools';
 
 <body>
   <DevToolbar>
@@ -218,7 +223,7 @@ export default function App() {
 }
 ```
 
-With `ssr: true` — **SSR start mode**:
+With `ssr: true` — **SSR app mode**:
 
 - **Dev**: `vite` just works — a middleware on the dev server streams the
   rendered app for HTML-accepting GET requests through the SSR environment,
@@ -310,7 +315,7 @@ fetch-style middleware — `(request, next) => Response | Promise<Response>`
 
 ```ts
 // vite.config.ts
-solid({ start: { middleware: './src/middleware.ts' }, ssr: true });
+solid({ app: { middleware: './src/middleware.ts' }, ssr: true });
 
 // src/middleware.ts
 import { getRequestEvent } from '@solidjs/web';
@@ -345,7 +350,7 @@ then render):
 
 ```ts
 // vite.config.ts
-solid({ start: { setup: './src/setup.tsx' }, ssr: true });
+solid({ app: { setup: './src/setup.tsx' }, ssr: true });
 
 // src/setup.tsx
 import type { Component } from 'solid-js';
@@ -377,7 +382,7 @@ hydrates the same tree) fit naturally.
 
 **`env`** — first-party typed environment variables. A schema file at the
 project root — `env.ts` (or `env.js`), probed automatically; point
-elsewhere with `start: { env: './path' }`, disable with `env: false` —
+elsewhere with `app: { env: './path' }`, disable with `env: false` —
 default-exports `server` and `client` maps of
 [Standard Schema](https://standardschema.dev) validators (zod, valibot,
 arktype — even mixed per key; nothing is imported from the plugin):
@@ -447,9 +452,9 @@ import { env } from 'virtual:env/client'; // the VITE_-prefixed client vars
   Schema output type, so `env.VITE_APP_NAME` is whatever your validator
   outputs — with any compliant library and no per-library plumbing.
 
-Env works identically in both `start` modes (a client-mode static build
-carries only the client vars); it is a start-mode feature, so without `start`
-there is no env layer. See `examples/start-env` for the full story,
+Env works identically in both `app` modes (a client-mode static build
+carries only the client vars); it is an app-mode feature, so without `app`
+there is no env layer. See `examples/app-env` for the full story,
 including the failure modes.
 
 Design credit: the shape of this feature — the schema-file convention,
@@ -459,14 +464,14 @@ client values, the leak scan — follows
 design-correct prior art, reimplemented on this plugin's machinery with
 Standard Schema as the only contract (and runtime-read server values).
 
-**`errorBoundary`** — in a production build, generated entries wrap the app
+**`productionErrorBoundary`** — in a production build, generated entries wrap the app
 in a default error boundary (and the document in an outer one): a render
 error streams a generic `500 | Internal Server Error` fallback — no stack
 or error details reach the HTML; the error itself goes to `console.error`
 — and an error caught before the shell flushes commits a real 500 status
 through the response-head lifecycle. Development is unaffected (Vite's
 error overlay owns dev errors), as are authored entries — the boundary is
-generated-entry codegen. Disable it with `start: { errorBoundary: false }`
+generated-entry codegen. Disable it with `app: { productionErrorBoundary: false }`
 when application middleware owns error handling (an error middleware only
 sees the throw when no boundary catches it first). Default: `true`.
 
@@ -482,7 +487,7 @@ server-inlined in dev:
 
 ```ts
 solid({
-  start: {
+  app: {
     css: { filter: { include: /node_modules\/some-ui-lib/ } },
   },
   ssr: true,
@@ -498,7 +503,7 @@ assets.
 
 **Entry resolution** (all paths relative to the Vite root):
 
-1. Explicit `start.entryServer` / `start.entryClient` options.
+1. Explicit `app.entries.server` / `app.entries.client` options.
 2. Conventional files: `src/entry-server.{tsx,jsx,ts,js,mjs}` and
    `src/entry-client.{tsx,jsx,ts,js,mjs}`. Entry files come in pairs —
    providing only one is an error. The server entry must export
@@ -508,9 +513,9 @@ assets.
    `"/src/entry-client.tsx"` reference in the rendered HTML is rewritten to
    the hashed asset (the classic harness convention keeps working).
 3. Generated entries (the zero-config path): when no entry files exist, both
-   are generated from a root component — `start.app`, defaulting to
+   are generated from a root component — `app.root`, defaulting to
    `src/App.{tsx,jsx,ts,js}` (or lowercase `src/app.*`) — wrapped in a
-   document shell: `start.document`, defaulting to `src/Document.{tsx,jsx}`,
+   document shell: `app.document`, defaulting to `src/Document.{tsx,jsx}`,
    else a built-in minimal shell. A custom document receives the app as
    `props.children` and must render the full `<html>` document including
    `<HydrationScript />`; the client entry script is injected into `<head>`
@@ -532,16 +537,16 @@ ownership and stands its HTTP middlewares down automatically.
 
 Two explicit switches remain for custom host setups:
 
-1. **`start.external: true`** — hands the whole server side to a host that
+1. **`app.external: true`** — hands the whole server side to a host that
    does not adopt Solid's normal `ssr` environment. Solid skips its
    server-build wiring and stands its development middlewares down, while
    continuing to provide the generated entries, client manifest, and
    `virtual:solid-ssr-handler`. This is mainly for differently named or
    independently configured environments.
 2. **[`serverFunctions.devMiddleware: false`](#optionsserverfunctions)** —
-   the narrow, endpoint-only switch: keeps start mode's server build and SSR
+   the narrow, endpoint-only switch: keeps app mode's server build and SSR
    serving, hands only server-function dispatch in dev to the host. For
-   setups without `start`, or when only the endpoint should move.
+   setups without `app`, or when only the endpoint should move.
 
 **`virtual:solid-manifest`** exposes the client asset manifest that serving
 works from — a server-side module, available in dev and in SSR builds. In
@@ -561,7 +566,7 @@ with client-only rendering:
 
 ```js
 export default defineConfig({
-  plugins: [solidPlugin({ start: true })],
+  plugins: [solidPlugin({ app: true })],
 });
 ```
 
@@ -582,12 +587,12 @@ export default defineConfig({
 - **`vite preview`** serves the static build with history fallback (and
   dispatches the server-function endpoint through the kept handler).
 - Server-only options are inert here rather than errors, so a config
-  survives the flip untouched: `start.entryServer` (and conventional
+  survives the flip untouched: `app.entries.server` (and conventional
   `src/entry-server.*` files) are ignored — the shell render is always
-  generated — and so is `start.external`. An authored `src/entry-client.*`
+  generated — and so is `app.external`. An authored `src/entry-client.*`
   stands alone and owns the mount.
 
-The point is the migration story: an app born with `start: true` moves to
+The point is the migration story: an app born with `app: true` moves to
 server rendering by setting `ssr: true` — same `App`, same `Document`,
 same routes, same server functions; the plugin swaps render for hydrate,
 turns the hydratable transforms on, and ships the server bundle. (A
@@ -595,10 +600,10 @@ turns the hydratable transforms on, and ships the server bundle. (A
 the plugin strips its script from the served shell — nothing hydrates, so
 a shared `Document` costs nothing — and the built-in shell omits it.)
 
-Start-mode serving is opt-in via `start`, so bare `ssr: true` setups keep the
-transform-only behavior. See `examples/start-ssr` for a complete SSR app
+App-mode serving is opt-in via `app`, so bare `ssr: true` setups keep the
+transform-only behavior. See `examples/app-ssr` for a complete SSR app
 (including a one-file production server and server functions),
-`examples/start-client` for client mode (whose test flips the same app
+`examples/app-client` for client mode (whose test flips the same app
 between the modes), and `examples/ssr` for the manual `ssr: true` wiring.
 
 #### options.serverFunctions
@@ -613,7 +618,7 @@ endpoint `/_server`) or an options object (`runtime`, `endpoint`, `filter`,
 
 The setup is zero-config: in dev a middleware on the Vite server handles the
 endpoint end to end — no server-function code needed in your server entry.
-For production SSR builds, either use SSR start mode ([`start`](#optionsstart)
+For production SSR builds, either use SSR app mode ([`app`](#optionsapp)
 with `ssr: true`, whose handler serves the endpoint automatically) or
 import `virtual:solid-server-function-handler` in your server entry and
 mount its `handleServerFunctionRequest(request)` export on the endpoint.
@@ -632,7 +637,7 @@ side-effect import `virtual:solid-server-function-manifest` in its server
 entry so functions referenced only by client code still register. (When a
 provider owns the `ssr` environment outright — it isn't runnable — the
 middleware already stands down automatically; see the `external` option
-under [`start`](#optionsstart) for the whole-server switch and how the
+under [`app`](#optionsapp) for the whole-server switch and how the
 three options relate.)
 
 **`configure: './src/server-config.ts'`** pins a server-only module (path
@@ -670,7 +675,7 @@ Set `csrf: false` only when another trusted layer protects the endpoint.
 Meta-frameworks that need to control plugin ordering and dispatch requests
 through their own server should use the standalone `serverFunctions()`
 export instead, which never installs the dev middleware. See
-`examples/start-ssr` for a complete app.
+`examples/app-ssr` for a complete app.
 
 **Server components (experimental):** `serverFunctions: { components: true }`
 lets a `"use server"` function return a component. Server components ride
@@ -678,14 +683,14 @@ server functions — same endpoint, same compilation — with zero extra plugin
 config: responses for component-returning functions are served as streamed
 HTML that the client applies in place (client state and DOM identity inside
 survive updates), and the plugin's dev middleware and production handler
-handle that automatically. Combined with SSR start mode
-([`start`](#optionsstart) with `ssr: true`) and generated entries, the
+handle that automatically. Combined with SSR app mode
+([`app`](#optionsapp) with `ssr: true`) and generated entries, the
 document wiring is emitted too: server components render inline in the
 SSR'd document and are adopted
 at boot with zero endpoint requests. With authored entries, the app-side
 pieces (the render plugin, the bootstrap script, and the client's
 `installServerComponents()` call, all from `@solidjs/web/frames`) live in
-your entry files instead. See `examples/start-ssr` for a complete page.
+your entry files instead. See `examples/app-ssr` for a complete page.
 
 #### options.compiler
 

@@ -95,14 +95,14 @@ export interface ServerFunctionsOptions {
    *
    * When a provider owns the dev server's `ssr` environment (it isn't
    * runnable), the middleware already stands down automatically — no need
-   * to set this. See `start.external` for the whole-server switch.
+   * to set this. See `app.external` for the whole-server switch.
    *
    * @default true (stands down automatically when the `ssr` dev environment isn't runnable)
    */
   devMiddleware?: boolean;
   /**
    * Path to a server-only module (resolved relative to the Vite root, like
-   * `start.document`) that the generated
+   * `app.document`) that the generated
    * `virtual:solid-server-function-handler` module side-effect imports
    * before configuring the runtime. A guaranteed pre-dispatch home for
    * server-side registration — typically `configureServerFunctionsServer`
@@ -141,8 +141,8 @@ export interface ServerFunctionsOptions {
    * at boot with zero endpoint requests) needs three more pieces: the
    * render must run with the server-component render plugin, the document
    * must carry the bootstrap script, and the client must call
-   * `installServerComponents()` before hydrating. With SSR start mode (the
-   * main plugin's `start` option with `ssr: true`) and generated entries
+   * `installServerComponents()` before hydrating. With SSR app mode (the
+   * main plugin's `app` option with `ssr: true`) and generated entries
    * the plugin emits all three. With authored entries those pieces live in
    * your entry files — import them from `@solidjs/web/frames` (see the
    * README).
@@ -542,7 +542,7 @@ export function serverFunctions(
             }
             // Dispatch through a module evaluated in the SSR environment so
             // the handler shares the registry instance with the app modules.
-            // With SSR start mode active the main plugin threads its handler id
+            // With SSR app mode active the main plugin threads its handler id
             // in, and dispatch goes through `handleRequest` instead — one
             // middleware chain and one stub-backed request event front the
             // endpoint exactly as they front page SSR.

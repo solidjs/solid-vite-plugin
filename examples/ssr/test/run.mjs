@@ -2,8 +2,8 @@
 // path (`ssr: true` + your own middleware-mode dev server and production
 // server, see server.js) still works end to end. Deliberately lean — the
 // heavy assertions (streaming order, hydration, HMR, server functions, CSS
-// dedup) live in the start-ssr suite; this one guards the escape hatch the
-// `start` option is built on:
+// dedup) live in the app-ssr suite; this one guards the escape hatch the
+// `app` option is built on:
 //   - dev: `node server.js` (Vite in middleware mode) serves the SSR'd
 //     document with the Vite client injected,
 //   - prod: the classic two-step `vite build` (client) + `vite build --ssr`
@@ -34,7 +34,8 @@ const SERVER_FN_RUNTIME_PROBES = [
   'createServerReference',
   'configureServerFunctionsClient',
 ];
-const findServerFnProbe = (source) => SERVER_FN_RUNTIME_PROBES.find((probe) => source.includes(probe));
+const findServerFnProbe = (source) =>
+  SERVER_FN_RUNTIME_PROBES.find((probe) => source.includes(probe));
 
 const children = new Set();
 function cleanup(code = 0) {

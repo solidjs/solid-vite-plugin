@@ -1,0 +1,22 @@
+{
+  "name": "example-app-env",
+  "private": "true",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test": "node test/run.mjs"
+  },
+  "devDependencies": {
+    "vite": "^8.2.1",
+    "@solidjs/vite-plugin": "workspace:*",
+    "esbuild": "^0.28.0"
+  },
+  "dependencies": {
+    "solid-js": "catalog:",
+    "@solidjs/web": "catalog:",
+    "valibot": "^1.1.0",
+    "zod": "^4.1.0"
+  }
+}

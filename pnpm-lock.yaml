@@ -103,6 +103,69 @@ importers:
         specifier: ^8.2.1
         version: 8.2.1(@types/node@24.13.3)(esbuild@0.28.2)
 
+  examples/app-client:
+    dependencies:
+      '@solidjs/web':
+        specifier: 'catalog:'
+        version: 2.0.0-rc.2(solid-js@2.0.0-rc.2)
+      solid-js:
+        specifier: 'catalog:'
+        version: 2.0.0-rc.2
+    devDependencies:
+      '@solidjs/vite-plugin':
+        specifier: workspace:*
+        version: link:../..
+      vite:
+        specifier: ^8.2.1
+        version: 8.2.1(@types/node@24.13.3)(esbuild@0.28.2)
+
+  examples/app-env:
+    dependencies:
+      '@solidjs/web':
+        specifier: 'catalog:'
+        version: 2.0.0-rc.2(solid-js@2.0.0-rc.2)
+      solid-js:
+        specifier: 'catalog:'
+        version: 2.0.0-rc.2
+      valibot:
+        specifier: ^1.1.0
+        version: 1.4.2(typescript@5.9.3)
+      zod:
+        specifier: ^4.1.0
+        version: 4.4.3
+    devDependencies:
+      '@solidjs/vite-plugin':
+        specifier: workspace:*
+        version: link:../..
+      esbuild:
+        specifier: ^0.28.0
+        version: 0.28.2
+      vite:
+        specifier: ^8.2.1
+        version: 8.2.1(@types/node@24.13.3)(esbuild@0.28.2)
+
+  examples/app-ssr:
+    dependencies:
+      '@solidjs/web':
+        specifier: 'catalog:'
+        version: 2.0.0-rc.2(solid-js@2.0.0-rc.2)
+      solid-js:
+        specifier: 'catalog:'
+        version: 2.0.0-rc.2
+    devDependencies:
+      '@solidjs/vite-plugin':
+        specifier: workspace:*
+        version: link:../..
+      jsdom:
+        specifier: ^26.1.0
+        version: 26.1.0
+      vite:
+        specifier: ^8.2.1
+        version: 8.2.1(@types/node@24.13.3)(esbuild@0.28.2)
+      vitest:
+        specifier: ^4.1.11
+        version: 4.1.11(@types/node@24.13.3)(@vitest/browser-playwright@4.1.11)(jsdom@26.1.0)(vite@8.2.1(@types/node@24.13.3)(esbuild@0.28.2))
+
   examples/css-matrix:
     dependencies:
       '@solidjs/web':
@@ -134,69 +197,6 @@ importers:
       vite:
         specifier: ^8.2.1
         version: 8.2.1(@types/node@24.13.3)(esbuild@0.28.2)
-
-  examples/start-client:
-    dependencies:
-      '@solidjs/web':
-        specifier: 'catalog:'
-        version: 2.0.0-rc.2(solid-js@2.0.0-rc.2)
-      solid-js:
-        specifier: 'catalog:'
-        version: 2.0.0-rc.2
-    devDependencies:
-      '@solidjs/vite-plugin':
-        specifier: workspace:*
-        version: link:../..
-      vite:
-        specifier: ^8.2.1
-        version: 8.2.1(@types/node@24.13.3)(esbuild@0.28.2)
-
-  examples/start-env:
-    dependencies:
-      '@solidjs/web':
-        specifier: 'catalog:'
-        version: 2.0.0-rc.2(solid-js@2.0.0-rc.2)
-      solid-js:
-        specifier: 'catalog:'
-        version: 2.0.0-rc.2
-      valibot:
-        specifier: ^1.1.0
-        version: 1.4.2(typescript@5.9.3)
-      zod:
-        specifier: ^4.1.0
-        version: 4.4.3
-    devDependencies:
-      '@solidjs/vite-plugin':
-        specifier: workspace:*
-        version: link:../..
-      esbuild:
-        specifier: ^0.28.0
-        version: 0.28.2
-      vite:
-        specifier: ^8.2.1
-        version: 8.2.1(@types/node@24.13.3)(esbuild@0.28.2)
-
-  examples/start-ssr:
-    dependencies:
-      '@solidjs/web':
-        specifier: 'catalog:'
-        version: 2.0.0-rc.2(solid-js@2.0.0-rc.2)
-      solid-js:
-        specifier: 'catalog:'
-        version: 2.0.0-rc.2
-    devDependencies:
-      '@solidjs/vite-plugin':
-        specifier: workspace:*
-        version: link:../..
-      jsdom:
-        specifier: ^26.1.0
-        version: 26.1.0
-      vite:
-        specifier: ^8.2.1
-        version: 8.2.1(@types/node@24.13.3)(esbuild@0.28.2)
-      vitest:
-        specifier: ^4.1.11
-        version: 4.1.11(@types/node@24.13.3)(@vitest/browser-playwright@4.1.11)(jsdom@26.1.0)(vite@8.2.1(@types/node@24.13.3)(esbuild@0.28.2))
 
   examples/vite-8:
     dependencies:

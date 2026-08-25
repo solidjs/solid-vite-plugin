@@ -1,12 +1,12 @@
 # SSR example — manual wiring (the integrator path)
 
 This example is the **integrator / meta-framework path**: `ssr: true` gives
-you the SSR transforms (hydratable client code, SSR server code) and *you*
+you the SSR transforms (hydratable client code, SSR server code) and _you_
 own everything else — a middleware-mode Vite dev server embedded in your own
 `server.js`, your own production server, and manual manifest handling (the
 authored `/src/entry-client.tsx` script reference is rewritten to the hashed
-asset the classic way). This is the escape hatch the `start` option
-(`start: true` + `ssr: true`, see `examples/start-ssr`) is built on: if you are building a
+asset the classic way). This is the escape hatch the `app` option
+(`app: true` + `ssr: true`, see `examples/app-ssr`) is built on: if you are building a
 framework, or need to control the server, start here.
 
 What it demonstrates:

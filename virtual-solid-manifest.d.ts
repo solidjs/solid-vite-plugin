@@ -1,18 +1,18 @@
-declare module "virtual:solid-manifest" {
-  import type { ViteManifest } from "@solidjs/vite-plugin";
+declare module 'virtual:solid-manifest' {
+  import type { ViteManifest } from '@solidjs/vite-plugin';
   const manifest: ViteManifest;
   export default manifest;
 }
 
 // Side-effect module: importing it loads every module containing server
 // functions so their registrations exist before requests are dispatched.
-declare module "virtual:solid-server-function-manifest" {}
+declare module 'virtual:solid-server-function-manifest' {}
 
 // Server-only handler (SSR builds). Importing it registers every
 // server function (via the manifest above), scopes each request with
 // provideRequestEvent, and configures the endpoint; mount
 // `handleServerFunctionRequest` on the endpoint in your server.
-declare module "virtual:solid-server-function-handler" {
+declare module 'virtual:solid-server-function-handler' {
   /** The resolved endpoint path (plugin `endpoint` option joined with Vite `base`). */
   export const endpoint: string;
   export function handleServerFunctionRequest(
@@ -31,7 +31,7 @@ declare module "virtual:solid-server-function-handler" {
   ): Promise<Response>;
 }
 
-// Server-only start-mode request handler (the `start` option). It is the SSR
+// Server-only app-mode request handler (the `app` option). It is the SSR
 // build's entry, so a production server imports it from the built bundle
 // (e.g. `./dist/server/server.js`) rather than by this id; importing the
 // id directly also works from custom server code in SSR builds.
@@ -39,7 +39,7 @@ declare module "virtual:solid-server-function-handler" {
 // provideRequestEvent, resolves hashed client assets through the build
 // manifest, and — when `serverFunctions` is enabled — serves the
 // server-function endpoint ahead of SSR.
-declare module "virtual:solid-ssr-handler" {
+declare module 'virtual:solid-ssr-handler' {
   export function handleRequest(
     request: Request,
     options?: {

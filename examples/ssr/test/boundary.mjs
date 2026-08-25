@@ -91,7 +91,7 @@ async function runBuild({ entry, ssr }) {
 // must succeed quietly (still claiming the specifier, so the scanner does
 // not chase it as a missing bare dependency, which would abort the scan all
 // the same). Regression: cold-start "Failed to run dependency scan" banners
-// on apps whose 'use server' modules reach server-only code (the start-ssr
+// on apps whose 'use server' modules reach server-only code (the app-ssr
 // suite's dev mode covers the end-to-end cold start).
 {
   const server = await createServer({
@@ -107,7 +107,9 @@ async function runBuild({ entry, ssr }) {
 
     let devError = null;
     try {
-      await server.environments.client.transformRequest('/test/boundary-fixtures/server-only-import.ts');
+      await server.environments.client.transformRequest(
+        '/test/boundary-fixtures/server-only-import.ts',
+      );
     } catch (error) {
       devError = error;
     }
