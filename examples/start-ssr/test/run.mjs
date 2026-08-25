@@ -3242,7 +3242,9 @@ async function runExternalMode() {
       ? await handler.handleRequest(
           new Request(
             `http://localhost/_server?id=${encodeURIComponent(functionId)}&args=${encodeURIComponent('["external"]')}`,
-            { method: 'POST' },
+            // The composing host forwards the browser's fetch metadata; the
+            // runtime's same-origin protection rejects dispatches without it.
+            { method: 'POST', headers: { 'Sec-Fetch-Site': 'same-origin' } },
           ),
         )
       : null;

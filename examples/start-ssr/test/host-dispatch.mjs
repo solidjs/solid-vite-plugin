@@ -29,10 +29,12 @@ try {
   const runner = server.environments.ssr.runner;
   await runner.import('virtual:solid-server-function-manifest');
   const handler = await runner.import('virtual:solid-server-function-handler');
+  // A real host forwards the browser's fetch metadata; the runtime's
+  // same-origin protection rejects dispatches without it.
   const response = await handler.handleServerFunctionRequest(
     new Request(
       `http://localhost${handler.endpoint}?id=${encodeURIComponent(match[1])}&args=${encodeURIComponent('["host"]')}`,
-      { method: 'POST' },
+      { method: 'POST', headers: { 'Sec-Fetch-Site': 'same-origin' } },
     ),
   );
   const body = await response.text();
@@ -45,7 +47,7 @@ try {
   const nativeResponse = await handler.handleServerFunctionRequest(
     new Request(
       `http://localhost${handler.endpoint}?id=${encodeURIComponent(nativeMatch[1])}&args=${encodeURIComponent('[]')}`,
-      { method: 'POST' },
+      { method: 'POST', headers: { 'Sec-Fetch-Site': 'same-origin' } },
     ),
     { event: { nativeEvent: { socket: { remoteAddress: '198.51.100.7' } } } },
   );
