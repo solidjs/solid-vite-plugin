@@ -63,6 +63,7 @@
     "sc-bootstrap-before-hydration-data",
     "scoped-server-function-dce",
     "send-web-response-drain-hang",
+    "server-components-claims-transform",
     "server-components-option",
     "server-components-single-flight",
     "server-environments-reload",
