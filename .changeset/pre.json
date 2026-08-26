@@ -7,6 +7,7 @@
   "changesets": [
     "base-and-lazy-asset-urls",
     "boundary-guard-dep-scan",
+    "boundary-modules-environment-consumer",
     "bridge-failure-not-cached",
     "bump-solid-beta-21",
     "bump-solid-beta-22",
@@ -33,6 +34,7 @@
     "dev-ssr-entry-styles",
     "dev-toolbar-inspector",
     "devtools-optional-peer-stub",
+    "diagnostics-endpoint",
     "drop-sc-bootstrap-head-splice",
     "drop-vite-lt-6",
     "empty-dragons-grow",
@@ -72,6 +74,7 @@
     "server-functions-server-subpath-docs",
     "server-functions-turnkey",
     "six-lions-joke",
+    "solid-compiler-packages",
     "start-css-filter",
     "start-env-typed",
     "start-mode-terminology",

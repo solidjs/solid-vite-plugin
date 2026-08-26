@@ -1,5 +1,20 @@
 # Changelog
 
+## 3.0.0-next.34
+
+### Minor Changes
+
+- da12802: New `diagnostics` option (dev serve only): injects a client module that installs the in-page bridge from the app's own `@solidjs/diagnostics` and serves a `/__solid/diagnostics` endpoint on the dev server. Out-of-process consumers (agents, tests, curl) drive capture sessions (`begin`/`end`), `whyDidRun`, and cost queries over the Vite WebSocket. Works for plain index.html apps (transformIndexHtml injection) and start mode (generated/custom client entry injection). `@solidjs/diagnostics` is a type-only dependency of the plugin; the runtime bridge always comes from the app's installed copy.
+- da12802: Move to the renamed Solid 2.0 compiler packages: the native JSX/directives/lazy/refresh compiler is now `@solidjs/compiler` (was `@dom-expressions/compiler`) and the Babel escape hatch is `@solidjs/babel-plugin` (was `babel-preset-solid` — now a plugin rather than a preset, hosted in `plugins` with the same pass order: user plugins run before it, user presets after). Both backends now bake in the Solid defaults (`moduleName: "@solidjs/web"`, the control-flow `builtIns`, `contextToCustomElements`, `wrapConditionals`), so the plugin only passes the posture it actually decides (`generate`/`hydratable`/`dev`/`serverComponents`) plus user `solid` options, which override the built-in defaults exactly as before.
+
+### Patch Changes
+
+- f0412e6: The `server-only`/`client-only` boundary guard no longer crashes when
+  `this.environment` isn't available on resolve hooks, and now detects the
+  target environment through the same `getEnvironmentConsumer` helper used
+  by the rest of the plugin, falling back to the resolve hook's `ssr` flag
+  when the environment is absent.
+
 ## 3.0.0-next.33
 
 ### Patch Changes
