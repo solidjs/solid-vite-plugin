@@ -1,4 +1,5 @@
 import type { Plugin } from 'vite';
+import { getEnvironmentConsumer } from './environment';
 
 const VIRTUAL_ID = '\0@solidjs/vite-plugin:boundary-modules';
 
@@ -34,7 +35,7 @@ export function boundaryModules(): Plugin {
       // scan all the same. Real dev/build module graphs resolve without
       // the flag and stay fully guarded.
       const scan = !!(options as { scan?: boolean } | undefined)?.scan;
-      const server = this.environment.config.consumer === 'server';
+      const server = getEnvironmentConsumer(this.environment, options) === 'server';
       if (id === 'server-only') {
         if (!server && !scan)
           this.error(
