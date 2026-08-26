@@ -7,10 +7,10 @@ const extensions = ['.js', '.ts', '.json', '.tsx', '.jsx'];
 
 const external = [
   '@babel/core',
-  '@dom-expressions/compiler',
+  '@solidjs/compiler',
   '@ampproject/remapping',
   '@babel/preset-typescript',
-  'babel-preset-solid',
+  '@solidjs/babel-plugin',
   'merge-anything',
   'vitefu',
   'vite',

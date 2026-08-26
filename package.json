@@ -61,9 +61,9 @@
   "dependencies": {
     "@ampproject/remapping": "^2.3.0",
     "@babel/core": "^7.23.3",
-    "@dom-expressions/compiler": "^0.50.0-next.44",
+    "@solidjs/babel-plugin": "^2.0.0-rc.3",
+    "@solidjs/compiler": "^2.0.0-rc.3",
     "@types/babel__core": "^7.20.4",
-    "babel-preset-solid": "^2.0.0-rc.0",
     "merge-anything": "^5.1.7",
     "vitefu": "^1.0.4"
   },
@@ -75,6 +75,7 @@
     "@rollup/plugin-commonjs": "^25.0.7",
     "@rollup/plugin-node-resolve": "^15.2.3",
     "@skypack/package-check": "^0.2.2",
+    "@solidjs/diagnostics": "^2.0.0-rc.3",
     "@solidjs/start-devtools": "^1.0.0-next.3",
     "@types/node": "^24.0.0",
     "cypress": "^14.0.0",

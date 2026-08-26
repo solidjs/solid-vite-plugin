@@ -1,8 +1,8 @@
 // The `"use server"` directive compiler. This wraps the native
-// `transformDirectives` pass from @dom-expressions/compiler (Rust/Oxc); the
+// `transformDirectives` pass from @solidjs/compiler (Rust/Oxc); the
 // original Babel implementation (hoisted from solid-start) lived in this
 // directory through vite-plugin-solid@c052963e and remains the frozen
-// reference for the native pass's fixture suite in dom-expressions.
+// reference for the native pass's fixture suite.
 
 export interface NamedImportDefinition {
   kind: 'named';
@@ -34,10 +34,10 @@ export interface CompileResult {
   valid: boolean;
   code: string;
   map: string | null;
-  functions: import('@dom-expressions/compiler').ServerFunctionMeta[];
+  functions: import('@solidjs/compiler').ServerFunctionMeta[];
 }
 
-type NativeCompiler = typeof import('@dom-expressions/compiler');
+type NativeCompiler = typeof import('@solidjs/compiler');
 let compilerPromise: Promise<NativeCompiler> | undefined;
 
 // Loaded lazily so importing the plugin never pays for the native binding —
@@ -45,14 +45,14 @@ let compilerPromise: Promise<NativeCompiler> | undefined;
 // compiler's opt-in loader in index.ts).
 async function loadCompiler(): Promise<NativeCompiler> {
   try {
-    return await (compilerPromise ??= import('@dom-expressions/compiler'));
+    return await (compilerPromise ??= import('@solidjs/compiler'));
   } catch (error) {
     compilerPromise = undefined;
     const reason = error instanceof Error ? `\n\nCause: ${error.message}` : '';
     throw new Error(
-      '@solidjs/vite-plugin: failed to load @dom-expressions/compiler (the "use server" ' +
+      '@solidjs/vite-plugin: failed to load @solidjs/compiler (the "use server" ' +
         'transform). Your platform should get a prebuilt native binary or the ' +
-        '@dom-expressions/compiler-wasm32-wasi fallback — check that optional ' +
+        '@solidjs/compiler-wasm32-wasi fallback — check that optional ' +
         'dependencies were installed.' +
         reason,
     );

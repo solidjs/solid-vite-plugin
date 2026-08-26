@@ -2109,14 +2109,14 @@ async function runFramesChecks(mode, origin) {
   // ---- The document over plain HTTP ------------------------------------
   const html = await (await fetch(origin + '/', { headers: { accept: 'text/html' } })).text();
   // (`panel:` not `panel:alpha`: hydration comment markers split the text.)
-  // A boundary SSRs as a real <dx-frame data-fid> element
+  // A boundary SSRs as a real <solid-frame data-fid> element
   // (display:contents); slot records remain comment markers.
   record(
     mode,
     'document',
     'server component SSR\'d inline (frame markers in document)',
     html.includes('panel:') &&
-      html.includes('<dx-frame') &&
+      html.includes('<solid-frame') &&
       html.includes('data-fid=') &&
       html.includes(':start-->'),
   );

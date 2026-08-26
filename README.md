@@ -693,8 +693,8 @@ your entry files instead. See `examples/start-ssr` for a complete page.
 - Default: `"native"`
 
 Choose the JSX compiler backend. The default `"native"` compiles JSX through
-the native compiler from `@dom-expressions/compiler`. `"babel"` runs
-`babel-preset-solid` instead and only switches the JSX transform — every
+the native compiler from `@solidjs/compiler`. `"babel"` runs
+`@solidjs/babel-plugin` instead and only switches the JSX transform — every
 other pass (the `lazy()` module-URL transform and the solid-refresh HMR
 transform) is native in both modes.
 
@@ -702,7 +702,7 @@ transform) is native in both modes.
 you expect, set `compiler: 'babel'` and file an issue — the behavioral diff
 between the two modes is the bug report. Platforms without a prebuilt native
 binary (for example StackBlitz WebContainers) automatically fall back to the
-`@dom-expressions/compiler-wasm32-wasi` build, so no configuration is needed
+`@solidjs/compiler-wasm32-wasi` build, so no configuration is needed
 there.
 
 ```ts
@@ -723,13 +723,13 @@ Pass any additional [babel transform options](https://babeljs.io/docs/en/options
 
 #### options.solid
 
-- Type: [@dom-expressions/compiler](https://github.com/ryansolid/dom-expressions/tree/main/packages/compiler#options) / [@dom-expressions/babel-plugin-jsx](https://github.com/ryansolid/dom-expressions/tree/main/packages/babel-plugin-jsx#plugin-options)
+- Type: [@solidjs/compiler](https://github.com/solidjs/solid/tree/main/packages/compiler) / [@solidjs/babel-plugin](https://github.com/solidjs/solid/tree/main/packages/babel-plugin)
 - Default: {}
 
-Pass additional DOM Expressions JSX compiler options. They will be merged with
-Solid's defaults (`moduleName: "@solidjs/web"`, Solid built-ins, custom-element
-context, and conditional wrapping) and applied to whichever compiler backend is
-selected.
+Pass additional Solid JSX compiler options. Both backends carry the Solid
+defaults (`moduleName: "@solidjs/web"`, the control-flow built-ins,
+custom-element context, and conditional wrapping) internally; anything set
+here is merged over them and applied to whichever backend is selected.
 
 #### options.typescript
 
@@ -778,7 +778,7 @@ plugin's errors are prefixed `[@solidjs/vite-plugin]`.
 ## Note on HMR
 
 Starting from version `1.1.0`, this plugin handles automatic HMR. The refresh
-transform is compiled natively by `@dom-expressions/compiler` and drives the
+transform is compiled natively by `@solidjs/compiler` and drives the
 dev-only `solid-js/refresh` runtime entry that ships with Solid (the
 standalone [solid-refresh](https://github.com/solidjs/solid-refresh) package
 is no longer used).

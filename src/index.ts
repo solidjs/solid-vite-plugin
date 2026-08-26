@@ -1,7 +1,7 @@
 import * as babel from '@babel/core';
-import type { TransformOptions as JsxCompilerOptions } from '@dom-expressions/compiler';
+import type { TransformOptions as JsxCompilerOptions } from '@solidjs/compiler';
 import remapping from '@ampproject/remapping';
-import solid from 'babel-preset-solid';
+import solid from '@solidjs/babel-plugin';
 import { existsSync, readFileSync } from 'fs';
 import { mergeAndConcat } from 'merge-anything';
 import { createRequire } from 'module';
@@ -13,6 +13,7 @@ import {
   DEV_MANIFEST_REGISTRY_KEY,
 } from './dev-manifest.js';
 import { boundaryModules } from './boundary-modules.js';
+import { solidDiagnostics } from './diagnostics/index.js';
 
 import { serverFunctions, type ServerFunctionsOptions } from './server-functions/index.js';
 import { SSR_HANDLER_ID, startServe, type StartOptions } from './ssr/index.js';
@@ -37,7 +38,7 @@ const require = createRequire(import.meta.url);
  * second string-literal argument of the form
  * `"__SOLID_LAZY_MODULE__:" + spec`, which `resolveLazyModuleUrls` swaps for
  * the project-relative resolved module path. The prefix and shape are FROZEN
- * — the emitting side lives in @dom-expressions/compiler and must match.
+ * — the emitting side lives in @solidjs/compiler and must match.
  */
 const LAZY_PLACEHOLDER_PREFIX = '__SOLID_LAZY_MODULE__:';
 
@@ -160,19 +161,6 @@ async function fetchAssets(key) {
 export default (registry && registry[${JSON.stringify(root)}]) ||
   (bridgeUrl ? createBridgeResolver() : { resolve: jsOnly, resolveSync: jsOnly });`;
 
-const SOLID_BUILT_INS = [
-  'For',
-  'Show',
-  'Switch',
-  'Match',
-  'Loading',
-  'Reveal',
-  'Portal',
-  'Repeat',
-  'Dynamic',
-  'Errored',
-];
-
 /** Possible options for the extensions property */
 export interface ExtensionOptions {
   typescript?: boolean;
@@ -180,20 +168,20 @@ export interface ExtensionOptions {
 
 export type Compiler = 'babel' | 'native';
 export type SolidOptions = Omit<JsxCompilerOptions, 'filename' | 'sourceMap'>;
-type NativeCompiler = typeof import('@dom-expressions/compiler');
+type NativeCompiler = typeof import('@solidjs/compiler');
 let nativeCompilerPromise: Promise<NativeCompiler> | undefined;
 
 async function loadNativeCompiler() {
   try {
-    return await (nativeCompilerPromise ??= import('@dom-expressions/compiler'));
+    return await (nativeCompilerPromise ??= import('@solidjs/compiler'));
   } catch (error) {
     nativeCompilerPromise = undefined;
     const reason = error instanceof Error ? `\n\nCause: ${error.message}` : '';
     throw new Error(
-      '@solidjs/vite-plugin: failed to load @dom-expressions/compiler, which is required ' +
+      '@solidjs/vite-plugin: failed to load @solidjs/compiler, which is required ' +
         'in every mode (it drives the lazy, refresh, and server-function transforms; ' +
         'compiler: "babel" only switches the JSX transform). Your platform should get ' +
-        'a prebuilt native binary or the @dom-expressions/compiler-wasm32-wasi fallback ' +
+        'a prebuilt native binary or the @solidjs/compiler-wasm32-wasi fallback ' +
         '— check that optional dependencies were installed.' +
         reason,
     );
@@ -222,6 +210,18 @@ export interface Options {
    * @default true
    */
   dev?: boolean;
+  /**
+   * Dev-serve only: expose Solid's diagnostic and attribution channels to
+   * out-of-process consumers (agents, tests, curl). Injects a client module
+   * that installs the in-page bridge from the app's own
+   * `@solidjs/diagnostics` (which must be installed as a dev dependency),
+   * and serves a `/__solid/diagnostics` endpoint on the dev server that
+   * forwards capture control (`begin`/`end`), `whyDidRun`, and cost queries
+   * to the page over the Vite WebSocket. No effect on builds or preview.
+   *
+   * @default false
+   */
+  diagnostics?: boolean;
   /**
    * Whether the app is server-rendered — one meaning everywhere.
    *
@@ -296,8 +296,8 @@ export interface Options {
 
   /**
    * JSX compiler backend to use. The default `"native"` compiles through
-   * `@dom-expressions/compiler`; `"babel"` is the escape hatch running
-   * `babel-preset-solid` instead — if native output ever differs from your
+   * `@solidjs/compiler`; `"babel"` is the escape hatch running
+   * `@solidjs/babel-plugin` instead — if native output ever differs from your
    * expectations, set `compiler: "babel"` and file an issue (the behavioral
    * diff between the modes is the bug report). Platforms without a prebuilt
    * native binary (e.g. StackBlitz WebContainers) automatically use the wasm
@@ -338,8 +338,8 @@ export interface Options {
     | ((source: string, id: string, ssr: boolean) => babel.TransformOptions)
     | ((source: string, id: string, ssr: boolean) => Promise<babel.TransformOptions>);
   /**
-   * Pass any additional [babel-plugin-jsx-dom-expressions](https://github.com/ryansolid/dom-expressions/tree/main/packages/babel-plugin-jsx-dom-expressions#plugin-options).
-   * They will be merged with the defaults sets by [babel-preset-solid](https://github.com/solidjs/solid/blob/main/packages/babel-preset-solid/index.js#L8-L25).
+   * Pass any additional [@solidjs/babel-plugin](https://github.com/solidjs/solid/tree/main/packages/babel-plugin) options.
+   * They will be merged with the plugin's Solid defaults.
    *
    * @default {}
    */
@@ -473,11 +473,11 @@ function getSolidOptions(
   const serverComponents =
     typeof options.serverFunctions === 'object' && !!options.serverFunctions.components;
 
+  // Solid-specific defaults (moduleName "@solidjs/web", the control-flow
+  // builtIns, contextToCustomElements, wrapConditionals) are baked into both
+  // backends — @solidjs/compiler and @solidjs/babel-plugin — so only the
+  // posture this plugin actually decides is passed.
   return {
-    moduleName: '@solidjs/web',
-    builtIns: SOLID_BUILT_INS,
-    contextToCustomElements: true,
-    wrapConditionals: true,
     ...solidOptions,
     ...(serverComponents && solidOptions.generate === 'ssr' ? { serverComponents: true } : {}),
     dev,
@@ -1154,10 +1154,13 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
       }
 
       // Babel JSX backend: one babel.transformAsync hosting the user's
-      // options plus babel-preset-solid.
+      // options plus @solidjs/babel-plugin. Appended to `plugins` (was the
+      // sole preset pre-rename): user plugins still run before it, user
+      // presets still run after — babel runs plugins before presets and
+      // presets in reverse order, so the pass order is unchanged.
       const babelOptions = mergeAndConcat(babelUserOptions, {
         ...babelBaseOptions,
-        presets: [[solid, solidOptions]],
+        plugins: [[solid, solidOptions]],
       }) as babel.TransformOptions;
 
       const result = await babel.transformAsync(code, babelOptions);
@@ -1209,8 +1212,15 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
         serverComponents,
         ssr: !!options.ssr,
         styleFilter: filterDevStyles,
+        diagnostics: !!options.diagnostics,
       }),
     );
+  }
+
+  // Agent diagnostics endpoint + injected bridge (dev serve only — the
+  // plugin no-ops itself for builds and preview via `apply`).
+  if (options.diagnostics) {
+    plugins.push(solidDiagnostics());
   }
 
   // Builder-mode (environments API) client-before-server build ordering.

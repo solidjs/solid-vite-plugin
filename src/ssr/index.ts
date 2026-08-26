@@ -59,6 +59,7 @@ import {
   DEVTOOLS_PACKAGE,
   devtoolsMountModuleCode,
 } from '../devtools/index.js';
+import { DIAGNOSTICS_CLIENT_ID } from '../diagnostics/index.js';
 import {
   collectDevStyles,
   collectDevStyleSources,
@@ -433,6 +434,7 @@ export function startServe(
     serverComponents?: boolean;
     ssr?: boolean;
     styleFilter?: DevStyleFilter;
+    diagnostics?: boolean;
   } = {},
 ): Plugin[] {
   // Client mode (the `start` option without `ssr: true`) rides this exact
@@ -456,6 +458,7 @@ export function startServe(
   const serverComponents = !!internal.serverComponents;
   const errorBoundary = options.errorBoundary !== false;
   const styleFilter = internal.styleFilter;
+  const diagnostics = !!internal.diagnostics;
   let devtoolsEnabled = false;
   let devtoolsResolutions: Partial<
     Record<'client' | 'server', Promise<string | null>>
@@ -730,6 +733,10 @@ export function startServe(
 
   function generatedEntryClientCode(toolbar: boolean): string {
     const { app } = requireEntries();
+    // Dev-only: the diagnostics bridge fronts dev-mode channels, so builds
+    // never see this import (mirrors the plugin's own serve-only `apply`).
+    const diagnosticsImport =
+      diagnostics && !isBuild ? [`import ${JSON.stringify(DIAGNOSTICS_CLIENT_ID)};`] : [];
     if (clientMode) {
       // render(), not hydrate(): the shell's body is empty, the app mounts
       // fresh. Client code compiles non-hydratable in client mode, so the
@@ -737,6 +744,7 @@ export function startServe(
       // without `async` (plain module = deferred), so document.body is
       // complete when this runs.
       return [
+        ...diagnosticsImport,
         `import { render } from '@solidjs/web';`,
         ...errorBoundaryImport(),
         ...(toolbar ? [`import { DevToolbar } from ${JSON.stringify(DEVTOOLS_PACKAGE)};`] : []),
@@ -752,6 +760,7 @@ export function startServe(
       ].join('\n');
     }
     return [
+      ...diagnosticsImport,
       `import { hydrate } from '@solidjs/web';`,
       ...(toolbar ? [`import { DevToolbar } from ${JSON.stringify(DEVTOOLS_PACKAGE)};`] : []),
       ...(serverComponents
@@ -1334,7 +1343,7 @@ export function startServe(
         return null;
       },
       async transform(code, id, opts) {
-        if (isBuild || !devtoolsEnabled) return null;
+        if (isBuild || (!devtoolsEnabled && !diagnostics)) return null;
         const current = requireEntries();
         if (current.generated || getEnvironmentConsumer(this.environment, opts) !== 'client') {
           return null;
@@ -1344,14 +1353,19 @@ export function startServe(
         if (normalizePath(id.split('?')[0]) !== normalizePath(path.resolve(root, current.entryClient))) {
           return null;
         }
-        const toolbar = await resolveDevtools(
-          (source, importer) => this.resolve(source, importer, { skipSelf: true }),
-          id,
-          'client',
-        );
-        if (!toolbar) return null;
+        const injected: string[] = [];
+        if (diagnostics) injected.push(`import ${JSON.stringify(DIAGNOSTICS_CLIENT_ID)};`);
+        if (devtoolsEnabled) {
+          const toolbar = await resolveDevtools(
+            (source, importer) => this.resolve(source, importer, { skipSelf: true }),
+            id,
+            'client',
+          );
+          if (toolbar) injected.push(`import ${JSON.stringify(DEVTOOLS_MOUNT_ID)};`);
+        }
+        if (injected.length === 0) return null;
         return {
-          code: `import ${JSON.stringify(DEVTOOLS_MOUNT_ID)};\n${code}`,
+          code: `${injected.join('\n')}\n${code}`,
           map: null,
         };
       },
