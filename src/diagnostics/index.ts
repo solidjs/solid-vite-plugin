@@ -159,6 +159,24 @@ export function solidDiagnostics(): Plugin {
     },
 
     configureServer(server) {
+      // Announce the surface in the startup block. This is a discovery
+      // channel: agents watching dev-server output learn the endpoint and
+      // the skill documents without any project-level pointer (AGENTS.md).
+      const originalPrintUrls = server.printUrls.bind(server);
+      server.printUrls = () => {
+        originalPrintUrls();
+        const local = server.resolvedUrls?.local[0];
+        const endpoint = local
+          ? new URL(DIAGNOSTICS_ENDPOINT, local).href
+          : DIAGNOSTICS_ENDPOINT;
+        server.config.logger.info(
+          `  ➜  Solid diagnostics: ${endpoint} ` +
+            `(GET status; POST {"method":"begin"|"end"|"whyDidRun"|"costs"})\n` +
+            `  ➜  Agent skills: node_modules/${DIAGNOSTICS_PACKAGE}/skills/agent-loops/SKILL.md, ` +
+            `node_modules/solid-js/skills/reactivity-diagnostics/SKILL.md`,
+        );
+      };
+
       interface Pending {
         resolve: (response: DiagnosticsResponse) => void;
         timer: ReturnType<typeof setTimeout>;
