@@ -515,27 +515,48 @@ export function serverFunctions(
         if (internal.externalDevServer || !isRunnableEnvironment(ssrEnvironment)) {
           return;
         }
+        // A call's address is `<endpoint>/<id>` (solidjs/solid#3076) — the
+        // mount plus exactly one path segment. Bare-mount requests still
+        // reach the runtime handler (it answers 404), so misdirected posts
+        // fail through the endpoint rather than falling through to SSR.
+        const underMount = (pathname: string, mount: string) =>
+          pathname === mount || pathname.startsWith(mount + '/');
         server.middlewares.use((req, res, next) => {
           const url = new URL(req.url || '/', 'http://localhost');
           // Match with and without `base` — middleware-mode hosts may mount
           // vite.middlewares below the base themselves.
-          if (url.pathname !== resolvedEndpoint && url.pathname !== endpoint) {
+          if (!underMount(url.pathname, resolvedEndpoint) && !underMount(url.pathname, endpoint)) {
             return next();
           }
+          const basePrefixed = underMount(url.pathname, resolvedEndpoint);
           // When the stripped form matched, restore the base for dispatch:
           // the generated handler compares the request pathname against the
           // base-prefixed endpoint, and production handlers only ever see
           // base-prefixed URLs.
-          const dispatchUrl =
-            url.pathname === resolvedEndpoint ? undefined : joinBase(base, req.url || '/');
+          const dispatchUrl = basePrefixed ? undefined : joinBase(base, req.url || '/');
           (async () => {
             // Make sure the referenced module has been evaluated in the SSR
             // environment so its registration exists — functions only client
             // code references are never loaded by the SSR render itself.
-            const headerId = req.headers['x-server-function-id'];
-            const functionId =
-              (typeof headerId === 'string' ? headerId.split('#')[0] : undefined) ||
-              url.searchParams.get('id');
+            // The id lives in the path segment after the mount; the header
+            // and `?id=` forms stay as fallbacks for a client runtime older
+            // than the addressing change.
+            const mount = basePrefixed ? resolvedEndpoint : endpoint;
+            const segment = url.pathname.slice(mount.length + 1);
+            let functionId: string | null = null;
+            if (segment && !segment.includes('/')) {
+              try {
+                functionId = decodeURIComponent(segment);
+              } catch {
+                // not an address; the runtime handler answers the 404
+              }
+            }
+            if (!functionId) {
+              const headerId = req.headers['x-server-function-id'];
+              functionId =
+                (typeof headerId === 'string' ? headerId.split('#')[0] : undefined) ||
+                url.searchParams.get('id');
+            }
             if (functionId) {
               const entry = moduleForFunctionId(functionId);
               if (entry) await ssrEnvironment.runner.import(moduleDevUrl(entry));
