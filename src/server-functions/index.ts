@@ -538,9 +538,7 @@ export function serverFunctions(
             // Make sure the referenced module has been evaluated in the SSR
             // environment so its registration exists — functions only client
             // code references are never loaded by the SSR render itself.
-            // The id lives in the path segment after the mount; the header
-            // and `?id=` forms stay as fallbacks for a client runtime older
-            // than the addressing change.
+            // The id lives in the path segment after the mount.
             const mount = basePrefixed ? resolvedEndpoint : endpoint;
             const segment = url.pathname.slice(mount.length + 1);
             let functionId: string | null = null;
@@ -552,6 +550,10 @@ export function serverFunctions(
               }
             }
             if (!functionId) {
+              // TRANSITIONAL (remove before 3.0 stable): the retired header
+              // and `?id=` addressing, kept only for the RC window where this
+              // plugin meets a @solidjs/web older than the path-addressing
+              // change (solidjs/solid#3076).
               const headerId = req.headers['x-server-function-id'];
               functionId =
                 (typeof headerId === 'string' ? headerId.split('#')[0] : undefined) ||
