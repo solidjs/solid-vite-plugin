@@ -307,7 +307,7 @@ function extractFunctionId(transformedCode, name) {
 }
 
 async function runCsrfChecks(mode, origin) {
-  const crossSite = await fetch(origin + '/_server?id=csrf-probe', {
+  const crossSite = await fetch(origin + '/_server/csrf-probe', {
     method: 'POST',
     headers: { 'Sec-Fetch-Site': 'cross-site' },
   });
@@ -318,7 +318,7 @@ async function runCsrfChecks(mode, origin) {
     crossSite.status === 403,
   );
 
-  const sameOrigin = await fetch(origin + '/_server?id=csrf-probe', { method: 'POST' });
+  const sameOrigin = await fetch(origin + '/_server/csrf-probe', { method: 'POST' });
   record(mode, 'csrf', 'same-origin request reaches dispatch', sameOrigin.status === 404);
 }
 
@@ -910,7 +910,7 @@ async function runDevMode() {
     // from the query string when no instance header is present.
     const cold = functionId
       ? await fetch(
-          `${origin}/_server?id=${encodeURIComponent(functionId)}&args=${encodeURIComponent('["start-ssr"]')}`,
+          `${origin}/_server/${encodeURIComponent(functionId)}?args=${encodeURIComponent('["start-ssr"]')}`,
           { method: 'POST' },
         )
       : null;
@@ -922,7 +922,7 @@ async function runDevMode() {
       coldText === 'hello start-ssr from the server',
       functionId ? `got ${JSON.stringify(coldText)}` : 'could not extract function id',
     );
-    const bogus = await fetch(origin + '/_server?id=bogus-0');
+    const bogus = await fetch(origin + '/_server/bogus-0');
     record(mode, 'sf', 'dev middleware rejects unknown id', bogus.status === 404);
     await runCsrfChecks(mode, origin);
 
@@ -1190,7 +1190,7 @@ async function runProdMode() {
   try {
     await waitForHttp(origin + '/', 30000, { headers: { accept: 'text/html' } });
 
-    const bogus = await fetch(origin + '/_server?id=bogus-0');
+    const bogus = await fetch(origin + '/_server/bogus-0');
     record(mode, 'sf', 'prod handler rejects unknown id', bogus.status === 404);
     await runCsrfChecks(mode, origin);
 
@@ -1621,7 +1621,7 @@ async function runEndpointMode() {
     const functionId = extractFunctionId(clientModule, 'getServerMessage');
     const custom = functionId
       ? await fetch(
-          `${origin}${endpoint}?id=${encodeURIComponent(functionId)}&args=${encodeURIComponent('["endpoint"]')}`,
+          `${origin}${endpoint}/${encodeURIComponent(functionId)}?args=${encodeURIComponent('["endpoint"]')}`,
           { method: 'POST' },
         )
       : null;
@@ -1634,7 +1634,7 @@ async function runEndpointMode() {
       functionId ? `got ${JSON.stringify(customText)}` : 'could not extract function id',
     );
 
-    const fallback = await fetch(`${origin}/_server?id=${encodeURIComponent(functionId || '')}`);
+    const fallback = await fetch(`${origin}/_server/${encodeURIComponent(functionId || '')}`);
     record(
       mode,
       'rpc',
@@ -1687,7 +1687,7 @@ async function runConfigureMode() {
   };
   const dispatch = async (id) => {
     const res = await fetch(
-      `${origin}/_server?id=${encodeURIComponent(id)}&args=${encodeURIComponent('[]')}`,
+      `${origin}/_server/${encodeURIComponent(id)}?args=${encodeURIComponent('[]')}`,
       { method: 'POST' },
     );
     return {
@@ -1849,7 +1849,7 @@ async function runNoMiddlewareMode() {
     const functionId = extractFunctionId(clientModule, 'getServerMessage');
     const res = functionId
       ? await fetch(
-          `${origin}/_server?id=${encodeURIComponent(functionId)}&args=${encodeURIComponent('["nobody"]')}`,
+          `${origin}/_server/${encodeURIComponent(functionId)}?args=${encodeURIComponent('["nobody"]')}`,
           { method: 'POST' },
         )
       : null;
@@ -2614,7 +2614,7 @@ async function runMiddlewareChecksOverHttp(mode, origin, functionId) {
 
   if (functionId) {
     const fn = await fetch(
-      `${origin}/_server?id=${encodeURIComponent(functionId)}&args=${encodeURIComponent('[]')}`,
+      `${origin}/_server/${encodeURIComponent(functionId)}?args=${encodeURIComponent('[]')}`,
       { method: 'POST' },
     );
     const fnBody = await fn.text();
@@ -2920,7 +2920,7 @@ async function runPreviewMode() {
     }
 
     // The endpoint dispatches through the same handler.
-    const bogus = await fetch(origin + '/_server?id=bogus-0', { method: 'POST' });
+    const bogus = await fetch(origin + '/_server/bogus-0', { method: 'POST' });
     record(mode, 'sf', 'preview dispatches /_server (unknown id rejected)', bogus.status === 404);
 
     // Middleware fronts preview exactly like dev and prod.
@@ -3035,7 +3035,7 @@ async function runBaseMode() {
     const functionId = extractFunctionId(clientModule, 'getServerMessage');
     const call = functionId
       ? await fetch(
-          `${devOrigin}${basePrefix}/_server?id=${encodeURIComponent(functionId)}&args=${encodeURIComponent('["base"]')}`,
+          `${devOrigin}${basePrefix}/_server/${encodeURIComponent(functionId)}?args=${encodeURIComponent('["base"]')}`,
           { method: 'POST' },
         )
       : null;
@@ -3098,7 +3098,7 @@ async function runBaseMode() {
     // #300: the server-function endpoint must dispatch through the built
     // handler even though preview stripped the base from req.url. Under the
     // bug this request fell through to page rendering (200 text/html).
-    const bogus = await fetch(previewOrigin + basePrefix + '/_server?id=bogus-0', {
+    const bogus = await fetch(previewOrigin + basePrefix + '/_server/bogus-0', {
       method: 'POST',
     });
     record(
@@ -3119,7 +3119,7 @@ async function runBaseMode() {
     )?.[1];
     const call = prodId
       ? await fetch(
-          `${previewOrigin}${basePrefix}/_server?id=${encodeURIComponent(prodId)}&args=${encodeURIComponent('["preview"]')}`,
+          `${previewOrigin}${basePrefix}/_server/${encodeURIComponent(prodId)}?args=${encodeURIComponent('["preview"]')}`,
           { method: 'POST' },
         )
       : null;
@@ -3241,7 +3241,7 @@ async function runExternalMode() {
     const functionResponse = functionId
       ? await handler.handleRequest(
           new Request(
-            `http://localhost/_server?id=${encodeURIComponent(functionId)}&args=${encodeURIComponent('["external"]')}`,
+            `http://localhost/_server/${encodeURIComponent(functionId)}?args=${encodeURIComponent('["external"]')}`,
             // The composing host forwards the browser's fetch metadata; the
             // runtime's same-origin protection rejects dispatches without it.
             { method: 'POST', headers: { 'Sec-Fetch-Site': 'same-origin' } },
@@ -3310,7 +3310,7 @@ async function runDetectMode() {
     await new Promise((resolve) => httpServer.listen(0, '127.0.0.1', resolve));
     const origin = `http://127.0.0.1:${httpServer.address().port}`;
 
-    const endpointResponse = await fetch(`${origin}/_server?id=x&args=%5B%5D`, { method: 'POST' });
+    const endpointResponse = await fetch(`${origin}/_server/x?args=%5B%5D`, { method: 'POST' });
     record(
       mode,
       'sf',
