@@ -18,6 +18,17 @@ import { solidDiagnostics } from './diagnostics/index.js';
 import { serverFunctions, type ServerFunctionsOptions } from './server-functions/index.js';
 import { SSR_HANDLER_ID, startServe, type StartOptions } from './ssr/index.js';
 import { startEnv } from './start-env.js';
+import {
+  cleanModuleId,
+  isTsrxCssModule,
+  isTsrxModule,
+  offsetSourceMapLine,
+  prependTsrxCssImport,
+  resolvedTsrxCssModuleId,
+  resolveTsrxCssModule,
+  tsrxCssSourceId,
+  updateTsrxCss,
+} from './tsrx.js';
 
 export { devStylePatch } from './dev-manifest.js';
 export { serverFunctions };
@@ -31,6 +42,7 @@ import {
   defaultClientConditions,
   defaultExternalConditions,
   defaultServerConditions,
+  transformWithOxc,
 } from 'vite';
 import { getEnvironmentConsumer, isRunnableEnvironment } from './environment.js';
 import { crawlFrameworkPkgs } from 'vitefu';
@@ -334,7 +346,8 @@ export interface Options {
   hot?: boolean;
   /**
    * This registers additional extensions that should be processed by
-   * @solidjs/vite-plugin.
+   * @solidjs/vite-plugin. Experimental `.tsrx` is always registered as
+   * TypeScript TSRX and does not need to be listed here.
    *
    * @default undefined
    */
@@ -346,7 +359,8 @@ export interface Options {
    * Note: with `compiler: "native"` the plugin is normally fully Babel-free
    * (native lazy/refresh/JSX passes). Supplying custom babel options
    * reintroduces a Babel support pass ahead of the native JSX transform to
-   * host them.
+   * host them. For `.tsrx` only, native TSRX lowering runs first and the
+   * support pass receives the generated ordinary JavaScript.
    *
    * @default {}
    */
@@ -628,6 +642,7 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
   let base = '/';
   let clientOutDir: string | null = null;
   let solidPkgsConfig: Awaited<ReturnType<typeof crawlFrameworkPkgs>>;
+  const tsrxCss = new Map<string, string>();
 
   // The client build's manifest, read back by SSR builds. In builder-mode
   // (single process, e.g. SolidStart's nitro plugin) the client build runs
@@ -718,6 +733,48 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
     const query = queryIndex === -1 ? '' : id.slice(queryIndex);
     const relativeId = path.relative(projectRoot, file).split(path.sep).join('/') + query;
     return code + `\nexport const $$moduleUrl = ${JSON.stringify(relativeId)};\n`;
+  }
+
+  function nativeTsrxCss(result: unknown): string {
+    const css = (result as { css?: unknown }).css;
+    return typeof css === 'string' ? css : '';
+  }
+
+  function babelTsrxCss(result: babel.BabelFileResult): string {
+    const css = (result.metadata as { css?: unknown } | undefined)?.css;
+    return typeof css === 'string' ? css : '';
+  }
+
+  async function compileTsrxCss(source: string, id: string): Promise<string> {
+    const solidOptions = getSolidOptions(options, false, replaceDev, isTestMode);
+    if (options.compiler === 'babel') {
+      const babelUserOptions = await getBabelUserOptions(options, source, id, false);
+      const babelOptions = mergeAndConcat(babelUserOptions, {
+        root: projectRoot,
+        // Keep .tsrx: the Babel plugin uses it to select its TSRX parser.
+        filename: id,
+        sourceFileName: id,
+        ast: false,
+        code: false,
+        sourceMaps: false,
+        configFile: false,
+        babelrc: false,
+        parserOpts: {
+          plugins: ['jsx', 'decorators', 'typescript'],
+        },
+        plugins: [[solid, solidOptions]],
+      }) as babel.TransformOptions;
+      const result = await babel.transformAsync(source, babelOptions);
+      return result ? babelTsrxCss(result) : '';
+    }
+
+    const compiler = await loadNativeCompiler();
+    const result = await compiler.transformAsync(source, {
+      ...solidOptions,
+      filename: id,
+      sourceMap: false,
+    });
+    return nativeTsrxCss(result);
   }
 
   const mainPlugin: Plugin = {
@@ -815,6 +872,7 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
           dedupe: nestedDeps,
         },
         optimizeDeps: {
+          extensions: ['.tsrx'],
           include: [
             ...nestedDeps,
             // Dev refresh wrappers import the solid-js/refresh runtime in
@@ -837,7 +895,29 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
           ],
           exclude: solidPkgsConfig.optimizeDeps.exclude,
           // Keep Solid TSX from injecting React's automatic runtime during scanning.
-          rolldownOptions: { transform: { jsx: { runtime: 'classic' as const } } },
+          rolldownOptions: {
+            transform: { jsx: { runtime: 'classic' as const } },
+            plugins: [
+              {
+                name: 'solid:tsrx-dep-scan',
+                async transform(source: string, id: string) {
+                  if (!isTsrxModule(id) || isTsrxCssModule(id)) return null;
+                  const compiler = await loadNativeCompiler();
+                  const result = await compiler.transformAsync(source, {
+                    ...getSolidOptions(options, false, replaceDev, isTestMode),
+                    filename: cleanModuleId(id),
+                    sourceMap: false,
+                  });
+                  const stripped = await transformWithOxc(result.code, cleanModuleId(id) + '.tsx', {
+                    lang: 'tsx',
+                    sourcemap: false,
+                    target: 'esnext',
+                  });
+                  return { code: stripped.code, map: null };
+                },
+              },
+            ],
+          },
         },
         ...(Object.keys(test).length ? { test } : {}),
       };
@@ -964,7 +1044,17 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
       } as typeof hot.send;
     },
 
-    hotUpdate({ modules, file }) {
+    async hotUpdate({ file, modules, read }) {
+      if (isTsrxModule(file) && this.environment.name === 'client') {
+        updateTsrxCss(tsrxCss, file, await compileTsrxCss(await read(), file));
+        const cssModule = this.environment.moduleGraph.getModuleById(resolvedTsrxCssModuleId(file));
+        if (cssModule) {
+          this.environment.moduleGraph.invalidateModule(cssModule);
+          if (!modules.includes(cssModule)) modules = [...modules, cssModule];
+          return modules;
+        }
+      }
+
       // solid-refresh only injects HMR boundaries into client modules, so
       // non-client environments have no accept handlers. Without this, Vite
       // would see no boundaries and send full-reload messages that race with
@@ -998,6 +1088,8 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
     },
 
     resolveId(id) {
+      const tsrxCssId = resolveTsrxCssModule(id);
+      if (tsrxCssId) return tsrxCssId;
       if (id === VIRTUAL_MANIFEST_ID) return RESOLVED_VIRTUAL_MANIFEST_ID;
     },
 
@@ -1011,7 +1103,7 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
       for (const depId of info.dynamicallyImportedIds || []) {
         const cleanId = depId.split('?')[0];
         if (/node_modules/.test(cleanId) || cleanId.startsWith('\0')) continue;
-        if (!/\.[mc]?[tj]sx?$/i.test(cleanId)) continue;
+        if (!(/\.[mc]?[tj]sx?$/i.test(cleanId) || isTsrxModule(cleanId))) continue;
         if (emittedLazyChunks.has(depId)) continue;
         emittedLazyChunks.add(depId);
         emittedLazyChunkRefs.push(
@@ -1021,6 +1113,8 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
     },
 
     load(id) {
+      const tsrxSource = tsrxCssSourceId(id);
+      if (tsrxSource) return tsrxCss.get(tsrxSource) ?? '';
       if (id === RESOLVED_VIRTUAL_MANIFEST_ID) {
         if (!isBuild) {
           return devManifestCode(
@@ -1068,6 +1162,7 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
     },
 
     async transform(source, id, transformOptions) {
+      if (isTsrxCssModule(id)) return null;
       const isSsr = getEnvironmentConsumer(this.environment, transformOptions) === 'server';
       const currentFileExtension = getExtension(id);
 
@@ -1086,8 +1181,9 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
       // while the transform pipeline below works on the clean file path.
       const moduleId = id;
       id = id.replace(/\?.*$/, '');
+      const isTsrx = isTsrxModule(id);
 
-      if (!(/\.[mc]?[tj]sx$/i.test(id) || allExtensions.includes(currentFileExtension))) {
+      if (!(/\.[mc]?[tj]sx$/i.test(id) || isTsrx || allExtensions.includes(currentFileExtension))) {
         return null;
       }
 
@@ -1097,6 +1193,7 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
       // We need to know if the current file extension has a typescript options tied to it
       const shouldBeProcessedWithTypescript =
         /\.[mc]?tsx$/i.test(id) ||
+        isTsrx ||
         extensionsToWatch.some((extension) => {
           if (typeof extension === 'string') {
             return extension.includes('tsx');
@@ -1128,9 +1225,10 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
       // extension; custom extensions registered through `options.extensions`
       // are unknown to it, so borrow a standard one matching the configured
       // TypeScript-ness.
-      const nativeFilename = /\.(?:[mc]?[jt]s|[jt]sx)$/i.test(id)
-        ? id
-        : id + (shouldBeProcessedWithTypescript ? '.tsx' : '.jsx');
+      const nativeFilename =
+        isTsrx || /\.(?:[mc]?[jt]s|[jt]sx)$/i.test(id)
+          ? id
+          : id + (shouldBeProcessedWithTypescript ? '.tsx' : '.jsx');
 
       // Shared native prelude for every mode: the lazy() module-URL pass,
       // then (dev/client/non-node_modules) the solid-refresh HMR pass, both
@@ -1140,6 +1238,111 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
       const compiler = await loadNativeCompiler();
       let code = source;
       const maps: ChainableMap[] = [];
+
+      if (isTsrx) {
+        // Solid lowering preserves authored TypeScript annotations; secondary
+        // passes therefore parse the generated module as TSX even though no
+        // template syntax remains.
+        const generatedFilename = id + '.tsx';
+        const babelBaseOptions: babel.TransformOptions = {
+          root: projectRoot,
+          filename: id,
+          sourceFileName: id,
+          ast: false,
+          sourceMaps: true,
+          configFile: false,
+          babelrc: false,
+          parserOpts: {
+            plugins,
+          },
+        };
+        let css = '';
+
+        if (options.compiler !== 'babel') {
+          const result = await compiler.transformAsync(code, {
+            ...solidOptions,
+            filename: id,
+            sourceMap: true,
+          });
+          code = result.code || '';
+          css = nativeTsrxCss(result);
+          maps.push(result.map);
+
+          if (options.babel) {
+            // The support pass cannot parse authored TSRX. On this route it
+            // intentionally sees the lowered ordinary JavaScript instead.
+            const supportOptions = mergeAndConcat(
+              babelUserOptions,
+              babelBaseOptions,
+            ) as babel.TransformOptions;
+            // This pass sees native-lowered ordinary JavaScript, so do not
+            // route it back through Babel's TSRX parser.
+            supportOptions.filename = generatedFilename;
+            const supportResult = await babel.transformAsync(code, supportOptions);
+            if (!supportResult) return undefined;
+            code = supportResult.code || '';
+            maps.push(supportResult.map);
+          }
+        } else {
+          const babelOptions = mergeAndConcat(babelUserOptions, {
+            ...babelBaseOptions,
+            plugins: [[solid, solidOptions]],
+          }) as babel.TransformOptions;
+          const result = await babel.transformAsync(code, babelOptions);
+          if (!result) return undefined;
+          code = result.code || '';
+          css = babelTsrxCss(result);
+          maps.push(result.map);
+        }
+
+        const lazyResult = await compiler.transformLazyAsync(code, {
+          filename: generatedFilename,
+          sourceMap: true,
+        });
+        code = lazyResult.code;
+        maps.push(lazyResult.map);
+
+        if (needRefresh) {
+          const refreshResult = await compiler.transformRefreshAsync(code, {
+            filename: generatedFilename,
+            bundler: 'vite',
+            fixRender: true,
+            ...(typeof options.refresh?.granular === 'boolean'
+              ? { granular: options.refresh.granular }
+              : {}),
+            jsx: false,
+            importSource: REFRESH_RUNTIME_SOURCE,
+            sourceMap: true,
+          });
+          code = refreshResult.code;
+          maps.push(refreshResult.map);
+        }
+
+        code = injectSsrModuleId(await resolveLazyModuleUrls(this, code, id), moduleId, !!isSsr);
+        let map = options.compiler === 'babel' ? combineSourcemaps(maps) : null;
+        updateTsrxCss(tsrxCss, id, css);
+        if (css) {
+          code = prependTsrxCssImport(code, id);
+          map = offsetSourceMapLine(map);
+        }
+        // Vite selects its TypeScript stripping by file extension. Since the
+        // real module identity remains `.tsrx`, strip the annotations here
+        // after Solid lowering instead of handing typed JavaScript to Rollup.
+        const stripped = await transformWithOxc(
+          code,
+          generatedFilename,
+          {
+            lang: 'tsx',
+            sourcemap: map != null,
+            target: 'esnext',
+          },
+          map ?? undefined,
+        );
+        return {
+          code: stripped.code,
+          map: map == null ? null : stripped.map,
+        };
+      }
 
       const lazyResult = await compiler.transformLazyAsync(code, {
         filename: nativeFilename,
@@ -1243,24 +1446,31 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
     },
   };
 
-  // The directive transform must run before the JSX transform (it operates
-  // on raw directives, and client-mode module-level extraction must happen
-  // before templates are generated), so its sub-plugins go first. The
-  // boundary markers (`server-only` / `client-only`) are always on.
-  const plugins: Plugin[] = options.serverFunctions
-    ? [
-        boundaryModules(),
-        ...serverFunctions(options.serverFunctions === true ? {} : options.serverFunctions, {
-          devMiddleware: true,
-          externalDevServer,
-          // With start mode on (either variant), the dev middleware dispatches
-          // the endpoint through the SSR handler so user middleware and the
-          // stub-backed request event front it exactly like page SSR.
-          ...(startOptions ? { ssrHandler: SSR_HANDLER_ID } : {}),
-        }),
-        mainPlugin,
-      ]
-    : [boundaryModules(), mainPlugin];
+  // Ordinary modules need the directive transform before JSX. Authored TSRX
+  // cannot be parsed by that standalone pass, so its companion compiler runs
+  // after mainPlugin has lowered the file to ordinary JavaScript while keeping
+  // the original .tsrx id for stable server-function hashes.
+  const serverFunctionPlugins = options.serverFunctions
+    ? serverFunctions(options.serverFunctions === true ? {} : options.serverFunctions, {
+        devMiddleware: true,
+        externalDevServer,
+        tsrxAfterSolid: true,
+        tsrxSourceMap: options.compiler === 'babel',
+        // With start mode on (either variant), the dev middleware dispatches
+        // the endpoint through the SSR handler so user middleware and the
+        // stub-backed request event front it exactly like page SSR.
+        ...(startOptions ? { ssrHandler: SSR_HANDLER_ID } : {}),
+      })
+    : [];
+  const tsrxServerFunctionPlugin = serverFunctionPlugins.find(
+    (plugin) => plugin.name === 'solid:server-functions/tsrx-compiler',
+  );
+  const plugins: Plugin[] = [
+    boundaryModules(),
+    ...serverFunctionPlugins.filter((plugin) => plugin !== tsrxServerFunctionPlugin),
+    mainPlugin,
+    ...(tsrxServerFunctionPlugin ? [tsrxServerFunctionPlugin] : []),
+  ];
 
   // The `start` option opts into start-mode serving on top of the transforms;
   // the `ssr` boolean picks the mode (a bare `ssr: true` keeps the

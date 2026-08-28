@@ -83,7 +83,7 @@ export interface StartOptions {
    * Root component module for generated entries (the zero-config path).
    * Resolved relative to the Vite root.
    *
-   * @default "src/App.{tsx,jsx,ts,js}" (also probes lowercase "src/app.*")
+   * @default "src/App.{tsx,jsx,ts,js,tsrx}" (also probes lowercase "src/app.*")
    */
   app?: string;
   /** Options for development CSS crawling. */
@@ -119,7 +119,7 @@ export interface StartOptions {
    * dev serving and the build-time prerender). Conventional
    * `src/entry-server.*` files are likewise ignored there.
    *
-   * @default "src/entry-server.{tsx,jsx,ts,js,mjs}" when present, else a
+   * @default "src/entry-server.{tsx,jsx,ts,js,mjs,tsrx}" when present, else a
    * generated entry rendering `<Document><App /></Document>`
    */
   entryServer?: string;
@@ -128,7 +128,7 @@ export interface StartOptions {
    * (a generated one calls `render()`), and it stands alone — no pairing
    * rule with a server entry.
    *
-   * @default "src/entry-client.{tsx,jsx,ts,js,mjs}" when present, else a
+   * @default "src/entry-client.{tsx,jsx,ts,js,mjs,tsrx}" when present, else a
    * generated entry
    */
   entryClient?: string;
@@ -140,7 +140,7 @@ export interface StartOptions {
    * Document costs nothing across the flip; the built-in shell omits it per
    * mode). Only used when the server entry is generated.
    *
-   * @default "src/Document.{tsx,jsx}" when present, else a built-in shell
+   * @default "src/Document.{tsx,jsx,tsrx}" when present, else a built-in shell
    */
   document?: string;
   /**
@@ -302,9 +302,9 @@ const MANIFEST_ID = 'virtual:solid-manifest';
 const SERVER_FUNCTION_HANDLER_ID = 'virtual:solid-server-function-handler';
 const STORAGE_SOURCE = '@solidjs/web/storage';
 
-const ENTRY_EXTENSIONS = ['.tsx', '.jsx', '.ts', '.js', '.mjs'];
-const APP_EXTENSIONS = ['.tsx', '.jsx', '.ts', '.js'];
-const DOCUMENT_EXTENSIONS = ['.tsx', '.jsx'];
+const ENTRY_EXTENSIONS = ['.tsx', '.jsx', '.ts', '.js', '.mjs', '.tsrx'];
+const APP_EXTENSIONS = ['.tsx', '.jsx', '.ts', '.js', '.tsrx'];
+const DOCUMENT_EXTENSIONS = ['.tsx', '.jsx', '.tsrx'];
 
 function probe(root: string, stem: string, extensions: string[]): string | null {
   for (const ext of extensions) {

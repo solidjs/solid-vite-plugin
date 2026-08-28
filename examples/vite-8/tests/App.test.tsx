@@ -18,4 +18,9 @@ test('App', async () => {
   const decrementButton = root.getByText('Decrement');
   await decrementButton.click();
   await expect.element(count).toHaveTextContent('Counter: 0');
+
+  const tsrxCard = root.getByTestId('tsrx-card');
+  await expect.element(tsrxCard).toHaveTextContent('TSRX scoped styles');
+  await expect.element(tsrxCard).toHaveAttribute('data-server-function', 'function');
+  await expect.element(tsrxCard).toHaveStyle({ color: 'rgb(12, 34, 56)' });
 });

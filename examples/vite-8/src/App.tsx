@@ -1,6 +1,7 @@
 import { onSettled } from "solid-js";
 import { CounterProvider, useCounter } from "./CounterContext";
 import { title } from './UnusedLazyImporter';
+import { TsrxCard } from './TsrxCard.tsrx';
 
 function Count() {
   const counter = useCounter();
@@ -50,6 +51,7 @@ export default function App() {
       <Count />
       <Increment />
       <Decrement />
+      <TsrxCard label="TSRX scoped styles" />
     </CounterProvider>
   );
 }

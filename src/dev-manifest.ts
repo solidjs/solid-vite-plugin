@@ -1,6 +1,7 @@
 import path from 'path';
 import type { DevEnvironment, EnvironmentModuleNode, ViteDevServer } from 'vite';
 import { joinBase } from './http.js';
+import { isTsrxCssModule } from './tsrx.js';
 
 /**
  * Dev-mode asset resolution: the `virtual:solid-manifest` module exports a
@@ -155,6 +156,10 @@ const nonAmbientQueryRegExp = /[?&](url|inline|raw)\b/;
 
 const NULL_BYTE_PLACEHOLDER = '/@id/__x00__';
 
+function isCssModuleUrl(url: string): boolean {
+  return cssFileRegExp.test(url.split('?')[0]!) || isTsrxCssModule(url);
+}
+
 // Per Vite's convention virtual module ids are prefixed with `\0`, which
 // cannot appear in an HTML attribute (the parser replaces it). Serialize the
 // same placeholder form Vite's own URLs use. Adoption of virtual-module
@@ -227,7 +232,7 @@ async function collectModuleDeps(
   if (!node?.id || deps.has(node)) return;
   deps.add(node);
 
-  const isCss = cssFileRegExp.test(node.url.split('?')[0]);
+  const isCss = isCssModuleUrl(node.url);
   if (!isCss && node.file && !node.id.startsWith('\0') && !filter(node.file)) return;
   if (node.file) onFile?.(node.file);
   if (isCss) return;
@@ -267,8 +272,7 @@ export async function collectDevStyleSources(
   const seen = new Set<string>();
   for (const node of deps) {
     if (!node.id) continue;
-    const cleanUrl = node.url.split('?')[0];
-    if (!cssFileRegExp.test(cleanUrl) || nonAmbientQueryRegExp.test(node.url)) continue;
+    if (!isCssModuleUrl(node.url) || nonAmbientQueryRegExp.test(node.url)) continue;
     const id = wrapId(node.id);
     if (seen.has(id)) continue;
     seen.add(id);

@@ -23,6 +23,7 @@ Join [solid discord](https://discord.com/invite/solidjs) and check the [troubles
 - Drop-in installation as a vite plugin
 - Minimal bundle size
 - Support typescript (`.tsx`) out of the box
+- Experimental TypeScript TSRX (`.tsrx`) support out of the box
 - Support code splitting out of the box
 
 ## Requirements
@@ -499,8 +500,8 @@ assets.
 **Entry resolution** (all paths relative to the Vite root):
 
 1. Explicit `start.entryServer` / `start.entryClient` options.
-2. Conventional files: `src/entry-server.{tsx,jsx,ts,js,mjs}` and
-   `src/entry-client.{tsx,jsx,ts,js,mjs}`. Entry files come in pairs —
+2. Conventional files: `src/entry-server.{tsx,jsx,ts,js,mjs,tsrx}` and
+   `src/entry-client.{tsx,jsx,ts,js,mjs,tsrx}`. Entry files come in pairs —
    providing only one is an error. The server entry must export
    `render(request?, context?)` returning a `renderToStream` result, an HTML
    string, or a `Response`; `context.clientEntry` carries the resolved
@@ -509,8 +510,8 @@ assets.
    the hashed asset (the classic harness convention keeps working).
 3. Generated entries (the zero-config path): when no entry files exist, both
    are generated from a root component — `start.app`, defaulting to
-   `src/App.{tsx,jsx,ts,js}` (or lowercase `src/app.*`) — wrapped in a
-   document shell: `start.document`, defaulting to `src/Document.{tsx,jsx}`,
+   `src/App.{tsx,jsx,ts,js,tsrx}` (or lowercase `src/app.*`) — wrapped in a
+   document shell: `start.document`, defaulting to `src/Document.{tsx,jsx,tsrx}`,
    else a built-in minimal shell. A custom document receives the app as
    `props.children` and must render the full `<html>` document including
    `<HydrationScript />`; the client entry script is injected into `<head>`
@@ -714,12 +715,40 @@ export default defineConfig({
 });
 ```
 
+#### Experimental TSRX
+
+Files ending in `.tsrx` are recognized automatically as TypeScript TSRX; they
+do not need to be listed in `options.extensions`. Both the native and Babel
+compiler backends preserve the `.tsrx` filename when invoking their TSRX
+frontends.
+
+Scoped CSS emitted by either backend is exposed as a sibling virtual CSS
+sidecar and imported once from the compiled module. The sidecar goes through
+Vite's normal CSS pipeline, so extraction and injection work in development,
+production builds, and SSR, including client HMR and SSR development style
+collection. A file that emits no CSS has no sidecar import.
+
+The Babel backend chains TSRX source maps through the later lazy-module and
+refresh transforms. The native compiler does not currently emit the required
+TSRX projection map, so native `.tsrx` transforms return no source map. With
+`compiler: "native"` and custom `babel` options, the custom Babel support pass
+runs after native TSRX lowering (on ordinary JavaScript); ordinary JSX/TSX
+keeps the existing pre-native ordering.
+
+With `serverFunctions` enabled, function-level `"use server"` directives work
+in `.tsrx` with both compiler backends. The plugin lowers TSRX first, then runs
+the same native directive transform while retaining the authored `.tsrx` path
+for stable client/server function IDs. TSRX's host-defined
+`module server { ... }` profile is not supported.
+
 #### options.babel
 
 - Type: Babel.TransformOptions
 - Default: {}
 
 Pass any additional [babel transform options](https://babeljs.io/docs/en/options). Those will be merged with the transformations required by Solid.
+With the native compiler these options normally run before JSX lowering; for
+`.tsrx` only, they run after native TSRX lowering as described above.
 
 #### options.solid
 
@@ -744,7 +773,8 @@ Pass any additional [@babel/preset-typescript](https://babeljs.io/docs/en/babel-
 - Default: []
 
 An array of custom extension that will be passed through the solid compiler.
-By default, the plugin only transform `jsx` and `tsx` files.
+By default, the plugin transforms `jsx`, `tsx`, and experimental `tsrx` files.
+TSRX is always recognized and does not need to be added here.
 This is useful if you want to transform `mdx` files for example.
 
 ## `server-only` and `client-only` boundary markers
