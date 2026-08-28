@@ -1002,7 +1002,11 @@ export function startServe(
     lines.push(``, `async function dispatchRequest(request, event, options) {`);
     if (composeServerFunctions) {
       lines.push(
-        `  if (new URL(request.url).pathname === endpoint) {`,
+        // A call's address is `<endpoint>/<id>` (solidjs/solid#3076); the
+        // bare mount still routes so a misaddressed request 404s through the
+        // runtime handler instead of rendering a page at it.
+        `  const requestPath = new URL(request.url).pathname;`,
+        `  if (requestPath === endpoint || requestPath.startsWith(endpoint + '/')) {`,
         // The call shares the middleware chain's event (locals decoration,
         // the response stub); an explicit host-provided createEvent wins.
         // No fold here: the runtime's server-function handler runs the

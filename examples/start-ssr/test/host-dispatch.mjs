@@ -33,7 +33,7 @@ try {
   // same-origin protection rejects dispatches without it.
   const response = await handler.handleServerFunctionRequest(
     new Request(
-      `http://localhost${handler.endpoint}?id=${encodeURIComponent(match[1])}&args=${encodeURIComponent('["host"]')}`,
+      `http://localhost${handler.endpoint}/${encodeURIComponent(match[1])}?args=${encodeURIComponent('["host"]')}`,
       { method: 'POST', headers: { 'Sec-Fetch-Site': 'same-origin' } },
     ),
   );
@@ -46,7 +46,7 @@ try {
   if (!nativeMatch) throw new Error('could not extract nativeAddress function id');
   const nativeResponse = await handler.handleServerFunctionRequest(
     new Request(
-      `http://localhost${handler.endpoint}?id=${encodeURIComponent(nativeMatch[1])}&args=${encodeURIComponent('[]')}`,
+      `http://localhost${handler.endpoint}/${encodeURIComponent(nativeMatch[1])}?args=${encodeURIComponent('[]')}`,
       { method: 'POST', headers: { 'Sec-Fetch-Site': 'same-origin' } },
     ),
     { event: { nativeEvent: { socket: { remoteAddress: '198.51.100.7' } } } },
