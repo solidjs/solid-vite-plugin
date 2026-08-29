@@ -515,10 +515,11 @@ export function serverFunctions(
         if (internal.externalDevServer || !isRunnableEnvironment(ssrEnvironment)) {
           return;
         }
-        // A call's address is `<endpoint>/<id>` (solidjs/solid#3076) — the
-        // mount plus exactly one path segment. Bare-mount requests still
-        // reach the runtime handler (it answers 404), so misdirected posts
-        // fail through the endpoint rather than falling through to SSR.
+        // A call's address is `<endpoint>/<id>` — plain HTTP — or
+        // `<endpoint>/data/<id>` — the scripted transport's own path
+        // (solidjs/solid#3076, #3094). Bare-mount requests still reach the
+        // runtime handler (it answers 404), so misdirected posts fail
+        // through the endpoint rather than falling through to SSR.
         const underMount = (pathname: string, mount: string) =>
           pathname === mount || pathname.startsWith(mount + '/');
         server.middlewares.use((req, res, next) => {
@@ -538,9 +539,15 @@ export function serverFunctions(
             // Make sure the referenced module has been evaluated in the SSR
             // environment so its registration exists — functions only client
             // code references are never loaded by the SSR render itself.
-            // The id lives in the path segment after the mount.
+            // The id lives in the path segment after the mount — behind a
+            // literal `data` segment on the scripted transport's address
+            // (solidjs/solid#3094). Segment count keeps the two apart: an id
+            // occupies exactly one segment, so `data/<id>` is only ever a
+            // data address, and a function id spelled `data` still parses at
+            // the bare one.
             const mount = basePrefixed ? resolvedEndpoint : endpoint;
-            const segment = url.pathname.slice(mount.length + 1);
+            let segment = url.pathname.slice(mount.length + 1);
+            if (segment.startsWith('data/')) segment = segment.slice(5);
             let functionId: string | null = null;
             if (segment && !segment.includes('/')) {
               try {

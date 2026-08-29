@@ -1002,7 +1002,8 @@ export function startServe(
     lines.push(``, `async function dispatchRequest(request, event, options) {`);
     if (composeServerFunctions) {
       lines.push(
-        // A call's address is `<endpoint>/<id>` (solidjs/solid#3076); the
+        // A call's address is `<endpoint>/<id>` or `<endpoint>/data/<id>`
+        // (solidjs/solid#3076, #3094); the prefix gate covers both, and the
         // bare mount still routes so a misaddressed request 404s through the
         // runtime handler instead of rendering a page at it.
         `  const requestPath = new URL(request.url).pathname;`,
