@@ -29,6 +29,7 @@
     "dev-asset-resolver-convergence",
     "dev-boundaries-ssr",
     "dev-css-and-client-manifest",
+    "dev-external-conditions-fidelity",
     "dev-manifest-bridge-and-boundary-modules",
     "dev-middleware-full-dispatch",
     "dev-ssr-entry-styles",
