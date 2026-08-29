@@ -26,7 +26,12 @@ export type { ServerFunctionsFilter } from './server-functions/index.js';
 export type { StartOptions };
 import path from 'path';
 import type { FilterPattern, Plugin, ViteDevServer } from 'vite';
-import { createFilter, defaultClientConditions, defaultServerConditions } from 'vite';
+import {
+  createFilter,
+  defaultClientConditions,
+  defaultExternalConditions,
+  defaultServerConditions,
+} from 'vite';
 import { getEnvironmentConsumer, isRunnableEnvironment } from './environment.js';
 import { crawlFrameworkPkgs } from 'vitefu';
 
@@ -839,6 +844,23 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
         ...(isTestMode && !serverTestPosture && !opts.isSsrTargetWebworker ? ['browser'] : []),
         ...config.resolve.conditions,
       ];
+
+      // `resolve.conditions` above only governs modules Vite inlines.
+      // Externalized server deps are resolved by `fetchModule` with
+      // `resolve.externalConditions` (default `['node', 'module-sync']`) and
+      // handed to the module runner as concrete file paths — without
+      // `development` there, packages that select their dev build through
+      // the `development` export condition (@solidjs/web's server-functions
+      // runtime among them) run their PRODUCTION copy under `vite dev`:
+      // server errors reach the client sanitized to "Internal Server Error"
+      // instead of carrying the real message, dev-only diagnostics vanish.
+      // So the dev flag has to reach both lists.
+      if (replaceDev && config.consumer !== 'client' && name !== 'client') {
+        config.resolve.externalConditions = [
+          'development',
+          ...(config.resolve.externalConditions ?? defaultExternalConditions),
+        ];
+      }
 
       // Set resolve.noExternal and resolve.external for the SSR environment.
       // Only set resolve.external if noExternal is not true (to avoid conflicts with plugins like Cloudflare)
