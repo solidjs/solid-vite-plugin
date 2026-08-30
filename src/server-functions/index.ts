@@ -457,9 +457,11 @@ export function serverFunctions(
     ].join('\n');
   }
 
-  // Function IDs are `xxHash32(root-relative path)-<count>` (see compile.ts),
-  // so the hash segment maps an incoming ID back to its module. Rebuilt
-  // whenever a transform has grown the manifest.
+  // Function IDs are `<name>-<xxHash32(root-relative path)>[-<ordinal>]`
+  // (identity-keyed, solidjs/solid#3109). The name is a JS identifier and
+  // never contains `-`, so the hash is always the second segment and maps
+  // an incoming ID back to its module. Rebuilt whenever a transform has
+  // grown the manifest.
   const hashIndex = new Map<string, string>();
   let hashIndexSize = -1;
   function moduleForFunctionId(functionId: string): string | undefined {
@@ -471,7 +473,7 @@ export function serverFunctions(
       }
       hashIndexSize = manifest.server.size;
     }
-    return hashIndex.get(functionId.split('-', 1)[0]!);
+    return hashIndex.get(functionId.split('-')[1]!);
   }
 
   function moduleDevUrl(entry: string): string {
