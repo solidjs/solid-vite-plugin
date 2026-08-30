@@ -558,16 +558,6 @@ export function serverFunctions(
                 // not an address; the runtime handler answers the 404
               }
             }
-            if (!functionId) {
-              // TRANSITIONAL (remove before 3.0 stable): the retired header
-              // and `?id=` addressing, kept only for the RC window where this
-              // plugin meets a @solidjs/web older than the path-addressing
-              // change (solidjs/solid#3076).
-              const headerId = req.headers['x-server-function-id'];
-              functionId =
-                (typeof headerId === 'string' ? headerId.split('#')[0] : undefined) ||
-                url.searchParams.get('id');
-            }
             if (functionId) {
               const entry = moduleForFunctionId(functionId);
               if (entry) await ssrEnvironment.runner.import(moduleDevUrl(entry));
