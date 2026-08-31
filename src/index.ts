@@ -56,6 +56,12 @@ const LAZY_PLACEHOLDER_PREFIX = '__SOLID_LAZY_MODULE__:';
  */
 const REFRESH_RUNTIME_SOURCE = 'solid-js/refresh';
 
+// Appended to the document shell's client compile instead of a refresh
+// boundary (see documentModuleId in solidPlugin): self-accept, then
+// invalidate — Vite's spelling for "this module cannot hot-update, reload".
+const DOCUMENT_HMR_DECLINE =
+  '\nif (import.meta.hot) {\n  import.meta.hot.accept(() => import.meta.hot.invalidate());\n}\n';
+
 const DEFAULT_STYLE_EXCLUDE = /node_modules/;
 
 const VIRTUAL_MANIFEST_ID = 'virtual:solid-manifest';
@@ -596,6 +602,15 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
 
   let needHmr = false;
   let replaceDev = false;
+  // Resolved absolute path of the start-mode document shell (normalized to
+  // forward slashes, matching Vite ids), reported back by the start plugin's
+  // config hook. The document is the one module whose client compile must
+  // decline HMR instead of taking a refresh boundary: it hydrates the whole
+  // `document`, and no component swap can re-claim `document.documentElement`
+  // — an accepted update would be absorbed with nothing visibly changing
+  // (solidjs/solid#3151). Declining makes a save invalidate the module, so
+  // Vite falls back to a full page reload: the honest cost.
+  let documentModuleId: string | null = null;
   // The live dev server, kept so the dev manifest module can bake the bridge
   // endpoint URL in when its code is generated (see devManifestBridgeUrl).
   let devServer: ViteDevServer | null = null;
@@ -943,7 +958,7 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
       } as typeof hot.send;
     },
 
-    hotUpdate({ modules }) {
+    hotUpdate({ modules, file }) {
       // solid-refresh only injects HMR boundaries into client modules, so
       // non-client environments have no accept handlers. Without this, Vite
       // would see no boundaries and send full-reload messages that race with
@@ -960,6 +975,17 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
         // browser websocket, so client HMR stays free of full-reload races.
         if (modules.length > 0) {
           this.environment.hot.send({ type: 'full-reload' });
+          // Server-only modules are the exception to the suppression: a file
+          // with no modules in the client graph has no browser HMR path at
+          // all — nothing client-side accepts it, so staying silent leaves
+          // the browser rendering stale server output until a manual refresh
+          // (e.g. the document shell, which only the server ever imports;
+          // solidjs/solid#3151). Reload the page: the honest cost, and there
+          // is no client update to race with by construction.
+          const clientEnv = devServer?.environments.client;
+          if (clientEnv && !clientEnv.moduleGraph.getModulesByFile(file)?.size) {
+            clientEnv.hot.send({ type: 'full-reload' });
+          }
         }
         return [];
       }
@@ -1084,7 +1110,11 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
         plugins.push('typescript');
       }
 
-      const needRefresh = needHmr && !isSsr && !inNodeModules;
+      // See the documentModuleId declaration: the document shell declines HMR
+      // (no refresh boundary, explicit self-invalidation) so edits full-reload.
+      const isDocumentShell = documentModuleId !== null && id === documentModuleId;
+      const needRefresh = needHmr && !isSsr && !inNodeModules && !isDocumentShell;
+      const declineHmr = isDocumentShell && needHmr && !isSsr;
 
       const babelUserOptions = await getBabelUserOptions(options, source, id, !!isSsr);
 
@@ -1172,7 +1202,10 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
           !!isSsr,
         );
 
-        return { code: finalCode, map: combineSourcemaps(maps) };
+        return {
+          code: declineHmr ? finalCode + DOCUMENT_HMR_DECLINE : finalCode,
+          map: combineSourcemaps(maps),
+        };
       }
 
       // Babel JSX backend: one babel.transformAsync hosting the user's
@@ -1197,7 +1230,10 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
         !!isSsr,
       );
 
-      return { code: finalCode, map: combineSourcemaps(maps) };
+      return {
+        code: declineHmr ? finalCode + DOCUMENT_HMR_DECLINE : finalCode,
+        map: combineSourcemaps(maps),
+      };
     },
   };
 
@@ -1235,6 +1271,10 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
         ssr: !!options.ssr,
         styleFilter: filterDevStyles,
         diagnostics: !!options.diagnostics,
+        onDocumentResolved(documentPath) {
+          // Normalize to forward slashes to match Vite's transform ids.
+          documentModuleId = documentPath ? documentPath.split(path.sep).join('/') : null;
+        },
       }),
     );
   }
