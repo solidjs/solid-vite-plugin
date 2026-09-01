@@ -58,10 +58,22 @@ export function webRequestFromNode(
     signal = controller.signal;
   }
   const method = req.method || 'GET';
-  const body =
-    method === 'GET' || method === 'HEAD'
-      ? undefined
-      : (Readable.toWeb(req) as unknown as ReadableStream);
+  // Only attach a body when the request actually carries one. A web Request
+  // built by the browser for a bodyless POST has `body === null`, and the
+  // runtime keys off that (a present body that decodes to nothing is a 400
+  // since @solidjs/web 2.0.0-rc.5) — so an unconditionally attached (empty)
+  // stream misparses bodyless calls. HTTP/1 signals a body via
+  // Content-Length/Transfer-Encoding (RFC 9112 §6); the h2 compat API sets
+  // `stream.endAfterHeaders` when END_STREAM rode the headers frame.
+  const h2Stream = (req as { stream?: { endAfterHeaders?: boolean } }).stream;
+  const hasBody =
+    method !== 'GET' &&
+    method !== 'HEAD' &&
+    (h2Stream
+      ? !h2Stream.endAfterHeaders
+      : req.headers['transfer-encoding'] !== undefined ||
+        (req.headers['content-length'] !== undefined && req.headers['content-length'] !== '0'));
+  const body = hasBody ? (Readable.toWeb(req) as unknown as ReadableStream) : undefined;
   return new Request(url, {
     method,
     headers,

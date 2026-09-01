@@ -457,9 +457,11 @@ export function serverFunctions(
     ].join('\n');
   }
 
-  // Function IDs are `xxHash32(root-relative path)-<count>` (see compile.ts),
-  // so the hash segment maps an incoming ID back to its module. Rebuilt
-  // whenever a transform has grown the manifest.
+  // Function IDs are `<name>-<xxHash32(root-relative path)>[-<ordinal>]`
+  // (identity-keyed, solidjs/solid#3109). The name is a JS identifier and
+  // never contains `-`, so the hash is always the second segment and maps
+  // an incoming ID back to its module. Rebuilt whenever a transform has
+  // grown the manifest.
   const hashIndex = new Map<string, string>();
   let hashIndexSize = -1;
   function moduleForFunctionId(functionId: string): string | undefined {
@@ -471,7 +473,7 @@ export function serverFunctions(
       }
       hashIndexSize = manifest.server.size;
     }
-    return hashIndex.get(functionId.split('-', 1)[0]!);
+    return hashIndex.get(functionId.split('-')[1]!);
   }
 
   function moduleDevUrl(entry: string): string {
@@ -515,10 +517,11 @@ export function serverFunctions(
         if (internal.externalDevServer || !isRunnableEnvironment(ssrEnvironment)) {
           return;
         }
-        // A call's address is `<endpoint>/<id>` (solidjs/solid#3076) — the
-        // mount plus exactly one path segment. Bare-mount requests still
-        // reach the runtime handler (it answers 404), so misdirected posts
-        // fail through the endpoint rather than falling through to SSR.
+        // A call's address is `<endpoint>/<id>` — plain HTTP — or
+        // `<endpoint>/data/<id>` — the scripted transport's own path
+        // (solidjs/solid#3076, #3094). Bare-mount requests still reach the
+        // runtime handler (it answers 404), so misdirected posts fail
+        // through the endpoint rather than falling through to SSR.
         const underMount = (pathname: string, mount: string) =>
           pathname === mount || pathname.startsWith(mount + '/');
         server.middlewares.use((req, res, next) => {
@@ -538,9 +541,15 @@ export function serverFunctions(
             // Make sure the referenced module has been evaluated in the SSR
             // environment so its registration exists — functions only client
             // code references are never loaded by the SSR render itself.
-            // The id lives in the path segment after the mount.
+            // The id lives in the path segment after the mount — behind a
+            // literal `data` segment on the scripted transport's address
+            // (solidjs/solid#3094). Segment count keeps the two apart: an id
+            // occupies exactly one segment, so `data/<id>` is only ever a
+            // data address, and a function id spelled `data` still parses at
+            // the bare one.
             const mount = basePrefixed ? resolvedEndpoint : endpoint;
-            const segment = url.pathname.slice(mount.length + 1);
+            let segment = url.pathname.slice(mount.length + 1);
+            if (segment.startsWith('data/')) segment = segment.slice(5);
             let functionId: string | null = null;
             if (segment && !segment.includes('/')) {
               try {
@@ -548,16 +557,6 @@ export function serverFunctions(
               } catch {
                 // not an address; the runtime handler answers the 404
               }
-            }
-            if (!functionId) {
-              // TRANSITIONAL (remove before 3.0 stable): the retired header
-              // and `?id=` addressing, kept only for the RC window where this
-              // plugin meets a @solidjs/web older than the path-addressing
-              // change (solidjs/solid#3076).
-              const headerId = req.headers['x-server-function-id'];
-              functionId =
-                (typeof headerId === 'string' ? headerId.split('#')[0] : undefined) ||
-                url.searchParams.get('id');
             }
             if (functionId) {
               const entry = moduleForFunctionId(functionId);

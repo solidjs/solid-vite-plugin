@@ -297,25 +297,34 @@ function record(mode, phase, name, ok, detail = '') {
   console.log(`  [${mode}/${phase}] ${status} ${name}${detail && !ok ? ` — ${detail}` : ''}`);
 }
 
-// Dev function IDs are `hash-count-name`; pull the one for `name` out of the
-// client-transformed module so the endpoint can be hit directly.
+// Pull the function id for `name` out of the client-transformed module so
+// the endpoint can be hit directly.
 function extractFunctionId(transformedCode, name) {
-  // The import identifier may be aliased (e.g. createServerReference_1), and
-  // newer compilers pass the function name as a second argument after the id.
-  const match = transformedCode.match(new RegExp(`createServerReference\\w*\\("([^"]*-${name})"`));
+  // The import identifier may be aliased (e.g. createServerReference_1).
+  // Ids are identity-keyed `<name>-<hash>[-<ordinal>]` (solidjs/solid#3109);
+  // the literal `-` after the name keeps e.g. `getServerMessage2` from
+  // matching a probe for `getServerMessage`.
+  const match = transformedCode.match(new RegExp(`createServerReference\\w*\\("(${name}-[^"]*)"`));
   return match ? match[1] : null;
 }
 
-async function runCsrfChecks(mode, origin) {
-  const crossSite = await fetch(origin + '/_server/csrf-probe', {
-    method: 'POST',
-    headers: { 'Sec-Fetch-Site': 'cross-site' },
-  });
+async function runCsrfChecks(mode, origin, registeredId) {
+  // The runtime answers unknown ids 404 before the same-origin check runs
+  // (@solidjs/web 2.0.0-rc.5), so the rejection must be probed against a
+  // registered function id.
+  const crossSite = await fetch(
+    `${origin}/_server/${encodeURIComponent(registeredId || 'csrf-probe')}`,
+    {
+      method: 'POST',
+      headers: { 'Sec-Fetch-Site': 'cross-site' },
+    },
+  );
   record(
     mode,
     'csrf',
     'cross-site server function request rejected',
     crossSite.status === 403,
+    registeredId ? `status ${crossSite.status}` : 'no registered id to probe',
   );
 
   const sameOrigin = await fetch(origin + '/_server/csrf-probe', { method: 'POST' });
@@ -924,7 +933,7 @@ async function runDevMode() {
     );
     const bogus = await fetch(origin + '/_server/bogus-0');
     record(mode, 'sf', 'dev middleware rejects unknown id', bogus.status === 404);
-    await runCsrfChecks(mode, origin);
+    await runCsrfChecks(mode, origin, functionId);
 
     const html = await runSsrChecks(mode, origin);
     record(mode, 'dev', 'Vite client injected into <head>', html.includes('/@vite/client'));
@@ -1192,7 +1201,8 @@ async function runProdMode() {
 
     const bogus = await fetch(origin + '/_server/bogus-0');
     record(mode, 'sf', 'prod handler rejects unknown id', bogus.status === 404);
-    await runCsrfChecks(mode, origin);
+    const registeredId = serverBundle.match(/registerServerReference\w*\("([^"]+)"/)?.[1] ?? null;
+    await runCsrfChecks(mode, origin, registeredId);
 
     const html = await runSsrChecks(mode, origin);
     record(
@@ -1771,10 +1781,10 @@ async function runConfigureMode() {
     });
     captureLog(server);
     await waitForHttp(origin + '/', 30000, { headers: { accept: 'text/html' } });
-    // Production ids are the dev id minus its dev-only trailing `-name`
-    // segment (`hash-count` vs `hash-count-name`), so the dev phase's id
-    // carries over. Dispatch before any page render, like dev.
-    const prodId = functionId ? functionId.replace(/-configureProbe$/, '') : null;
+    // Identity-keyed ids (`<name>-<hash>[-<ordinal>]`, solidjs/solid#3109)
+    // are the same in dev and prod, so the dev phase's id carries over
+    // as-is. Dispatch before any page render, like dev.
+    const prodId = functionId;
     const prod = prodId ? await dispatch(prodId) : null;
     record(
       mode,
@@ -2837,8 +2847,8 @@ async function runMiddlewareMode() {
     });
     captureLog(server);
     await waitForHttp(prodOrigin + '/', 30000, { headers: { accept: 'text/html' } });
-    // Prod ids drop the dev-only trailing `-name` segment.
-    const prodId = functionId ? functionId.replace(/-whoAmI$/, '') : null;
+    // Identity-keyed ids are the same in dev and prod (solidjs/solid#3109).
+    const prodId = functionId;
     await runMiddlewareChecksOverHttp('mw-prod', prodOrigin, prodId);
     await runHttpChecks('mw-prod', prodOrigin);
   } catch (e) {
