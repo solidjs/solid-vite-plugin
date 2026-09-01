@@ -1,5 +1,15 @@
 # Changelog
 
+## 3.0.0-next.37
+
+### Patch Changes
+
+- 73751ca: Only attach a request body in the dev middlewares' Node-to-web bridging when the incoming request actually carries one (Content-Length/Transfer-Encoding, or the h2 END_STREAM flag). An unconditionally attached empty stream made bodyless POSTs — zero-argument scripted server function calls, synthetic dispatches — parse as a present-but-unusable body, which @solidjs/web 2.0.0-rc.5 rejects as malformed (400) instead of ignoring.
+- 16245b6: Dev middleware recognizes the scripted transport's data address. Scripted server-function calls now go to `<endpoint>/data/<id>` (solidjs/solid#3094), and the middleware's module-preload step assumed exactly one path segment after the mount — a cold function only client code references would never be evaluated in the SSR environment for a data-addressed call, answering 404 under `vite dev`. Dispatch itself was unaffected (mount matching is prefix-based). The id now parses from behind the literal `data` segment too; a function id spelled `data` still parses at the bare address, since an id occupies exactly one segment.
+- 3a7ff44: Document shell edits now trigger a full page reload instead of being silently absorbed (solidjs/solid#3151). Two sides: the resolved `start.document` / `src/Document.*` module declines HMR in its client compile (it hydrates the whole `document`, so no component swap can ever apply — self-accept + invalidate makes Vite reload instead), and server-environment updates for files with no client-graph counterpart (client-mode documents, authored entry-server, middleware) send a browser full-reload rather than staying suppressed — the suppression exists to protect client HMR from full-reload races, but a server-only file has no client update to race with.
+- fb9f447: Drop the retired `X-Server-Function-Id` header and `?id=` addressing fallback from the dev middleware's module-preload path. Addressing is path-only (`<endpoint>/<id>` and `<endpoint>/data/<id>`), matching the runtime's removal of its own transitional shims during the RC.
+- e9b2a39: Read the file hash from the second id segment. Server-function ids are now identity-keyed `<name>-<hash>[-<ordinal>]` (solidjs/solid#3109) instead of positional `<hash>-<ordinal>`, so the dev middleware's id-to-module lookup takes the hash from `split('-')[1]` rather than the first segment.
+
 ## 3.0.0-next.36
 
 ### Patch Changes
