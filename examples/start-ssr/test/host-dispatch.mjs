@@ -23,7 +23,7 @@ try {
   // manifest (the same signal the browser's module request sends in a real
   // session); it also yields the compiled reference to pull the id from.
   const transformed = await server.transformRequest('/src/api.ts');
-  const match = /createServerReference\w*\("([^"]*-getServerMessage)"/.exec(transformed?.code || '');
+  const match = /createServerReference\w*\("(getServerMessage-[^"]*)"/.exec(transformed?.code || '');
   if (!match) throw new Error('could not extract function id from transformed module');
 
   const runner = server.environments.ssr.runner;
@@ -40,7 +40,7 @@ try {
   const body = await response.text();
   console.log(`HOST-DISPATCH ${response.status} ${body}`);
 
-  const nativeMatch = /createServerReference\w*\("([^"]*-nativeAddress)"/.exec(
+  const nativeMatch = /createServerReference\w*\("(nativeAddress-[^"]*)"/.exec(
     transformed?.code || '',
   );
   if (!nativeMatch) throw new Error('could not extract nativeAddress function id');
