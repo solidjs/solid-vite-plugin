@@ -59,7 +59,7 @@ import {
   DEVTOOLS_PACKAGE,
   devtoolsMountModuleCode,
 } from '../devtools/index.js';
-import { DIAGNOSTICS_CLIENT_ID } from '../diagnostics/index.js';
+import { DIAGNOSTICS_CLIENT_ID, detectDiagnosticsPackage } from '../diagnostics/index.js';
 import {
   collectDevStyles,
   collectDevStyleSources,
@@ -434,7 +434,8 @@ export function startServe(
     serverComponents?: boolean;
     ssr?: boolean;
     styleFilter?: DevStyleFilter;
-    diagnostics?: boolean;
+    /** `'auto'` = enable when the app has `@solidjs/diagnostics` installed. */
+    diagnostics?: boolean | 'auto';
     /**
      * Reports the resolved document shell path (absolute, or null when the
      * built-in virtual document is used) back to the main plugin, which
@@ -464,7 +465,9 @@ export function startServe(
   const serverComponents = !!internal.serverComponents;
   const errorBoundary = options.errorBoundary !== false;
   const styleFilter = internal.styleFilter;
-  const diagnostics = !!internal.diagnostics;
+  // `'auto'` resolves against the project root in configResolved, before
+  // any of the (lazy) uses in entry codegen and the entry transform.
+  let diagnostics = internal.diagnostics === true;
   let devtoolsEnabled = false;
   let devtoolsResolutions: Partial<
     Record<'client' | 'server', Promise<string | null>>
@@ -1266,6 +1269,9 @@ export function startServe(
         root = config.root;
         base = config.base;
         isBuild = config.command === 'build';
+        if (internal.diagnostics === 'auto' && !isBuild) {
+          diagnostics = detectDiagnosticsPackage(root);
+        }
       },
       resolveId(source, importer, opts) {
         if (source === HANDLER_ID) {

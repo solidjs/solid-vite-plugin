@@ -225,12 +225,17 @@ export interface Options {
    * Dev-serve only: expose Solid's diagnostic and attribution channels to
    * out-of-process consumers (agents, tests, curl). Injects a client module
    * that installs the in-page bridge from the app's own
-   * `@solidjs/diagnostics` (which must be installed as a dev dependency),
-   * and serves a `/__solid/diagnostics` endpoint on the dev server that
-   * forwards capture control (`begin`/`end`), `whyDidRun`, and cost queries
-   * to the page over the Vite WebSocket. No effect on builds or preview.
+   * `@solidjs/diagnostics`, and serves a `/__solid/diagnostics` endpoint on
+   * the dev server that forwards capture control (`begin`/`end`),
+   * `whyDidRun`, and cost queries to the page over the Vite WebSocket. No
+   * effect on builds or preview.
    *
-   * @default false
+   * Omitted (the default), the surface auto-enables when
+   * `@solidjs/diagnostics` is installed in the app — installing the dev
+   * dependency is the whole setup. `true` forces it on (erroring if the
+   * package is missing); `false` opts out entirely.
+   *
+   * @default undefined (auto-detect)
    */
   diagnostics?: boolean;
   /**
@@ -1270,7 +1275,7 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
         serverComponents,
         ssr: !!options.ssr,
         styleFilter: filterDevStyles,
-        diagnostics: !!options.diagnostics,
+        diagnostics: options.diagnostics ?? 'auto',
         onDocumentResolved(documentPath) {
           // Normalize to forward slashes to match Vite's transform ids.
           documentModuleId = documentPath ? documentPath.split(path.sep).join('/') : null;
@@ -1280,9 +1285,11 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
   }
 
   // Agent diagnostics endpoint + injected bridge (dev serve only — the
-  // plugin no-ops itself for builds and preview via `apply`).
-  if (options.diagnostics) {
-    plugins.push(solidDiagnostics());
+  // plugin no-ops itself for builds and preview via `apply`, and in the
+  // default auto mode additionally disables itself unless the app has
+  // `@solidjs/diagnostics` installed).
+  if (options.diagnostics !== false) {
+    plugins.push(solidDiagnostics(options.diagnostics === true ? true : 'auto'));
   }
 
   // Builder-mode (environments API) client-before-server build ordering.

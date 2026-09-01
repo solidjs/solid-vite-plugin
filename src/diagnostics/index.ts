@@ -1,5 +1,9 @@
 /**
- * Agent diagnostics surface (`diagnostics: true`, dev serve only).
+ * Agent diagnostics surface (dev serve only).
+ *
+ * Enabled automatically when the app has `@solidjs/diagnostics` installed
+ * (the `diagnostics` option overrides: `true` forces it on and errors if
+ * the package is missing, `false` opts out entirely).
  *
  * Three pieces:
  * - an injected client module (virtual, imported by index.html or the
@@ -18,6 +22,7 @@
  * wire constants are re-declared here with types imported from the
  * package, so drift fails the plugin's own compile.
  */
+import fs from 'fs';
 import path from 'path';
 import type { IncomingMessage, ServerResponse } from 'http';
 import type { Plugin } from 'vite';
@@ -39,6 +44,28 @@ const METHODS = ['begin', 'end', 'active', 'whyDidRun', 'costs'] as const satisf
 
 /** How long the endpoint waits for a page to answer before failing the call. */
 const RESPONSE_TIMEOUT_MS = 10_000;
+
+/**
+ * Whether the app has `@solidjs/diagnostics` installed — the auto-enable
+ * signal. A plain node_modules walk (project root upward) rather than
+ * module resolution: the package is ESM-only, so `require.resolve` can't
+ * probe it, and this also matches hoisted installs. Yarn PnP has no
+ * node_modules and isn't detected — `diagnostics: true` is the escape
+ * hatch there.
+ */
+export function detectDiagnosticsPackage(root: string): boolean {
+  let dir = path.resolve(root);
+  while (true) {
+    if (
+      fs.existsSync(path.join(dir, 'node_modules', DIAGNOSTICS_PACKAGE, 'package.json'))
+    ) {
+      return true;
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) return false;
+    dir = parent;
+  }
+}
 
 export function diagnosticsClientModuleCode(): string {
   // Runtime imports resolve to the APP's diagnostics package (see the
@@ -103,9 +130,13 @@ function readJsonBody(req: IncomingMessage): Promise<unknown> {
   });
 }
 
-export function solidDiagnostics(): Plugin {
+export function solidDiagnostics(mode: true | 'auto' = 'auto'): Plugin {
   let root = process.cwd();
   let base = '/';
+  // Resolved at configResolved: explicit `true` is unconditional (missing
+  // package becomes a hard error at bridge resolution); `'auto'` enables
+  // only when the app has the package installed.
+  let enabled = mode === true;
 
   return {
     name: 'solid:diagnostics',
@@ -117,6 +148,7 @@ export function solidDiagnostics(): Plugin {
     configResolved(config) {
       root = config.root;
       base = config.base;
+      if (mode === 'auto') enabled = detectDiagnosticsPackage(root);
     },
 
     async resolveId(source, importer) {
@@ -131,9 +163,9 @@ export function solidDiagnostics(): Plugin {
         });
         if (!resolved || resolved.id.startsWith('__vite-optional-peer-dep:')) {
           this.error(
-            `[@solidjs/vite-plugin] the diagnostics option requires ${DIAGNOSTICS_PACKAGE} ` +
+            `[@solidjs/vite-plugin] the diagnostics surface requires ${DIAGNOSTICS_PACKAGE} ` +
               'installed in the app (it provides the in-page bridge). Install it as a ' +
-              'development dependency or remove `diagnostics: true`.',
+              'development dependency, or set `diagnostics: false` to opt out.',
           );
         }
         return resolved;
@@ -149,6 +181,7 @@ export function solidDiagnostics(): Plugin {
     // Plain (index.html) apps get the client module injected here;
     // start-mode apps import it from the generated client entry instead.
     transformIndexHtml() {
+      if (!enabled) return undefined;
       return [
         {
           tag: 'script',
@@ -159,6 +192,11 @@ export function solidDiagnostics(): Plugin {
     },
 
     configureServer(server) {
+      // The whole surface (announcement, middleware, bridge injection) only
+      // exists when enabled, so the discovery breadcrumb never lies about
+      // a dead endpoint.
+      if (!enabled) return;
+
       // Announce the surface in the startup block. This is a discovery
       // channel: agents watching dev-server output learn the endpoint and
       // the skill documents without any project-level pointer (AGENTS.md).
@@ -171,8 +209,9 @@ export function solidDiagnostics(): Plugin {
           : DIAGNOSTICS_ENDPOINT;
         server.config.logger.info(
           `  ➜  Solid diagnostics: ${endpoint} ` +
-            `(GET status; POST {"method":"begin"|"end"|"whyDidRun"|"costs"})\n` +
-            `  ➜  Agent skills: node_modules/${DIAGNOSTICS_PACKAGE}/skills/agent-loops/SKILL.md, ` +
+            `(GET status; POST {"method":"begin"|"end"|"whyDidRun"|"costs"})` +
+            (mode === 'auto' ? ' — auto-enabled; `diagnostics: false` opts out' : '') +
+            `\n  ➜  Agent skills: node_modules/${DIAGNOSTICS_PACKAGE}/skills/agent-loops/SKILL.md, ` +
             `node_modules/solid-js/skills/reactivity-diagnostics/SKILL.md`,
         );
       };
@@ -192,6 +231,10 @@ export function solidDiagnostics(): Plugin {
         entry.resolve(data);
       });
 
+      // No host/origin validation here: on all supported Vite versions
+      // (peer range ^8) Vite's own DNS-rebinding host check runs ahead of
+      // plugin middleware — verified: requests with a disallowed Host
+      // header get Vite's 403 before reaching this handler.
       server.middlewares.use(DIAGNOSTICS_ENDPOINT, async (req, res) => {
         // The middleware mounts on the exact path; anything deeper is 404.
         if (req.url && req.url !== '/' && req.url !== '') {
