@@ -435,6 +435,12 @@ export function startServe(
     ssr?: boolean;
     styleFilter?: DevStyleFilter;
     diagnostics?: boolean;
+    /**
+     * Reports the resolved document shell path (absolute, or null when the
+     * built-in virtual document is used) back to the main plugin, which
+     * declines HMR for that module's client compile (solidjs/solid#3151).
+     */
+    onDocumentResolved?: (documentPath: string | null) => void;
   } = {},
 ): Plugin[] {
   // Client mode (the `start` option without `ssr: true`) rides this exact
@@ -1116,6 +1122,7 @@ export function startServe(
         devtoolsResolutions = {};
         devtoolsIds = {};
         entries = resolveEntries(root, options, clientMode);
+        internal.onDocumentResolved?.(entries.document);
         middlewarePath = options.middleware
           ? path.resolve(root, normalizeUserPath(root, options.middleware, 'middleware'))
           : null;
