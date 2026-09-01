@@ -230,10 +230,11 @@ export interface Options {
    * `whyDidRun`, and cost queries to the page over the Vite WebSocket. No
    * effect on builds or preview.
    *
-   * Omitted (the default), the surface auto-enables when
-   * `@solidjs/diagnostics` is installed in the app — installing the dev
-   * dependency is the whole setup. `true` forces it on (erroring if the
-   * package is missing); `false` opts out entirely.
+   * Omitted (the default), the surface auto-enables when the app declares
+   * `@solidjs/diagnostics` in its package.json — adding the dev dependency
+   * is the whole setup. `true` forces it on (erroring if the package is
+   * missing); `false` opts out entirely. Never active in test mode
+   * (vitest) or on builds/preview.
    *
    * @default undefined (auto-detect)
    */

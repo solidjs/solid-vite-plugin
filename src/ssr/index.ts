@@ -1269,7 +1269,10 @@ export function startServe(
         root = config.root;
         base = config.base;
         isBuild = config.command === 'build';
-        if (internal.diagnostics === 'auto' && !isBuild) {
+        // Test mode excluded for the same reason as the surface plugin's
+        // `apply`: vitest runs a dev serve, and test pages should not get
+        // the bridge import injected into their client entries.
+        if (internal.diagnostics === 'auto' && !isBuild && config.mode !== 'test') {
           diagnostics = detectDiagnosticsPackage(root);
         }
       },

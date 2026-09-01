@@ -1,9 +1,9 @@
 /**
  * Agent diagnostics surface (dev serve only).
  *
- * Enabled automatically when the app has `@solidjs/diagnostics` installed
- * (the `diagnostics` option overrides: `true` forces it on and errors if
- * the package is missing, `false` opts out entirely).
+ * Enabled automatically when the app declares `@solidjs/diagnostics` in
+ * its package.json (the `diagnostics` option overrides: `true` forces it
+ * on and errors if the package is missing, `false` opts out entirely).
  *
  * Three pieces:
  * - an injected client module (virtual, imported by index.html or the
@@ -46,20 +46,35 @@ const METHODS = ['begin', 'end', 'active', 'whyDidRun', 'costs'] as const satisf
 const RESPONSE_TIMEOUT_MS = 10_000;
 
 /**
- * Whether the app has `@solidjs/diagnostics` installed — the auto-enable
- * signal. A plain node_modules walk (project root upward) rather than
- * module resolution: the package is ESM-only, so `require.resolve` can't
- * probe it, and this also matches hoisted installs. Yarn PnP has no
- * node_modules and isn't detected — `diagnostics: true` is the escape
- * hatch there.
+ * Whether the app *declares* `@solidjs/diagnostics` — the auto-enable
+ * signal. Declaration in the nearest package.json (walking up from the
+ * Vite root, so a `client/` root still finds the app manifest) rather
+ * than node_modules presence: presence-based detection escapes the app
+ * into ancestor installs, which surprise-enables the surface for every
+ * fixture app inside a monorepo that happens to have the package
+ * somewhere above it (this broke the plugin's own example suites). A
+ * declared dependency is unambiguous intent, and resolution then works
+ * regardless of hoisting. `diagnostics: true` remains the override for
+ * setups the heuristic can't see.
  */
 export function detectDiagnosticsPackage(root: string): boolean {
   let dir = path.resolve(root);
   while (true) {
-    if (
-      fs.existsSync(path.join(dir, 'node_modules', DIAGNOSTICS_PACKAGE, 'package.json'))
-    ) {
-      return true;
+    const manifestPath = path.join(dir, 'package.json');
+    if (fs.existsSync(manifestPath)) {
+      try {
+        const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as Record<
+          string,
+          Record<string, string> | undefined
+        >;
+        return !!(
+          manifest.dependencies?.[DIAGNOSTICS_PACKAGE] ??
+          manifest.devDependencies?.[DIAGNOSTICS_PACKAGE] ??
+          manifest.optionalDependencies?.[DIAGNOSTICS_PACKAGE]
+        );
+      } catch {
+        return false;
+      }
     }
     const parent = path.dirname(dir);
     if (parent === dir) return false;
@@ -141,8 +156,11 @@ export function solidDiagnostics(mode: true | 'auto' = 'auto'): Plugin {
   return {
     name: 'solid:diagnostics',
     // Dev-serve only: the channels this fronts exist in dev builds only.
+    // Test mode excluded — vitest (including browser mode) runs a dev
+    // serve, and injecting the bridge into test pages perturbs suites
+    // that never asked for it.
     apply(_config, env) {
-      return env.command === 'serve' && !env.isPreview;
+      return env.command === 'serve' && !env.isPreview && env.mode !== 'test';
     },
 
     configResolved(config) {
