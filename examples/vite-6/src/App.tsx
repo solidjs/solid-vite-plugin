@@ -1,5 +1,6 @@
 import { onCleanup, onMount } from "solid-js";
 import { CounterProvider, useCounter } from "./CounterContext";
+import { Label } from "./Label.jsx";
 
 const title = 'Count';
 
@@ -56,6 +57,7 @@ export default function App() {
 
   return (
     <CounterProvider>
+      <Label text="solid" />
       <Count />
       <Increment />
       <Decrement />

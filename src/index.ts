@@ -11,6 +11,7 @@ import { crawlFrameworkPkgs } from 'vitefu';
 const require = createRequire(import.meta.url);
 
 const runtimePublicPath = '/@solid-refresh';
+const runtimePublicPathFilter = /^\/@solid-refresh$/;
 const runtimeFilePath = require.resolve('solid-refresh/dist/solid-refresh.mjs');
 const runtimeCode = readFileSync(runtimeFilePath, 'utf-8');
 
@@ -332,103 +333,125 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin {
       needHmr = config.command === 'serve' && config.mode !== 'production' && options.hot !== false;
     },
 
-    resolveId(id) {
-      if (id === runtimePublicPath) return id;
+    resolveId: {
+      // Filter is used by Rolldown and newer Rollup/Vite versions (Vite >= 6.3.0) to skip
+      // unnecessary Rust-to-JS calls. The inner check is kept for backward compatibility
+      // with older versions that ignore hook filters and call the handler for every module.
+      // @ts-ignore filter is not yet in Vite's type definitions but is supported at runtime
+      filter: { id: runtimePublicPathFilter },
+      handler(id) {
+        if (id === runtimePublicPath) return id;
+      },
     },
 
-    load(id) {
-      if (id === runtimePublicPath) return runtimeCode;
+    load: {
+      // Same backward-compatibility strategy as resolveId above.
+      // @ts-ignore filter is not yet in Vite's type definitions but is supported at runtime
+      filter: { id: runtimePublicPathFilter },
+      handler(id) {
+        if (id === runtimePublicPath) return runtimeCode;
+      },
     },
 
-    async transform(source, id, transformOptions) {
-      const isSsr = this.environment
-        ? this.environment.config.consumer === 'server'
-        : Boolean(transformOptions?.ssr);
-      const currentFileExtension = getExtension(id);
+    transform: {
+      // Limit invocations to files that could contain Solid JSX. Custom extensions
+      // (options.extensions) cannot be represented as a static regex, so they are
+      // still handled by the inner extension check below — this filter covers the
+      // common case and is the source of the largest performance win.
+      // The inner checks (filter(id) / extension regex) are kept as-is so that the
+      // hook behaves correctly on older Vite/Rollup versions that ignore hook filters.
+      // @ts-ignore filter is not yet in Vite's type definitions but is supported at runtime
+      filter: { id: /\.[mc]?[tj]sx$/i },
+      async handler(source, id, transformOptions) {
+        const isSsr = this.environment
+          ? this.environment.config.consumer === 'server'
+          : Boolean(transformOptions?.ssr);
+        const currentFileExtension = getExtension(id);
 
-      const extensionsToWatch = options.extensions || [];
-      const allExtensions = extensionsToWatch.map((extension) =>
-        // An extension can be a string or a tuple [extension, options]
-        typeof extension === 'string' ? extension : extension[0],
-      );
+        const extensionsToWatch = options.extensions || [];
+        const allExtensions = extensionsToWatch.map((extension) =>
+          // An extension can be a string or a tuple [extension, options]
+          typeof extension === 'string' ? extension : extension[0],
+        );
 
-      if (!filter(id)) {
-        return null;
-      }
-
-      id = id.replace(/\?.*$/, '');
-
-      if (!(/\.[mc]?[tj]sx$/i.test(id) || allExtensions.includes(currentFileExtension))) {
-        return null;
-      }
-
-      const inNodeModules = /node_modules/.test(id);
-
-      let solidOptions: { generate: 'ssr' | 'dom'; hydratable: boolean };
-
-      if (options.ssr) {
-        if (isSsr) {
-          solidOptions = { generate: 'ssr', hydratable: true };
-        } else {
-          solidOptions = { generate: 'dom', hydratable: true };
+        if (!filter(id)) {
+          return null;
         }
-      } else {
-        solidOptions = { generate: 'dom', hydratable: false };
-      }
 
-      // We need to know if the current file extension has a typescript options tied to it
-      const shouldBeProcessedWithTypescript =
-        /\.[mc]?tsx$/i.test(id) ||
-        extensionsToWatch.some((extension) => {
-          if (typeof extension === 'string') {
-            return extension.includes('tsx');
+        id = id.replace(/\?.*$/, '');
+
+        if (!(/\.[mc]?[tj]sx$/i.test(id) || allExtensions.includes(currentFileExtension))) {
+          return null;
+        }
+
+        const inNodeModules = /node_modules/.test(id);
+
+        let solidOptions: { generate: 'ssr' | 'dom'; hydratable: boolean };
+
+        if (options.ssr) {
+          if (isSsr) {
+            solidOptions = { generate: 'ssr', hydratable: true };
+          } else {
+            solidOptions = { generate: 'dom', hydratable: true };
           }
-
-          const [extensionName, extensionOptions] = extension;
-          if (extensionName !== currentFileExtension) return false;
-
-          return extensionOptions.typescript;
-        });
-      const plugins: NonNullable<NonNullable<babel.TransformOptions['parserOpts']>['plugins']> = [
-        'jsx',
-      ];
-
-      if (shouldBeProcessedWithTypescript) {
-        plugins.push('typescript');
-      }
-
-      const opts: babel.TransformOptions = {
-        root: projectRoot,
-        filename: id,
-        sourceFileName: id,
-        presets: [[solid, { ...solidOptions, ...(options.solid || {}) }]],
-        plugins: needHmr && !isSsr && !inNodeModules ? [[solidRefresh, { bundler: 'vite' }]] : [],
-        ast: false,
-        sourceMaps: true,
-        configFile: false,
-        babelrc: false,
-        parserOpts: {
-          plugins,
-        },
-      };
-
-      // Default value for babel user options
-      let babelUserOptions: babel.TransformOptions = {};
-
-      if (options.babel) {
-        if (typeof options.babel === 'function') {
-          const babelOptions = options.babel(source, id, isSsr);
-          babelUserOptions = babelOptions instanceof Promise ? await babelOptions : babelOptions;
         } else {
-          babelUserOptions = options.babel;
+          solidOptions = { generate: 'dom', hydratable: false };
         }
-      }
 
-      const babelOptions = mergeAndConcat(babelUserOptions, opts) as babel.TransformOptions;
+        // We need to know if the current file extension has a typescript options tied to it
+        const shouldBeProcessedWithTypescript =
+          /\.[mc]?tsx$/i.test(id) ||
+          extensionsToWatch.some((extension) => {
+            if (typeof extension === 'string') {
+              return extension.includes('tsx');
+            }
 
-      const { code, map } = await babel.transformAsync(source, babelOptions);
+            const [extensionName, extensionOptions] = extension;
+            if (extensionName !== currentFileExtension) return false;
 
-      return { code, map };
+            return extensionOptions.typescript;
+          });
+        const plugins: NonNullable<NonNullable<babel.TransformOptions['parserOpts']>['plugins']> = [
+          'jsx',
+        ];
+
+        if (shouldBeProcessedWithTypescript) {
+          plugins.push('typescript');
+        }
+
+        const opts: babel.TransformOptions = {
+          root: projectRoot,
+          filename: id,
+          sourceFileName: id,
+          presets: [[solid, { ...solidOptions, ...(options.solid || {}) }]],
+          plugins: needHmr && !isSsr && !inNodeModules ? [[solidRefresh, { bundler: 'vite' }]] : [],
+          ast: false,
+          sourceMaps: true,
+          configFile: false,
+          babelrc: false,
+          parserOpts: {
+            plugins,
+          },
+        };
+
+        // Default value for babel user options
+        let babelUserOptions: babel.TransformOptions = {};
+
+        if (options.babel) {
+          if (typeof options.babel === 'function') {
+            const babelOptions = options.babel(source, id, isSsr);
+            babelUserOptions = babelOptions instanceof Promise ? await babelOptions : babelOptions;
+          } else {
+            babelUserOptions = options.babel;
+          }
+        }
+
+        const babelOptions = mergeAndConcat(babelUserOptions, opts) as babel.TransformOptions;
+
+        const { code, map } = await babel.transformAsync(source, babelOptions);
+
+        return { code, map };
+      },
     },
   };
 }

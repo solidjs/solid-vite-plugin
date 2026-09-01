@@ -1,5 +1,9 @@
 packages:
   - '.'
   - "examples/*"
+allowBuilds:
+  cypress: set this to true or false
+  esbuild: set this to true or false
+  msw: set this to true or false
 catalog:
-    "solid-js": ^1.9.4
+  "solid-js": ^1.9.4
