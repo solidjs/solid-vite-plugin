@@ -61,8 +61,8 @@
   "dependencies": {
     "@ampproject/remapping": "^2.3.0",
     "@babel/core": "^7.23.3",
-    "@solidjs/babel-plugin": "^2.0.0-rc.3",
-    "@solidjs/compiler": "^2.0.0-rc.3",
+    "@solidjs/babel-plugin": "^2.0.0-rc.6",
+    "@solidjs/compiler": "^2.0.0-rc.6",
     "@types/babel__core": "^7.20.4",
     "merge-anything": "^5.1.7",
     "vitefu": "^1.0.4"
