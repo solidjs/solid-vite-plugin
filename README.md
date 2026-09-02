@@ -683,9 +683,18 @@ handle that automatically. Combined with SSR start mode
 document wiring is emitted too: server components render inline in the
 SSR'd document and are adopted
 at boot with zero endpoint requests. With authored entries, the app-side
-pieces (the render plugin, the bootstrap script, and the client's
-`installServerComponents()` call, all from `@solidjs/web/frames`) live in
-your entry files instead. See `examples/start-ssr` for a complete page.
+pieces (the render plugin and the client's `installServerComponents()`
+call, both from `@solidjs/web/frames`) live in your entry files instead.
+See `examples/start-ssr` for a complete page.
+
+Composing hosts (e.g. the Astro adapter or TanStack Start's Solid
+integration) that emit that document wiring themselves — the render plugin
+around their renders plus a client-side `installServerComponents()` call —
+should set `components: 'external'` instead of `true`. It behaves
+identically (all the same transforms and codegen), and declares the host
+owns the wiring, so the plugin skips the warning it otherwise prints when
+the option is enabled without SSR start mode. It reuses the plugin's
+`external` vocabulary (cf. `start.external` — a host owns the server).
 
 #### options.compiler
 

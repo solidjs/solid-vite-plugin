@@ -138,21 +138,26 @@ export interface ServerFunctionsOptions {
    * per-request wiring or server code.
    *
    * Document SSR of server components (rendered inline at t=0 and adopted
-   * at boot with zero endpoint requests) needs three more pieces: the
-   * render must run with the server-component render plugin, the document
-   * must carry the bootstrap script, and the client must call
-   * `installServerComponents()` before hydrating. With SSR start mode (the
-   * main plugin's `start` option with `ssr: true`) and generated entries
-   * the plugin emits all three. With authored entries those pieces live in
-   * your entry files — import them from `@solidjs/web/frames` (see the
-   * README).
+   * at boot with zero endpoint requests) needs two more pieces: the render
+   * must run with the server-component render plugin (plus the direct-call
+   * transform), and the client must call `installServerComponents()` before
+   * hydrating (the serialized references self-bootstrap the registry, so no
+   * separate bootstrap script is involved). With SSR start mode (the main
+   * plugin's `start` option with `ssr: true`) and generated entries the
+   * plugin emits both. With authored entries those pieces live in your
+   * entry files — import them from `@solidjs/web/frames` (see the README).
+   *
+   * `'external'` behaves exactly like `true`, and additionally declares
+   * that a composing host (e.g. a meta-framework adapter such as Astro's or
+   * TanStack Start's) owns that document wiring itself, so the plugin skips
+   * the without-SSR-start-mode warning.
    *
    * All of this is pure codegen: when the option is off, no reference to
    * the server-component runtime is emitted anywhere.
    *
    * @default false
    */
-  components?: boolean;
+  components?: boolean | 'external';
 }
 
 const DEFAULT_INCLUDE = 'src/**/*.{jsx,tsx,ts,js,mjs,cjs}';

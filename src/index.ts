@@ -573,8 +573,9 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
   // resolve against the Vite root, not process.cwd() — running `vite` from
   // outside the project would otherwise change what the filter matches.
   let filter = createFilter(options.include, options.exclude);
-  const serverComponents =
-    typeof options.serverFunctions === 'object' && !!options.serverFunctions.components;
+  const serverComponentsOption =
+    typeof options.serverFunctions === 'object' ? options.serverFunctions.components : undefined;
+  const serverComponents = !!serverComponentsOption;
   // `start: true` is sugar for the empty options bag — one start mode,
   // two spellings — so normalize here and let everything downstream see a
   // single shape (`false` behaves exactly like omission).
@@ -906,14 +907,25 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
       projectRoot = config.root;
       filter = createFilter(options.include, options.exclude, { resolve: projectRoot });
       styleFilter = createStyleFilter(projectRoot);
-      if (serverComponents && !(options.start && options.ssr)) {
+      // `components: 'external'` is the acknowledgement that a composing
+      // host (e.g. the Astro adapter or TanStack Start's Solid integration)
+      // owns the document wiring itself — behavior is identical to `true`,
+      // only this warning is skipped. Under SSR start mode it's redundant
+      // but harmless (treated exactly as `true`).
+      if (
+        serverComponents &&
+        serverComponentsOption !== 'external' &&
+        !(options.start && options.ssr)
+      ) {
         config.logger.warn(
           '[@solidjs/vite-plugin] serverFunctions.components is set without SSR start mode (the `start` ' +
             'option with `ssr: true`), so the plugin only installs the endpoint response transform ' +
-            '(server functions returning components stream correctly). The document wiring — render ' +
-            'plugin, bootstrap script, and the client-side installServerComponents() call — is ' +
-            "emitted by SSR start mode's generated entries; without it, server components only mount " +
-            'from post-boot streams and your client code must call installServerComponents() itself.',
+            '(server functions returning components stream correctly). The document wiring — the ' +
+            'render plugin (with the direct-call transform) and the client-side ' +
+            "installServerComponents() call — is emitted by SSR start mode's generated entries; " +
+            'without it, server components only mount from post-boot streams and your client code ' +
+            'must call installServerComponents() itself. If a composing host owns that wiring, set ' +
+            "`components: 'external'` to acknowledge it and silence this warning.",
         );
       }
       needHmr =
