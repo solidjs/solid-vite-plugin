@@ -24,6 +24,8 @@ export interface CompileOptions {
   directive: string;
   /** Project root; function IDs hash the root-relative path. */
   root: string;
+  /** Whether to emit a map for this pass. Defaults to true. */
+  sourceMap?: boolean;
   definitions: {
     register: ImportDefinition;
     create: ImportDefinition;
@@ -80,7 +82,7 @@ export async function compile(
     mode: options.mode,
     env: options.env,
     directive: options.directive,
-    sourceMap: true,
+    sourceMap: options.sourceMap !== false,
     register: options.definitions.register,
     create: options.definitions.create,
   });

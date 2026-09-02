@@ -19,6 +19,7 @@ import {
 } from 'vite';
 import { getEnvironmentConsumer, isRunnableEnvironment } from '../environment.js';
 import { joinBase, sendWebResponse, webRequestFromNode } from '../http.js';
+import { isTsrxModule } from '../tsrx.js';
 import { compile, type CompileOptions } from './compile.js';
 import xxHash32 from './xxhash32.js';
 
@@ -28,7 +29,7 @@ import xxHash32 from './xxhash32.js';
  * root — not the invocation directory — so running `vite` from outside the
  * project keeps compiling the same files. Absolute patterns are used as-is.
  *
- * @default include "src/**\/*.{jsx,tsx,ts,js,mjs,cjs}", exclude "node_modules/**\/*.{jsx,tsx,ts,js,mjs,cjs}"
+ * @default include "src/**\/*.{jsx,tsx,tsrx,ts,js,mjs,cjs}", exclude "node_modules/**\/*.{jsx,tsx,tsrx,ts,js,mjs,cjs}"
  */
 export interface ServerFunctionsFilter {
   include?: FilterPattern;
@@ -160,8 +161,8 @@ export interface ServerFunctionsOptions {
   components?: boolean | 'external';
 }
 
-const DEFAULT_INCLUDE = 'src/**/*.{jsx,tsx,ts,js,mjs,cjs}';
-const DEFAULT_EXCLUDE = 'node_modules/**/*.{jsx,tsx,ts,js,mjs,cjs}';
+const DEFAULT_INCLUDE = 'src/**/*.{jsx,tsx,tsrx,ts,js,mjs,cjs}';
+const DEFAULT_EXCLUDE = 'node_modules/**/*.{jsx,tsx,tsrx,ts,js,mjs,cjs}';
 const DEFAULT_MANIFEST = 'virtual:solid-server-function-manifest';
 const DEFAULT_DIRECTIVE = 'use server';
 const DEFAULT_RUNTIME = '@solidjs/web/server-functions';
@@ -306,7 +307,13 @@ function invalidateModules(
  */
 export function serverFunctions(
   options: ServerFunctionsOptions = {},
-  internal: { devMiddleware?: boolean; externalDevServer?: boolean; ssrHandler?: string } = {},
+  internal: {
+    devMiddleware?: boolean;
+    externalDevServer?: boolean;
+    ssrHandler?: string;
+    tsrxAfterSolid?: boolean;
+    tsrxSourceMap?: boolean;
+  } = {},
 ): Plugin[] {
   const filterInclude = options.filter?.include || DEFAULT_INCLUDE;
   const filterExclude = options.filter?.exclude || DEFAULT_EXCLUDE;
@@ -596,6 +603,63 @@ export function serverFunctions(
     });
   }
 
+  async function transformModule(
+    ctx: any,
+    code: string,
+    fileId: string,
+    opts: unknown,
+    tsrx: boolean,
+  ) {
+    const mode = getEnvironmentConsumer(ctx.environment, opts);
+    const [id] = fileId.split('?');
+    if (!id || !filter(id) || isTsrxModule(id) !== tsrx) return null;
+
+    // The directive has to appear literally, so anything without the
+    // substring can skip the native parse entirely.
+    if (!code.includes(directive)) return null;
+
+    const result = await compile(id, code, {
+      ...(mode === 'server' ? serverOptions : clientOptions),
+      mode,
+      env,
+      root,
+      sourceMap: !tsrx || !!internal.tsrxSourceMap,
+    });
+
+    if (!result.valid) return null;
+
+    const preloader = preload[mode];
+    if (preloader) preloader.defer();
+    invalidateModules(
+      currentServer,
+      mergeManifestRecord(manifest.server, new Set([id])),
+      manifestId,
+    );
+
+    return {
+      // Appended (not prepended) so the source map for the compiled module
+      // stays valid; imports hoist and the endpoint is only read at call time.
+      code: (result.code || '') + endpointConfigureSnippet(mode),
+      map: result.map,
+    };
+  }
+
+  const compilerPlugin: Plugin = {
+    name: 'solid:server-functions/compiler',
+    enforce: 'pre',
+    transform(code, fileId, opts) {
+      return transformModule(this, code, fileId, opts, false);
+    },
+  };
+
+  const tsrxCompilerPlugin: Plugin = {
+    name: 'solid:server-functions/tsrx-compiler',
+    enforce: 'pre',
+    transform(code, fileId, opts) {
+      return transformModule(this, code, fileId, opts, true);
+    },
+  };
+
   return [
     {
       name: 'solid:server-functions/setup',
@@ -676,51 +740,8 @@ export function serverFunctions(
         return null;
       },
     },
-    {
-      name: 'solid:server-functions/compiler',
-      enforce: 'pre',
-      async transform(code, fileId, opts) {
-        const mode = getEnvironmentConsumer(this.environment, opts);
-        const [id] = fileId.split('?');
-        if (!filter(id)) {
-          return null;
-        }
-
-        // Fast path: the directive has to appear literally, so anything
-        // without the substring can skip the native parse entirely.
-        if (!code.includes(directive)) {
-          return null;
-        }
-
-        const result = await compile(id!, code, {
-          ...(mode === 'server' ? serverOptions : clientOptions),
-          mode,
-          env,
-          root,
-        });
-
-        if (result.valid) {
-          const preloader = preload[mode];
-          if (preloader) {
-            preloader.defer();
-          }
-          invalidateModules(
-            currentServer,
-            mergeManifestRecord(manifest.server, new Set([id!])),
-            manifestId,
-          );
-
-          return {
-            // Appended (not prepended) so the source map for the compiled
-            // module stays valid; imports hoist and the endpoint is only
-            // read at call time, never during module evaluation.
-            code: (result.code || '') + endpointConfigureSnippet(mode),
-            map: result.map,
-          };
-        }
-        return null;
-      },
-    },
+    compilerPlugin,
+    ...(internal.tsrxAfterSolid ? [tsrxCompilerPlugin] : []),
     ...startPlugins,
   ];
 }

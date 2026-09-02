@@ -19,8 +19,11 @@ export default defineConfig({
         }
       },
     },
-    // Rides the native compiler default.
-    solidPlugin({ ssr: true }),
+    solidPlugin({
+      ssr: true,
+      serverFunctions: true,
+      compiler: process.env.SOLID_COMPILER === 'babel' ? 'babel' : 'native',
+    }),
     {
       name: 'assert-single-entry',
       enforce: 'post',

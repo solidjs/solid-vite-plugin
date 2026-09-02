@@ -8,26 +8,27 @@ allowBuilds:
   msw: true
 
 catalog:
-  solid-js: "^2.0.0-rc.5"
-  "@solidjs/web": "^2.0.0-rc.5"
+  solid-js: "^2.0.0-rc.6"
+  "@solidjs/web": "^2.0.0-rc.6"
 
 ignoredBuiltDependencies:
   - cypress
 
 minimumReleaseAgeExclude:
-  - '@solidjs/signals@2.0.0-beta.30 || 2.0.0-beta.31 || 2.0.0-beta.32 || 2.0.0-rc.0 || 2.0.0-rc.1 || 2.0.0-rc.2 || 2.0.0-rc.3 || 2.0.0-rc.4 || 2.0.0-rc.5'
+  - '@solidjs/signals@2.0.0-beta.30 || 2.0.0-beta.31 || 2.0.0-beta.32 || 2.0.0-rc.0 || 2.0.0-rc.1 || 2.0.0-rc.2 || 2.0.0-rc.3 || 2.0.0-rc.4 || 2.0.0-rc.5 || 2.0.0-rc.6'
   - '@solidjs/start-devtools@1.0.0-next.1 || 1.0.0-next.2 || 1.0.0-next.3'
-  - '@solidjs/web@2.0.0-beta.30 || 2.0.0-beta.31 || 2.0.0-beta.32 || 2.0.0-rc.0 || 2.0.0-rc.1 || 2.0.0-rc.2 || 2.0.0-rc.3 || 2.0.0-rc.4 || 2.0.0-rc.5'
-  - '@solidjs/babel-plugin@2.0.0-rc.3 || 2.0.0-rc.4 || 2.0.0-rc.5'
-  - '@solidjs/compiler@2.0.0-rc.3 || 2.0.0-rc.4 || 2.0.0-rc.5'
-  - '@solidjs/compiler-darwin-arm64@2.0.0-rc.3 || 2.0.0-rc.4 || 2.0.0-rc.5'
-  - '@solidjs/compiler-darwin-x64@2.0.0-rc.3 || 2.0.0-rc.4 || 2.0.0-rc.5'
-  - '@solidjs/compiler-linux-arm64-gnu@2.0.0-rc.3 || 2.0.0-rc.4 || 2.0.0-rc.5'
-  - '@solidjs/compiler-linux-x64-gnu@2.0.0-rc.3 || 2.0.0-rc.4 || 2.0.0-rc.5'
-  - '@solidjs/compiler-win32-x64-msvc@2.0.0-rc.3 || 2.0.0-rc.4 || 2.0.0-rc.5'
-  - '@solidjs/compiler-wasm32-wasi@2.0.0-rc.3 || 2.0.0-rc.4 || 2.0.0-rc.5'
-  - '@solidjs/diagnostics@2.0.0-rc.3 || 2.0.0-rc.4 || 2.0.0-rc.5'
-  - solid-js@2.0.0-beta.30 || 2.0.0-beta.31 || 2.0.0-beta.32 || 2.0.0-rc.0 || 2.0.0-rc.1 || 2.0.0-rc.2 || 2.0.0-rc.3 || 2.0.0-rc.4 || 2.0.0-rc.5
+  - '@solidjs/web@2.0.0-beta.30 || 2.0.0-beta.31 || 2.0.0-beta.32 || 2.0.0-rc.0 || 2.0.0-rc.1 || 2.0.0-rc.2 || 2.0.0-rc.3 || 2.0.0-rc.4 || 2.0.0-rc.5 || 2.0.0-rc.6'
+  - '@solidjs/babel-plugin@2.0.0-rc.3 || 2.0.0-rc.4 || 2.0.0-rc.5 || 2.0.0-rc.6'
+  - '@solidjs/compiler@2.0.0-rc.3 || 2.0.0-rc.4 || 2.0.0-rc.5 || 2.0.0-rc.6'
+  - '@solidjs/compiler-darwin-arm64@2.0.0-rc.3 || 2.0.0-rc.4 || 2.0.0-rc.5 || 2.0.0-rc.6'
+  - '@solidjs/compiler-darwin-x64@2.0.0-rc.3 || 2.0.0-rc.4 || 2.0.0-rc.5 || 2.0.0-rc.6'
+  - '@solidjs/compiler-linux-arm64-gnu@2.0.0-rc.3 || 2.0.0-rc.4 || 2.0.0-rc.5 || 2.0.0-rc.6'
+  - '@solidjs/compiler-linux-x64-gnu@2.0.0-rc.3 || 2.0.0-rc.4 || 2.0.0-rc.5 || 2.0.0-rc.6'
+  - '@solidjs/compiler-win32-x64-msvc@2.0.0-rc.3 || 2.0.0-rc.4 || 2.0.0-rc.5 || 2.0.0-rc.6'
+  - '@solidjs/compiler-wasm32-wasi@2.0.0-rc.3 || 2.0.0-rc.4 || 2.0.0-rc.5 || 2.0.0-rc.6'
+  - '@solidjs/diagnostics@2.0.0-rc.3 || 2.0.0-rc.4 || 2.0.0-rc.5 || 2.0.0-rc.6'
+  - '@tsrx/core@0.1.63'
+  - solid-js@2.0.0-beta.30 || 2.0.0-beta.31 || 2.0.0-beta.32 || 2.0.0-rc.0 || 2.0.0-rc.1 || 2.0.0-rc.2 || 2.0.0-rc.3 || 2.0.0-rc.4 || 2.0.0-rc.5 || 2.0.0-rc.6
   - '@dom-expressions/babel-plugin-jsx@0.50.0-next.35 || 0.50.0-next.37 || 0.50.0-next.40 || 0.50.0-next.43'
   - '@dom-expressions/compiler-darwin-arm64@0.50.0-next.35 || 0.50.0-next.37 || 0.50.0-next.40 || 0.50.0-next.43'
   - '@dom-expressions/compiler-darwin-x64@0.50.0-next.35 || 0.50.0-next.37 || 0.50.0-next.40 || 0.50.0-next.43'
