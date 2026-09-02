@@ -1,5 +1,14 @@
 # Changelog
 
+## 3.0.0-next.38
+
+### Patch Changes
+
+- dfabe22: Auto-enable the agent diagnostics surface (dev serve only) when `@solidjs/diagnostics` is installed in the app — installing the dev dependency is now the whole setup. The `diagnostics` option becomes an override: `true` forces it on (erroring if the package is missing), `false` opts out entirely, omitted auto-detects. Start mode's generated/authored client entries follow the same detection for the bridge import.
+- f463de5: Diagnostics auto-detection now requires the app to declare `@solidjs/diagnostics` in its own package.json (presence in ancestor node_modules surprise-enabled the surface for monorepo fixture apps), and the surface never activates in test mode (vitest browser mode runs a dev serve and was getting the bridge injected into test pages).
+- cf13314: `serverFunctions.components` now also accepts `'external'`: identical to `true`, but declares that a composing host (e.g. the Astro adapter or TanStack Start's Solid integration) owns the document wiring — render plugin + client-side `installServerComponents()` call — itself, so the without-SSR-start-mode warning is skipped instead of printing on every host build. The remaining warning text is also updated: it listed "the bootstrap script" as a required app-side piece, but head bootstrap injection was removed (serialized references self-bootstrap the registry), and it now points hosts at `components: 'external'`.
+- e8ffe62: Add experimental `.tsrx` compilation with native and Babel backends, scoped CSS sidecars, HMR and SSR asset integration, and function-level server functions.
+
 ## 3.0.0-next.37
 
 ### Patch Changes
