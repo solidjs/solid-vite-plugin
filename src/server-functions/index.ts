@@ -8,6 +8,7 @@
 // conditions resolve the right half per environment. Any runtime satisfying
 // that contract can be swapped in through `options.runtime` (SolidStart's,
 // or your own).
+import { randomBytes } from 'crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import path from 'path';
 import {
@@ -352,6 +353,23 @@ export function serverFunctions(
   };
   let currentServer: ViteDevServer | undefined;
 
+  // THE DEPLOYMENT SECRET (solidjs/solid#3239): the runtime's flash cookie
+  // — the no-JS form outcome — carries the submitted input, so it is
+  // AES-GCM encrypted under a key derived from a deployment-wide secret,
+  // and without one the outcome is withheld entirely. This plugin provides
+  // that secret with zero configuration through the internal
+  // `globalThis.__SOLID_SECRET__ ??=` contract: generated once per plugin
+  // instance, so a production build bakes one value into the emitted server
+  // chunk — every instance of that deployment shares it (a per-process
+  // value would silently lose flashes behind a load balancer) — and a dev
+  // session holds one for its lifetime (a restart invalidates in-flight
+  // flashes, which are 60-second one-shot cookies; the next render just
+  // reads "no flash"). Server output only, never the client graph. The
+  // `??=` keeps an explicit `configureServerFunctionsServer({ secret })` —
+  // or a value injected by an outer harness — authoritative.
+  const deploymentSecret = randomBytes(32).toString('hex');
+  const deploymentSecretSnippet = `globalThis.__SOLID_SECRET__ ??= ${JSON.stringify(deploymentSecret)};`;
+
   const clientOptions: Pick<CompileOptions, 'directive' | 'definitions'> = {
     directive,
     definitions: {
@@ -415,6 +433,14 @@ export function serverFunctions(
     // import is only emitted when the option is on, so disabled setups keep
     // a server-component-free graph.
     return [
+      // The deployment secret. Imports are hoisted above it, but nothing
+      // reads the global at module evaluation — the runtime resolves it
+      // lazily per encode/decode — so leading textually is just the honest
+      // placement. This module is loaded before any dispatch on both
+      // surfaces, and the generated SSR handler imports it at module load,
+      // so the secret is in place for the flash's encode (the form POST)
+      // and its decode (the render that follows the redirect) alike.
+      deploymentSecretSnippet,
       // The user's `configure` module comes first: a side-effect import in
       // the handler graph, evaluated before any dispatch on both surfaces
       // (dev middleware and prod handler) and bundled into the handler
