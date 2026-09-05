@@ -10,7 +10,7 @@
 import { spawn, execSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
-import { rmSync } from 'node:fs';
+import { readFileSync, rmSync } from 'node:fs';
 
 const exampleDir = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const CHROME =
@@ -222,6 +222,28 @@ const probeExpr = (selector) =>
   `(() => { const el = document.querySelector(${JSON.stringify(selector)});` +
   ` return el ? getComputedStyle(el).color : null; })()`;
 
+// The client manifest the plugin bakes into the server bundle
+// (`virtual:solid-manifest`): the object literal assigned right after the
+// module's region marker, brace-matched and evaluated as a literal.
+function extractVirtualManifest(serverBundle) {
+  const region = serverBundle.indexOf('virtual:solid-manifest');
+  const start = region === -1 ? -1 : serverBundle.indexOf('{', region);
+  if (start === -1) return null;
+  let depth = 0;
+  for (let i = start; i < serverBundle.length; i++) {
+    const ch = serverBundle[i];
+    if (ch === '{') depth++;
+    else if (ch === '}' && --depth === 0) {
+      try {
+        return new Function(`return (${serverBundle.slice(start, i + 1)});`)();
+      } catch {
+        return null;
+      }
+    }
+  }
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // Assertion collection
 // ---------------------------------------------------------------------------
@@ -304,6 +326,78 @@ async function runMode(mode) {
         'single application entry in client manifest',
         entries.length === 1 && entries[0] === 'src/entry-client.tsx',
         `entries: ${entries.join(', ')}`,
+      );
+
+      // #342: the entry chunk absorbed a module that is also dynamically
+      // imported (src/entry-client.tsx statically imports Solid's
+      // serialization decoder, which frames/client lazily imports), so the
+      // entry lists itself under dynamicImports. That shape must not demote
+      // the genuine entry — in the raw bundle as later plugins see it, in
+      // Vite's manifest.json, and in the plugin's own virtual manifest.
+      const entryRecord = manifest['src/entry-client.tsx'];
+      record(
+        mode,
+        'ssr',
+        'entry chunk absorbed a dynamically imported module (self dynamicImport)',
+        !!entryRecord?.dynamicImports?.includes('src/entry-client.tsx'),
+        `dynamicImports: ${JSON.stringify(entryRecord?.dynamicImports)}`,
+      );
+      const bundleChunks = JSON.parse(
+        readFileSync(path.join(exampleDir, 'dist/client/.vite/bundle-chunks.json'), 'utf-8'),
+      );
+      const entryChunk = entryRecord && bundleChunks[entryRecord.file];
+      record(
+        mode,
+        'ssr',
+        'self-importing entry chunk keeps isEntry in the bundle (post plugin view)',
+        !!entryChunk &&
+          entryChunk.isEntry === true &&
+          entryChunk.dynamicImports.includes(entryRecord.file),
+        `chunk: ${JSON.stringify(entryChunk)}`,
+      );
+      const bundleEntries = Object.keys(bundleChunks).filter((f) => bundleChunks[f].isEntry);
+      record(
+        mode,
+        'ssr',
+        'lazy facade chunks stay demoted in the bundle',
+        bundleEntries.length === 1 &&
+          Object.values(bundleChunks).every(
+            (c) => !c.facadeModuleId?.includes('/src/routes/') || c.isEntry === false,
+          ),
+        `bundle entries: ${bundleEntries.join(', ')}`,
+      );
+      // The virtual manifest baked into the server bundle: what
+      // resolveClientEntry() and renderToStream's asset resolution read.
+      const serverBundle = readFileSync(
+        path.join(exampleDir, 'dist/server/entry-server.js'),
+        'utf-8',
+      );
+      const virtualManifest = extractVirtualManifest(serverBundle);
+      const virtualEntries = virtualManifest
+        ? Object.keys(virtualManifest).filter((k) => virtualManifest[k]?.isEntry)
+        : [];
+      record(
+        mode,
+        'ssr',
+        'virtual:solid-manifest keeps the self-importing entry as its single entry',
+        virtualEntries.length === 1 && virtualEntries[0] === 'src/entry-client.tsx',
+        `virtual manifest entries: ${virtualEntries.join(', ')}`,
+      );
+      // Lazy facades come out of rolldown with neither flag (it only syncs
+      // isEntry back from generateBundle); the virtual manifest must still
+      // classify them as dynamic entries.
+      const lazyKeys = Object.keys(virtualManifest ?? {}).filter((k) =>
+        k.startsWith('src/routes/'),
+      );
+      record(
+        mode,
+        'ssr',
+        'virtual:solid-manifest classifies lazy facades as dynamic entries',
+        lazyKeys.length > 0 &&
+          lazyKeys.every(
+            (k) => virtualManifest[k].isDynamicEntry === true && !virtualManifest[k].isEntry,
+          ),
+        `lazy records: ${lazyKeys.map((k) => `${k}=${JSON.stringify(virtualManifest[k])}`).join('; ')}`,
       );
     }
 

@@ -2,7 +2,7 @@ import * as babel from '@babel/core';
 import type { TransformOptions as JsxCompilerOptions } from '@solidjs/compiler';
 import remapping from '@ampproject/remapping';
 import solid from '@solidjs/babel-plugin';
-import { existsSync, readFileSync } from 'fs';
+import { existsSync, readFileSync, realpathSync } from 'fs';
 import { mergeAndConcat } from 'merge-anything';
 import { createRequire } from 'module';
 import {
@@ -554,6 +554,100 @@ function combineSourcemaps(maps: ChainableMap[]) {
   return JSON.parse(remapping(chain.reverse() as any, () => null).toString());
 }
 
+function toPosixPath(p: string): string {
+  return p.split(path.sep).join('/');
+}
+
+function tryRealpath(p: string): string | null {
+  try {
+    return realpathSync.native(p);
+  } catch {
+    return null;
+  }
+}
+
+/** The `input` a build environment's config resolves to, in any spelling. */
+function configuredBuildInput(build: any): unknown {
+  if (!build) return undefined;
+  return build.rolldownOptions?.input ?? build.rollupOptions?.input ?? build.lib?.entry;
+}
+
+/**
+ * The genuine entries of a client build, derived from its configured input
+ * (`build.rollupOptions.input` as a string / array / record, or Vite's
+ * default `index.html`). Rollup and rolldown only ever flag two kinds of
+ * chunk `isEntry`: those facades and chunks plugins emit with
+ * `emitFile({ type: 'chunk' })` — so this is exactly the knowledge that
+ * tells a real application entry apart from an emitted lazy facade.
+ *
+ * `moduleIds` — every spelling the entry's facade module id can take: as
+ * written (virtual ids resolve to themselves), resolved against the root
+ * (Vite resolves relative file inputs there), and the real path of either
+ * (Vite's resolver follows symlinks).
+ * `manifestKeys` — the manifest.json keys Vite derives from those facades
+ * (root-relative, `\0` stripped), matching Vite's own `getChunkName`.
+ */
+function resolveConfiguredEntries(input: unknown, root: string) {
+  const raw: string[] =
+    input == null
+      ? ['index.html']
+      : typeof input === 'string'
+        ? [input]
+        : Array.isArray(input)
+          ? input
+          : Object.values(input as Record<string, unknown>);
+  const moduleIds = new Set<string>();
+  for (const id of raw) {
+    if (typeof id !== 'string') continue;
+    const clean = id.replace(/\0/g, '');
+    const candidates = [clean, path.resolve(root, clean)];
+    for (const candidate of candidates) {
+      moduleIds.add(candidate);
+      moduleIds.add(toPosixPath(candidate));
+      const real = tryRealpath(candidate);
+      if (real) {
+        moduleIds.add(real);
+        moduleIds.add(toPosixPath(real));
+      }
+    }
+  }
+  const manifestKeys = new Set<string>();
+  for (const id of moduleIds) manifestKeys.add(toPosixPath(path.relative(root, id)));
+  return {
+    moduleIds,
+    manifestKeys,
+    isEntryModule(id: string | null | undefined): boolean {
+      if (!id) return false;
+      const clean = id.replace(/\0/g, '');
+      if (moduleIds.has(clean) || moduleIds.has(toPosixPath(clean))) return true;
+      const real = tryRealpath(clean);
+      return !!real && (moduleIds.has(real) || moduleIds.has(toPosixPath(real)));
+    },
+  };
+}
+
+interface NormalizeLazyEntriesOptions {
+  /**
+   * Is this record a genuine configured entry? Such records keep `isEntry`
+   * no matter what dynamically imports them.
+   */
+  isConfiguredEntry: (key: string, record: any) => boolean;
+  /**
+   * Records already known to be emitted lazy facades (reclassified
+   * explicitly by their emit references); everything else the sweep strips
+   * is reported through `warn` because it could be an entry the input
+   * matching missed.
+   */
+  knownLazyKeys?: Set<string>;
+  warn?: (message: string) => void;
+  /**
+   * Also flag dynamic-import targets that already lost `isEntry` as
+   * `isDynamicEntry` — repairs the flag rolldown drops (see below) on the
+   * serialized manifest.
+   */
+  repairDynamicEntries?: boolean;
+}
+
 /**
  * Chunks emitted for lazy() targets are marked `isEntry` by Rollup even
  * though they are semantically dynamic entries. Reclassify any entry that is
@@ -562,17 +656,61 @@ function combineSourcemaps(maps: ChainableMap[]) {
  * the real client entry. Works on both the Vite manifest.json shape and the
  * raw Rollup output bundle — both key entries by name and expose
  * `dynamicImports` / `isEntry` with the same meaning.
+ *
+ * Being a dynamic-import target alone does not make a chunk a lazy facade,
+ * though: the real client entry becomes one whenever it absorbs a module
+ * that is also dynamically imported somewhere else. Solid 2 produces that
+ * shape on its own — `@solidjs/web/frames/client` lazily imports the
+ * serialization decoder (`loadCodec()`), so a static import of
+ * `@solidjs/web/serialization/decode` anywhere in the client graph merges
+ * the decoder into the entry chunk, and the entry then lists itself (or is
+ * listed by another lazy chunk) under `dynamicImports`. Stripping `isEntry`
+ * there leaves the bundle with no entry at all ("No entry file found"
+ * downstream, e.g. TanStack Start's manifest capture, #342). Genuine
+ * configured entries are therefore never reclassified, and a chunk's
+ * dynamic import of itself is not an edge worth acting on.
+ *
+ * Rolldown caveat: of the flags written here only `isEntry` is synced back
+ * to the native bundle after the hook (rolldown's `update_output_chunk`
+ * copies `code`, `map`, `imports`, `dynamicImports`, `isEntry` and the file
+ * name; `isDynamicEntry` is kept from the original chunk). Later plugins
+ * and Vite's manifest plugin therefore see reclassified facades as neither
+ * entry nor dynamic entry under rolldown. The manifest `load` path repairs
+ * `isDynamicEntry` on the plugin's own manifest module, the one place it
+ * controls end to end.
  */
-function normalizeEmittedLazyEntries(manifest: Record<string, any>) {
-  const dynamicKeys = new Set<string>();
+function normalizeEmittedLazyEntries(
+  manifest: Record<string, any>,
+  { isConfiguredEntry, knownLazyKeys, warn, repairDynamicEntries }: NormalizeLazyEntriesOptions,
+) {
+  const dynamicKeys = new Map<string, string>();
   for (const key in manifest) {
     const imports: string[] | undefined = manifest[key].dynamicImports;
-    if (imports) for (const dep of imports) dynamicKeys.add(dep);
+    if (!imports) continue;
+    for (const dep of imports) {
+      // A chunk that absorbed one of its own lazy targets imports itself;
+      // that says nothing about whether it is an entry.
+      if (dep !== key && !dynamicKeys.has(dep)) dynamicKeys.set(dep, key);
+    }
   }
-  for (const key of dynamicKeys) {
+  for (const [key, importer] of dynamicKeys) {
     const entry = manifest[key];
-    if (entry && entry.isEntry) {
+    if (!entry || entry.type === 'asset') continue;
+    if (isConfiguredEntry(key, entry)) continue;
+    if (entry.isEntry) {
       entry.isEntry = false;
+      entry.isDynamicEntry = true;
+      if (warn && !knownLazyKeys?.has(key)) {
+        warn(
+          `[@solidjs/vite-plugin] Reclassified the entry chunk "${key}" as a dynamic entry ` +
+            `because "${importer}" dynamically imports it and it does not match a configured ` +
+            `build input. If "${key}" is the application entry, its chunk absorbed a module ` +
+            'that is also imported dynamically elsewhere (for example a static import of ' +
+            '"@solidjs/web/serialization/decode" alongside Solid\'s own lazy import of it); ' +
+            'list the entry in `build.rollupOptions.input` so the plugin can recognize it.',
+        );
+      }
+    } else if (repairDynamicEntries && !entry.isDynamicEntry) {
       entry.isDynamicEntry = true;
     }
   }
@@ -645,6 +783,11 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
   let isSsrBuild = false;
   let base = '/';
   let clientOutDir: string | null = null;
+  // The client environment's resolved build options, for the configured
+  // entry input. Read off the resolved config so the SSR half of a
+  // two-invocation build (`vite build --ssr`) still knows the client's
+  // entries when it bakes the client manifest in.
+  let clientBuildConfig: any = null;
   let solidPkgsConfig: Awaited<ReturnType<typeof crawlFrameworkPkgs>>;
   const tsrxCss = new Map<string, string>();
 
@@ -988,6 +1131,7 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
       isSsrBuild = !!config.build.ssr;
       base = config.base;
       projectRoot = config.root;
+      clientBuildConfig = (config as any).environments?.client?.build ?? config.build;
       filter = createFilter(options.include, options.exclude, { resolve: projectRoot });
       styleFilter = createStyleFilter(projectRoot);
       // `components: 'external'` is the acknowledgement that a composing
@@ -1141,7 +1285,28 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
         const manifestPath = clientManifestPath();
         if (manifestPath) {
           const manifest = JSON.parse(readFileSync(manifestPath, 'utf-8'));
-          normalizeEmittedLazyEntries(manifest);
+          // Manifest records are keyed the way Vite keys entry chunks (the
+          // root-relative facade path, also carried as `src`), so the
+          // configured client inputs identify the genuine entries here too —
+          // independent of `isEntry`, which the serialized manifest may have
+          // lost already (older plugin builds stripped it; see #342).
+          const entries = resolveConfiguredEntries(
+            configuredBuildInput(clientBuildConfig),
+            projectRoot,
+          );
+          const isConfiguredEntry = (key: string, record: any) =>
+            entries.manifestKeys.has(key) ||
+            (typeof record.src === 'string' && entries.manifestKeys.has(record.src));
+          for (const key in manifest) {
+            if (isConfiguredEntry(key, manifest[key]) && manifest[key].file) {
+              manifest[key].isEntry = true;
+            }
+          }
+          normalizeEmittedLazyEntries(manifest, {
+            isConfiguredEntry,
+            warn: (message) => this.warn(message),
+            repairDynamicEntries: true,
+          });
           manifest._base = base;
           return `export default ${JSON.stringify(manifest)};`;
         }
@@ -1159,6 +1324,15 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
       // the bundle don't mistake them for application entries. Must precede
       // the client asset map build, which keys off dynamic entries.
       if (options.ssr) {
+        // The genuine entries are the configured inputs of this very
+        // environment — the plugin injects the client entry itself in start
+        // mode, and Vite's default is index.html — so their facade chunks
+        // are recognizable regardless of what dynamically imports them.
+        const entries = resolveConfiguredEntries(
+          configuredBuildInput(this.environment?.config?.build ?? clientBuildConfig),
+          projectRoot,
+        );
+        const knownLazyKeys = new Set<string>();
         for (const ref of emittedLazyChunkRefs) {
           let fileName: string;
           try {
@@ -1169,10 +1343,17 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
           }
           const chunk = bundle[fileName];
           if (!chunk || chunk.type !== 'chunk') continue;
+          // An entry that is also lazily imported stays an entry.
+          if (entries.isEntryModule(chunk.facadeModuleId)) continue;
+          knownLazyKeys.add(fileName);
           chunk.isEntry = false;
           chunk.isDynamicEntry = true;
         }
-        normalizeEmittedLazyEntries(bundle);
+        normalizeEmittedLazyEntries(bundle, {
+          isConfiguredEntry: (_key, chunk) => entries.isEntryModule(chunk.facadeModuleId),
+          knownLazyKeys,
+          warn: (message) => this.warn(message),
+        });
       }
     },
 
