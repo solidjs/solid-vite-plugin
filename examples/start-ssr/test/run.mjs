@@ -101,6 +101,16 @@
 //   - `vite preview` serves the production artifact with no server file:
 //     dist/client statically, everything else (pages, /_server, middleware,
 //     the lifecycle) through the built handler,
+//   - `start.renderMode` (render-mode mode, SSR_RENDER_MODE): 'async' sends
+//     one settled document — no Loading fallback markup, no swap scripts,
+//     boundary content in place, hydration data intact (the streamed page's
+//     browser checks pass against it) — with httpStatus/httpHeader still on
+//     the wire and a mid-render Location as a real 3xx; the per-request
+//     module form (src/render-mode.ts) switches modes within one server by
+//     header / crawler UA / `?nojs`; the `handleRequest(request,
+//     { renderMode })` override wins over both; authored entries get the same
+//     treatment; invalid config and runtime values are rejected with the fix
+//     in the message,
 //   - lazy asset keys survive module identities beyond plain root-relative
 //     paths (the /lazy-assets surface, dev and prod): a query-suffixed lazy
 //     import keeps its query through the manifest key / dev URL (#299), and
@@ -112,7 +122,7 @@
 //
 // Requires the plugin built (pnpm build at the repo root) and Google Chrome.
 // Usage: node test/run.mjs
-// [dev|prod|document|css-filter|entries|endpoint|configure|no-middleware|middleware|preview|base|builder-order|builder-prepare|babel-hmr|frames]
+// [dev|prod|document|css-filter|entries|endpoint|configure|no-middleware|middleware|preview|render-mode|base|builder-order|builder-prepare|babel-hmr|frames]
 // (default: all)
 
 import { spawn, execSync } from 'node:child_process';
@@ -792,11 +802,15 @@ async function runBrowserChecks(
         await cdp.waitFor('document.querySelector("[data-solid-dev-toolbar]") !== null'),
       );
     } else if (devtools === false) {
+      const toolbar = await cdp.evalJs(
+        'document.querySelector("[data-solid-dev-toolbar]")?.outerHTML.slice(0, 200) ?? null',
+      );
       record(
         mode,
         'devtools',
         'no development toolbar in the DOM',
-        (await cdp.evalJs('document.querySelector("[data-solid-dev-toolbar]")')) === null,
+        toolbar === null,
+        `found: ${JSON.stringify(toolbar)}`,
       );
     }
 
@@ -2968,6 +2982,622 @@ async function runPreviewMode() {
   }
 }
 
+// `start.renderMode` (SSR_RENDER_MODE in vite.config.ts): the fix for
+// solidjs/solid#3280 — streaming leaves `<Loading>` fallbacks unresolved for
+// clients that never run the swap scripts. Asserted in dev, prod, and on
+// direct handler dispatch:
+// - 'async' (static config): the handler adopts the renderToStream
+//   thenable, so one complete document goes out — no Loading fallback
+//   markup, no swap templates/scripts, every boundary's content in place —
+//   with hydration data still serialized (the same browser checks as the
+//   streamed page: clean hydration, interactivity, server functions),
+// - the response-head lifecycle under async: httpStatus/httpHeader still
+//   reach the wire (the generated entry commits the head at completion,
+//   before the runtime disposes the render), and a Location written
+//   mid-render — the post-flush script fallback in stream mode — becomes a
+//   real 3xx with no body,
+// - stream mode is byte-for-byte the streaming story it always was (the
+//   default: dev/prod modes above; here re-asserted next to async),
+// - the per-request module form (src/render-mode.ts) switches modes within
+//   one server — a header, a crawler user agent, `?nojs` → async; everyone
+//   else streams,
+// - the `handleRequest(request, { renderMode })` runtime override wins over
+//   both the module function and the static config, and rejects an invalid
+//   value with an actionable error,
+// - authored entries get the same treatment (their renderToStream result
+//   has the same thenable), the prod client-entry rewrite included,
+// - config validation: an unknown literal and a missing module path are
+//   rejected at config time with the fix in the message.
+async function runRenderModeMode() {
+  const mode = 'render-mode';
+  console.log(`\n=== ${mode.toUpperCase()} ===`);
+
+  // A settled document, as a no-JS client sees it: no fallback markup, no
+  // swap machinery, the streamed boundary's content sitting where the
+  // fallback would have been — and still hydratable.
+  const assertComplete = (tag, phase, html, { app = true } = {}) => {
+    record(
+      tag,
+      phase,
+      'complete document (doctype … </html> in one piece)',
+      html.startsWith('<!DOCTYPE html><html') && html.trimEnd().endsWith('</html>'),
+    );
+    record(
+      tag,
+      phase,
+      'no Loading fallback markup',
+      !html.includes('stream-fallback') && !html.includes('streaming…'),
+    );
+    record(
+      tag,
+      phase,
+      'no swap templates or swap scripts',
+      !/<template id=/.test(html) && !html.includes('$df(') && !html.includes('$dfj('),
+    );
+    if (app) {
+      record(
+        tag,
+        phase,
+        'boundary content rendered in place',
+        /<p[^>]*id="streamed"[^>]*>STREAMED-ASYNC-CONTENT<\/p>/.test(html),
+      );
+      record(
+        tag,
+        phase,
+        'hydration data serialized',
+        html.includes('_$HY') && /_\$HY\.r\[|_\$HY\.set\(/.test(html),
+      );
+    }
+  };
+  // The streamed shape, from the full body alone (works for in-process
+  // Responses too): the fallback markup and the swap template both present.
+  const isStreamedMarkup = (html) =>
+    html.includes('stream-fallback') && /<template id=/.test(html) && html.includes('STREAMED-ASYNC-CONTENT');
+  const readAll = async (response) => {
+    const chunks = [];
+    if (response.body) {
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(decoder.decode(value));
+      }
+    }
+    return { status: response.status, headers: response.headers, chunks, html: chunks.join('') };
+  };
+  // The redirect surfaces under async: both the pre-flush one (httpHeader,
+  // ledgered — reverted at disposal unless the head was committed first)
+  // and the mid-render one (a direct stub write 300ms into the render, the
+  // script fallback in stream mode) must be real 3xx responses.
+  const assertAsyncHttp = async (tag, origin, { ledgered = true } = {}) => {
+    if (ledgered) {
+      const missing = await fetchStreamed(origin + '/missing');
+      record(
+        tag,
+        'http',
+        'httpStatus(404) survives to the wire under async',
+        missing.status === 404 && missing.html.includes('NOT-FOUND-PAGE'),
+        `status ${missing.status}`,
+      );
+      record(
+        tag,
+        'http',
+        'httpHeader lands on the async response',
+        missing.headers.get('x-page') === 'missing',
+        `x-page: ${JSON.stringify(missing.headers.get('x-page'))}`,
+      );
+      const pre = await fetch(origin + '/redirect-pre', {
+        headers: { accept: 'text/html' },
+        redirect: 'manual',
+      });
+      record(
+        tag,
+        'http',
+        'pre-flush Location stays a real 3xx under async',
+        pre.status === 302 && pre.headers.get('location') === '/redirected-target',
+        `status ${pre.status}, location ${JSON.stringify(pre.headers.get('location'))}`,
+      );
+      await pre.arrayBuffer();
+    }
+    const post = await fetch(origin + '/redirect-post', {
+      headers: { accept: 'text/html' },
+      redirect: 'manual',
+    });
+    const postBody = await post.text();
+    record(
+      tag,
+      'http',
+      'mid-render Location becomes a real 3xx under async (no script fallback)',
+      post.status === 302,
+      `status ${post.status}`,
+    );
+    record(
+      tag,
+      'http',
+      'mid-render redirect keeps its Location and ships no body',
+      post.headers.get('location') === '/redirected-target' && postBody === '',
+      `location ${JSON.stringify(post.headers.get('location'))}, body ${JSON.stringify(postBody.slice(0, 60))}`,
+    );
+  };
+  const spawnDev = (port, env) =>
+    startProcess('pnpm', ['exec', 'vite', '--port', String(port), '--strictPort'], {
+      cwd: exampleDir,
+      env: { ...process.env, SSR_DEVTOOLS: '0', ...env },
+    });
+  const spawnProd = (port, env) =>
+    startProcess('node', ['server.js'], {
+      cwd: exampleDir,
+      env: { ...process.env, ...env, PORT: String(port), NODE_ENV: 'production' },
+    });
+  // Builds pin NODE_ENV: an in-process `createServer`/`resolveConfig(...,
+  // 'serve')` (the probes below, and earlier modes' probes in a full run)
+  // sets process.env.NODE_ENV to 'development' for the rest of this
+  // process, and a spawned `vite build` inheriting it resolves the
+  // `development` export conditions — the authored fixture's DevToolbar
+  // import would then ship the toolbar into "production" assets.
+  const build = (env) =>
+    execSync('pnpm run build', {
+      cwd: exampleDir,
+      stdio: 'pipe',
+      env: { ...process.env, NODE_ENV: 'production', ...env },
+    });
+  // And the probes themselves put NODE_ENV back the way they found it.
+  const withNodeEnvRestored = async (fn) => {
+    const before = process.env.NODE_ENV;
+    try {
+      return await fn();
+    } finally {
+      if (before === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = before;
+    }
+  };
+  const kill = (child) => {
+    if (!child) return;
+    try {
+      process.kill(-child.pid, 'SIGTERM');
+    } catch {}
+  };
+
+  let server;
+  let serverLog = '';
+  const captureLog = (child) => {
+    child.stdout.on('data', (d) => (serverLog += d));
+    child.stderr.on('data', (d) => (serverLog += d));
+  };
+
+  // ---- Config validation --------------------------------------------------
+  // Resolved in-process: the plugin's config hook must reject an unknown
+  // literal and a missing module path with the fix in the message.
+  for (const [value, label] of [
+    ['bogus', 'unknown literal'],
+    ['./src/no-such-render-mode.ts', 'missing module path'],
+  ]) {
+    process.env.SSR_RENDER_MODE = value;
+    let error = '';
+    try {
+      await withNodeEnvRestored(() => resolveConfig({ root: exampleDir }, 'serve'));
+    } catch (e) {
+      error = String(e && e.message ? e.message : e);
+    } finally {
+      delete process.env.SSR_RENDER_MODE;
+    }
+    record(
+      mode,
+      'config',
+      `${label} rejected at config time with an actionable message`,
+      error.includes('start.renderMode') &&
+        error.includes("'stream'") &&
+        error.includes("'async'") &&
+        error.includes('module') &&
+        error.includes(value),
+      error ? error.slice(0, 300) : 'config resolved without error',
+    );
+  }
+
+  // ---- Direct dispatch: the runtime override (default config = stream) -----
+  // A host driving the handler itself (in-process module runner, like the
+  // external/detect modes): the per-call option decides, and an invalid
+  // value is rejected rather than silently streamed.
+  let probe;
+  try {
+    probe = await withNodeEnvRestored(() =>
+      createServer({ root: exampleDir, server: { middlewareMode: true } }),
+    );
+    const handler = await probe.environments.ssr.runner.import('virtual:solid-ssr-handler');
+    const page = (init) =>
+      new Request('http://localhost/', { headers: { accept: 'text/html', ...(init || {}) } });
+    const overridden = await readAll(await handler.handleRequest(page(), { renderMode: 'async' }));
+    record(
+      mode,
+      'override',
+      'handleRequest({ renderMode: "async" }) beats the stream default',
+      overridden.status === 200 && !isStreamedMarkup(overridden.html),
+      `status ${overridden.status}`,
+    );
+    assertComplete(mode, 'override', overridden.html);
+    const plain = await readAll(await handler.handleRequest(page()));
+    record(
+      mode,
+      'override',
+      'without the option the default still streams (fallback + swap template)',
+      plain.status === 200 && isStreamedMarkup(plain.html),
+    );
+    let rejection = '';
+    try {
+      await handler.handleRequest(page(), { renderMode: 'bogus' });
+    } catch (e) {
+      rejection = String(e && e.message ? e.message : e);
+    }
+    record(
+      mode,
+      'override',
+      'invalid runtime renderMode rejected with an actionable error',
+      rejection.includes('renderMode') && rejection.includes("'stream' or 'async'") && rejection.includes('bogus'),
+      rejection.slice(0, 200) || 'resolved without error',
+    );
+    // Codegen: with no option configured, the handler carries no module
+    // import for a render-mode policy (pure codegen, like setup/middleware).
+    const transformed = await probe.environments.ssr.transformRequest('virtual:solid-ssr-handler');
+    record(
+      mode,
+      'codegen',
+      'no render-mode module import without the option',
+      !!transformed && !transformed.code.includes('render-mode.ts'),
+    );
+  } catch (e) {
+    record(mode, 'override', 'direct dispatch completed', false, String(e));
+  } finally {
+    await probe?.close();
+  }
+
+  // ---- Direct dispatch: override beats the per-request module too -----------
+  process.env.SSR_RENDER_MODE = 'module';
+  try {
+    probe = await withNodeEnvRestored(() =>
+      createServer({ root: exampleDir, server: { middlewareMode: true } }),
+    );
+    const handler = await probe.environments.ssr.runner.import('virtual:solid-ssr-handler');
+    const asyncHeader = { accept: 'text/html', 'x-render-mode': 'async' };
+    const viaModule = await readAll(
+      await handler.handleRequest(new Request('http://localhost/', { headers: asyncHeader })),
+    );
+    record(
+      mode,
+      'override',
+      'module function answers per request (header → async)',
+      viaModule.status === 200 && !isStreamedMarkup(viaModule.html) && viaModule.html.includes('STREAMED-ASYNC-CONTENT'),
+    );
+    const forcedStream = await readAll(
+      await handler.handleRequest(new Request('http://localhost/', { headers: asyncHeader }), {
+        renderMode: 'stream',
+      }),
+    );
+    record(
+      mode,
+      'override',
+      'handleRequest({ renderMode: "stream" }) beats the module function (precedence)',
+      forcedStream.status === 200 && isStreamedMarkup(forcedStream.html),
+    );
+    const transformed = await probe.environments.ssr.transformRequest('virtual:solid-ssr-handler');
+    record(
+      mode,
+      'codegen',
+      'handler imports the configured render-mode module',
+      !!transformed && transformed.code.includes('render-mode.ts'),
+    );
+  } catch (e) {
+    record(mode, 'override', 'module-config direct dispatch completed', false, String(e));
+  } finally {
+    await probe?.close();
+    delete process.env.SSR_RENDER_MODE;
+  }
+
+  // ---- Dev: static async --------------------------------------------------
+  const devAsyncPort = 3178;
+  const devAsyncOrigin = `http://localhost:${devAsyncPort}`;
+  try {
+    server = spawnDev(devAsyncPort, { SSR_RENDER_MODE: 'async' });
+    captureLog(server);
+    await waitForHttp(devAsyncOrigin + '/src/api.ts', 30000);
+    const page = await fetchStreamed(devAsyncOrigin + '/');
+    record('rm-dev-async', 'ssr', 'responds 200', page.status === 200, `status ${page.status}`);
+    record('rm-dev-async', 'ssr', 'app server-rendered', page.html.includes('SSR Start Mode'));
+    assertComplete('rm-dev-async', 'ssr', page.html);
+    record(
+      'rm-dev-async',
+      'dev',
+      'dev head still injected on the string path (Vite client + entry CSS)',
+      page.html.includes('/@vite/client') &&
+        page.html.includes('virtual:solid-ssr-entry-client.tsx') &&
+        /<style[^>]*data-vite-dev-id="[^"]*App\.css"/.test(page.html),
+    );
+    await assertAsyncHttp('rm-dev-async', devAsyncOrigin);
+    // The async document must still hydrate and be interactive — the same
+    // browser checks the streamed page passes (clean hydration, counter,
+    // server functions, clientOnly swap, styles).
+    await runBrowserChecks('rm-dev-async', devAsyncOrigin, { devCss: true });
+  } catch (e) {
+    record(
+      'rm-dev-async',
+      'run',
+      'dev async completed',
+      false,
+      String(e) + (serverLog ? `\nserver: ${serverLog.slice(-2000)}` : ''),
+    );
+  } finally {
+    kill(server);
+    server = undefined;
+    serverLog = '';
+  }
+
+  // ---- Dev: per-request module --------------------------------------------
+  const devModulePort = 3179;
+  const devModuleOrigin = `http://localhost:${devModulePort}`;
+  const perRequestChecks = async (tag, origin) => {
+    const plain = await fetchStreamed(origin + '/');
+    const contentAt = plain.chunks.findIndex((c) => c.includes('STREAMED-ASYNC-CONTENT'));
+    record(
+      tag,
+      'per-request',
+      'default request streams (shell with fallback first, content later)',
+      plain.chunks.length > 1 &&
+        contentAt > 0 &&
+        plain.chunks.slice(0, contentAt).join('').includes('stream-fallback'),
+      `${plain.chunks.length} chunk(s), content in chunk ${contentAt}`,
+    );
+    const viaHeader = await fetch(origin + '/', {
+      headers: { accept: 'text/html', 'x-render-mode': 'async' },
+    });
+    const viaHeaderHtml = await viaHeader.text();
+    record(tag, 'per-request', 'x-render-mode: async → complete document', viaHeader.status === 200);
+    assertComplete(tag, 'per-request(header)', viaHeaderHtml);
+    const viaUa = await fetch(origin + '/', {
+      headers: {
+        accept: 'text/html',
+        'user-agent': 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)',
+      },
+    });
+    const viaUaHtml = await viaUa.text();
+    record(
+      tag,
+      'per-request',
+      'crawler user agent → complete document',
+      viaUa.status === 200 && !isStreamedMarkup(viaUaHtml) && viaUaHtml.includes('STREAMED-ASYNC-CONTENT'),
+    );
+    const viaFlag = await fetch(origin + '/?nojs', { headers: { accept: 'text/html' } });
+    const viaFlagHtml = await viaFlag.text();
+    record(
+      tag,
+      'per-request',
+      '?nojs → complete document',
+      viaFlag.status === 200 && !isStreamedMarkup(viaFlagHtml) && viaFlagHtml.includes('STREAMED-ASYNC-CONTENT'),
+    );
+    const forced = await fetchStreamed(origin + '/');
+    record(
+      tag,
+      'per-request',
+      'same server keeps streaming for the next plain request',
+      forced.chunks.length > 1 && isStreamedMarkup(forced.html),
+      `${forced.chunks.length} chunk(s)`,
+    );
+  };
+  try {
+    server = spawnDev(devModulePort, { SSR_RENDER_MODE: 'module' });
+    captureLog(server);
+    await waitForHttp(devModuleOrigin + '/src/api.ts', 30000);
+    await perRequestChecks('rm-dev-module', devModuleOrigin);
+  } catch (e) {
+    record(
+      'rm-dev-module',
+      'run',
+      'dev module completed',
+      false,
+      String(e) + (serverLog ? `\nserver: ${serverLog.slice(-2000)}` : ''),
+    );
+  } finally {
+    kill(server);
+    server = undefined;
+    serverLog = '';
+  }
+
+  // ---- Prod: static async ---------------------------------------------------
+  const prodAsyncPort = 3180;
+  const prodAsyncOrigin = `http://localhost:${prodAsyncPort}`;
+  try {
+    console.log('  building (async)…');
+    build({ SSR_RENDER_MODE: 'async' });
+    const serverBundle = readFileSync(path.join(exampleDir, 'dist/server/server.js'), 'utf-8');
+    record(
+      'rm-prod-async',
+      'build',
+      'static mode baked into the handler bundle',
+      serverBundle.includes('"async"') && serverBundle.includes('assertRenderMode'),
+    );
+    // Override on the built handler, before the server boots: the static
+    // config is async, the per-call option streams anyway.
+    const built = await import(
+      pathToFileURL(path.join(exampleDir, 'dist/server/server.js')).href + `?rm=${Date.now()}`
+    );
+    const forcedStream = await readAll(
+      await built.handleRequest(new Request(prodAsyncOrigin + '/', { headers: { accept: 'text/html' } }), {
+        renderMode: 'stream',
+      }),
+    );
+    record(
+      'rm-prod-async',
+      'override',
+      'handleRequest({ renderMode: "stream" }) beats the static async config',
+      forcedStream.status === 200 && isStreamedMarkup(forcedStream.html),
+    );
+
+    server = spawnProd(prodAsyncPort, { SSR_RENDER_MODE: 'async' });
+    captureLog(server);
+    await waitForHttp(prodAsyncOrigin + '/', 30000, { headers: { accept: 'text/html' } });
+    const page = await fetchStreamed(prodAsyncOrigin + '/');
+    record('rm-prod-async', 'ssr', 'responds 200', page.status === 200, `status ${page.status}`);
+    assertComplete('rm-prod-async', 'ssr', page.html);
+    record(
+      'rm-prod-async',
+      'prod',
+      'hashed client entry + css injected on the string path',
+      /<script type="module" src="\/assets\/[^"]+\.js" async><\/script>/.test(page.html) &&
+        /<link rel="stylesheet" href="\/assets\/[^"]+\.css">/.test(page.html),
+    );
+    record('rm-prod-async', 'prod', 'no dev injections leaked', !page.html.includes('/@vite/client'));
+    await assertAsyncHttp('rm-prod-async', prodAsyncOrigin);
+    await runBrowserChecks('rm-prod-async', prodAsyncOrigin, { devtools: false });
+  } catch (e) {
+    record(
+      'rm-prod-async',
+      'run',
+      'prod async completed',
+      false,
+      String(e) + (serverLog ? `\nserver: ${serverLog.slice(-2000)}` : ''),
+    );
+  } finally {
+    kill(server);
+    server = undefined;
+    serverLog = '';
+  }
+
+  // ---- Prod: per-request module ----------------------------------------------
+  const prodModulePort = 3181;
+  const prodModuleOrigin = `http://localhost:${prodModulePort}`;
+  try {
+    console.log('  building (module)…');
+    build({ SSR_RENDER_MODE: 'module' });
+    const serverBundle = readFileSync(path.join(exampleDir, 'dist/server/server.js'), 'utf-8');
+    record(
+      'rm-prod-module',
+      'build',
+      'render-mode module bundled into the handler chunk',
+      serverBundle.includes('x-render-mode'),
+    );
+    const assetsDir = path.join(exampleDir, 'dist/client/assets');
+    const leaks = readdirSync(assetsDir).filter((f) =>
+      readFileSync(path.join(assetsDir, f), 'utf-8').includes('x-render-mode'),
+    );
+    record(
+      'rm-prod-module',
+      'build',
+      'render-mode module absent from client assets',
+      leaks.length === 0,
+      leaks.join(', '),
+    );
+    server = spawnProd(prodModulePort, { SSR_RENDER_MODE: 'module' });
+    captureLog(server);
+    await waitForHttp(prodModuleOrigin + '/', 30000, { headers: { accept: 'text/html' } });
+    await perRequestChecks('rm-prod-module', prodModuleOrigin);
+  } catch (e) {
+    record(
+      'rm-prod-module',
+      'run',
+      'prod module completed',
+      false,
+      String(e) + (serverLog ? `\nserver: ${serverLog.slice(-2000)}` : ''),
+    );
+  } finally {
+    kill(server);
+    server = undefined;
+    serverLog = '';
+  }
+
+  // ---- Authored entries -----------------------------------------------------
+  // The same thenable adoption for an authored `render()` (the classic
+  // renderToStream entry): dev with the static async config, and the module
+  // form switching per request; prod with the async config, where the
+  // string path still rewrites the authored client-entry reference.
+  const authoredDevPort = 3182;
+  const authoredDevOrigin = `http://localhost:${authoredDevPort}`;
+  const authoredProdPort = 3183;
+  const authoredProdOrigin = `http://localhost:${authoredProdPort}`;
+  for (const [file, source] of Object.entries(ENTRY_FIXTURES)) {
+    writeFileSync(path.join(exampleDir, file), source);
+  }
+  try {
+    server = spawnDev(authoredDevPort, { SSR_RENDER_MODE: 'async' });
+    captureLog(server);
+    await waitForHttp(authoredDevOrigin + '/src/api.ts', 30000);
+    const page = await fetchStreamed(authoredDevOrigin + '/');
+    record(
+      'rm-authored',
+      'dev',
+      'authored entry rendered (custom title)',
+      page.status === 200 && page.html.includes('<title>Authored Entries</title>'),
+    );
+    assertComplete('rm-authored', 'dev', page.html);
+    // The mid-render redirect is a direct stub write, so it holds for
+    // authored entries too; the ledgered httpStatus/httpHeader surfaces are
+    // covered by the generated-entry runs (see the README note).
+    await assertAsyncHttp('rm-authored', authoredDevOrigin, { ledgered: false });
+    kill(server);
+    server = undefined;
+
+    server = spawnDev(authoredDevPort, { SSR_RENDER_MODE: 'module' });
+    captureLog(server);
+    await waitForHttp(authoredDevOrigin + '/src/api.ts', 30000);
+    const streamed = await fetchStreamed(authoredDevOrigin + '/');
+    record(
+      'rm-authored',
+      'per-request',
+      'authored entry streams by default under the module form',
+      streamed.chunks.length > 1 && isStreamedMarkup(streamed.html),
+      `${streamed.chunks.length} chunk(s)`,
+    );
+    const settled = await fetch(authoredDevOrigin + '/?nojs', { headers: { accept: 'text/html' } });
+    const settledHtml = await settled.text();
+    record(
+      'rm-authored',
+      'per-request',
+      'authored entry settles for ?nojs under the module form',
+      settled.status === 200 && !isStreamedMarkup(settledHtml) && settledHtml.includes('STREAMED-ASYNC-CONTENT'),
+    );
+    kill(server);
+    server = undefined;
+
+    console.log('  building (authored, async)…');
+    build({ SSR_RENDER_MODE: 'async' });
+    server = spawnProd(authoredProdPort, { SSR_RENDER_MODE: 'async' });
+    captureLog(server);
+    await waitForHttp(authoredProdOrigin + '/', 30000, { headers: { accept: 'text/html' } });
+    const prod = await fetchStreamed(authoredProdOrigin + '/');
+    record(
+      'rm-authored',
+      'prod',
+      'authored entry rendered in prod',
+      prod.status === 200 && prod.html.includes('<title>Authored Entries</title>'),
+    );
+    assertComplete('rm-authored', 'prod', prod.html);
+    record(
+      'rm-authored',
+      'prod',
+      'authored client entry reference rewritten on the string path',
+      !prod.html.includes('/src/entry-client.tsx') &&
+        /<script type="module" src="\/assets\/[^"]+\.js" async>/.test(prod.html),
+    );
+    await runBrowserChecks('rm-authored', authoredProdOrigin, { devtools: false });
+  } catch (e) {
+    record(
+      'rm-authored',
+      'run',
+      'authored completed',
+      false,
+      String(e) + (serverLog ? `\nserver: ${serverLog.slice(-2000)}` : ''),
+    );
+  } finally {
+    kill(server);
+    server = undefined;
+    for (const file of Object.keys(ENTRY_FIXTURES)) {
+      rmSync(path.join(exampleDir, file), { force: true });
+    }
+    // Leave dist in the standard state for anyone poking at it.
+    try {
+      build();
+    } catch {}
+  }
+}
+
 // Non-root Vite `base` (SOLID_BASE=/app/): the base must hold end to end on
 // every start-mode surface. Regression coverage for the brenelz base cluster:
 // - #300: `vite preview` strips the base from req.url before the plugin's
@@ -3478,6 +4108,7 @@ const ALL_MODES = [
   'no-middleware',
   'middleware',
   'preview',
+  'render-mode',
   'base',
   'builder-order',
   'builder-prepare',
@@ -3500,6 +4131,7 @@ for (const mode of modes) {
   else if (mode === 'no-middleware') await runNoMiddlewareMode();
   else if (mode === 'middleware') await runMiddlewareMode();
   else if (mode === 'preview') await runPreviewMode();
+  else if (mode === 'render-mode') await runRenderModeMode();
   else if (mode === 'base') await runBaseMode();
   else if (mode === 'builder-order') await runBuilderOrderMode();
   else if (mode === 'builder-prepare') await runBuilderPrepareMode();

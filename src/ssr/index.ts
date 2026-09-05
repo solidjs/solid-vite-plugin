@@ -31,6 +31,11 @@
 //   it, and page responses go through the runtime's `createSSRResponse`
 //   head lifecycle (commit at shell flush, real pre-flush redirects, the
 //   script fallback post-flush).
+// - `start.renderMode` decides how a page render becomes a body: `'stream'`
+//   (default) flushes the shell with fallbacks and streams boundaries in
+//   behind it; `'async'` awaits the settled document (no fallbacks or swap
+//   scripts — complete for no-JS clients); a module path decides per
+//   request, and `handleRequest(request, { renderMode })` overrides both.
 // - `vite preview` serves dist/client statically and dispatches everything
 //   else through the built handler — the production path, middleware
 //   included, with no server file needed.
@@ -189,6 +194,43 @@ export interface StartOptions {
    */
   setup?: string;
   /**
+   * How the generated handler turns a page render into a response body.
+   *
+   * - `'stream'` (default): the document shell flushes as soon as it is
+   *   ready, with `<Loading>` fallbacks in place; boundary content follows
+   *   in later chunks and is swapped in by inline scripts. Best TTFB, but
+   *   a client that never runs JavaScript (crawlers, `curl`, no-JS
+   *   browsers) is left looking at the fallbacks (solidjs/solid#3280).
+   * - `'async'`: the handler awaits the render until every boundary has
+   *   settled and sends one complete document. Nothing has flushed, so
+   *   each resolved boundary is spliced in place of its placeholder — no
+   *   fallback markup, no swap templates or scripts — while hydration data
+   *   still serializes, so JavaScript clients hydrate exactly as before.
+   *   The tradeoffs are inherent: time-to-first-byte waits for the slowest
+   *   boundary, and the whole page buffers in memory before it is sent.
+   *   `deferStream` is moot here (everything defers), and a `Location`
+   *   header written mid-render becomes a real 3xx instead of the
+   *   post-flush script fallback.
+   * - A module path (resolved relative to the Vite root, following the
+   *   `middleware`/`setup` convention — a Vite config cannot serialize a
+   *   closure into the generated handler): the module default-exports
+   *   `(event) => 'stream' | 'async' | Promise<'stream' | 'async'>`, called
+   *   per request inside the request scope after the middleware chain (so
+   *   `event.locals` decoration is visible) — e.g. `'async'` for crawler
+   *   user agents or a `?nojs` flag, `'stream'` for everyone else.
+   *
+   * Hosts driving the handler directly can override all of the above per
+   * call with `handleRequest(request, { renderMode })`; precedence is that
+   * runtime option, then the module function's result, then this static
+   * value. Applies to generated and authored entries alike (an authored
+   * `render()` returning a `renderToStream` result is awaited the same
+   * way). Server mode only — ignored in client mode, where the served
+   * shell has no boundaries to settle.
+   *
+   * @default 'stream'
+   */
+  renderMode?: 'stream' | 'async' | (string & {});
+  /**
    * Typed, validated environment variables. A schema file — conventionally
    * `env.ts` (or `env.js`) at the project root, probed automatically —
    * default-exports `{ server?, client? }` maps of Standard Schema
@@ -324,6 +366,47 @@ function normalizeUserPath(root: string, spec: string, option: string): string {
     throw new Error(`[@solidjs/vite-plugin] start.${option} must live inside the Vite root: ${spec}`);
   }
   return relative;
+}
+
+type RenderMode = 'stream' | 'async';
+
+/**
+ * Resolves `start.renderMode` at config time: a literal mode, or the
+ * absolute path of a per-request module (`mode` stays the `'stream'`
+ * default then; the module decides per request). Anything else is a
+ * config error with the fix in the message — an unknown literal is far
+ * more likely a typo than a file, so the message names both readings.
+ */
+function resolveRenderMode(
+  root: string,
+  value: StartOptions['renderMode'],
+): { mode: RenderMode; path: string | null } {
+  if (value === undefined) return { mode: 'stream', path: null };
+  // (`string & {}` keeps editor completion for the literals; TS cannot
+  // narrow it away by equality, hence the assertion.)
+  if (value === 'stream' || value === 'async') return { mode: value as RenderMode, path: null };
+  const usage =
+    `start.renderMode must be 'stream' (the default), 'async', or the path of a module ` +
+    `(relative to the Vite root) default-exporting a per-request function ` +
+    `((event) => 'stream' | 'async' | Promise<...>)`;
+  if (typeof value !== 'string') {
+    throw new Error(
+      `[@solidjs/vite-plugin] ${usage}; got ${typeof value}. A Vite config cannot serialize a ` +
+        `closure into the generated handler — put the function in a module (e.g. ` +
+        `./src/render-mode.ts) and pass its path instead.`,
+    );
+  }
+  const absolute = path.isAbsolute(value) ? value : path.resolve(root, value);
+  if (!existsSync(absolute)) {
+    throw new Error(
+      `[@solidjs/vite-plugin] ${usage}; got ${JSON.stringify(value)}, which is neither a mode ` +
+        `nor an existing file.`,
+    );
+  }
+  return {
+    mode: 'stream',
+    path: path.resolve(root, normalizeUserPath(root, value, 'renderMode')),
+  };
 }
 
 interface ResolvedEntries {
@@ -484,6 +567,14 @@ export function startServe(
   let middlewarePath: string | null = null;
   /** Absolute path of the per-request setup module, when configured (server mode). */
   let setupPath: string | null = null;
+  /**
+   * `start.renderMode`, resolved at config time: the static mode baked into
+   * the handler, or the absolute path of the per-request module deciding it
+   * (server mode only — a documented no-op in client mode, whose shell has
+   * no boundaries to settle).
+   */
+  let renderMode: RenderMode = 'stream';
+  let renderModePath: string | null = null;
 
   function requireEntries(): ResolvedEntries {
     // config() always runs before resolveId/load/configureServer.
@@ -671,9 +762,9 @@ export function startServe(
       ].join('\n');
     }
     const { app } = requireEntries();
-    const streamOptions = `{ manifest${serverComponents ? ', plugins: [ServerComponentPlugin]' : ''} }`;
+    const streamOptions = `{ manifest, onCompleteAll: commitResponseHead${serverComponents ? ', plugins: [ServerComponentPlugin]' : ''} }`;
     return [
-      `import { renderToStream${setupPath ? ', getRequestEvent' : ''} } from '@solidjs/web';`,
+      `import { renderToStream, getRequestEvent, commitResponseStub } from '@solidjs/web';`,
       ...(serverComponents
         ? [
             `import { configureServerFunctionsServer } from '@solidjs/web/server-functions';`,
@@ -706,6 +797,19 @@ export function startServe(
             ``,
           ]
         : []),
+      // Commits the response head when the render completes — BEFORE the
+      // runtime disposes the render. `httpStatus`/`httpHeader` register
+      // cleanups that revert their declarations unless the stub is already
+      // committed; streaming commits at shell flush (this is a no-op there),
+      // but the async render mode resolves the complete document only after
+      // that disposal (`renderToStream(...).then` disposes, then resolves),
+      // so without this the settled 404 / Location would be reverted before
+      // createSSRResponse's string path could commit them.
+      `function commitResponseHead() {`,
+      `  const event = getRequestEvent();`,
+      `  if (event) commitResponseStub(event.response);`,
+      `}`,
+      ``,
       ...(setupPath
         ? [
             // The per-request seam: the hook sees the same event the
@@ -866,6 +970,9 @@ export function startServe(
       ...(middlewarePath
         ? [`import middlewareModule from ${JSON.stringify(middlewarePath)};`]
         : []),
+      ...(renderModePath
+        ? [`import renderModeModule from ${JSON.stringify(renderModePath)};`]
+        : []),
       ...(externalDev ? [`import DEV_STYLES_HEAD from ${JSON.stringify(DEV_STYLES_ID)};`] : []),
       ...(composeServerFunctions
         ? [
@@ -923,6 +1030,43 @@ export function startServe(
       );
     } else {
       lines.push(`const runMiddleware = (request, next) => next(request);`);
+    }
+
+    // Render mode (`start.renderMode`): 'stream' flushes the shell with
+    // fallbacks in place and streams boundary content after it; 'async'
+    // adopts the renderToStream result's thenable — which waits for the
+    // complete render — so one settled document goes out (the fix for
+    // no-JS clients, solidjs/solid#3280). Precedence per request: the
+    // `handleRequest` option (hosts driving the handler directly), then the
+    // configured module's per-request result, then the static config. Every
+    // source is validated against the two literals with the offender named.
+    lines.push(
+      ``,
+      `function assertRenderMode(mode, source) {`,
+      `  if (mode !== 'stream' && mode !== 'async') {`,
+      `    throw new Error('[@solidjs/vite-plugin] ' + source + " must be 'stream' or 'async', got " + JSON.stringify(mode));`,
+      `  }`,
+      `  return mode;`,
+      `}`,
+    );
+    if (renderModePath) {
+      lines.push(
+        `if (typeof renderModeModule !== 'function') {`,
+        `  throw new Error('[@solidjs/vite-plugin] start.renderMode must default-export a function ' +`,
+        `    "((event) => 'stream' | 'async' | Promise<...>): " + ${JSON.stringify(renderModePath)});`,
+        `}`,
+        `async function resolveRenderMode(event, options) {`,
+        `  if (options.renderMode !== undefined) return assertRenderMode(options.renderMode, 'handleRequest options.renderMode');`,
+        `  return assertRenderMode(await renderModeModule(event), 'the start.renderMode module (' + ${JSON.stringify(renderModePath)} + ') result');`,
+        `}`,
+      );
+    } else {
+      lines.push(
+        `function resolveRenderMode(event, options) {`,
+        `  if (options.renderMode !== undefined) return assertRenderMode(options.renderMode, 'handleRequest options.renderMode');`,
+        `  return ${JSON.stringify(renderMode)};`,
+        `}`,
+      );
     }
 
     // No `_$SC` bootstrap injection: the runtime's serialized
@@ -1049,6 +1193,10 @@ export function startServe(
       isBuild
         ? `  const clientEntry = options.clientEntry || resolveClientEntry();`
         : `  const clientEntry = options.clientEntry || ${JSON.stringify(devClientEntryUrl())};`,
+      // Decided before the render starts (the module form may be async),
+      // inside the request scope and after the middleware chain, so a
+      // per-request policy sees the decorated event.
+      `  const renderMode = await resolveRenderMode(event, options);`,
       `  let result = entry.render(request, { clientEntry, ...options.context });`,
       // renderToStream results are thenables whose then() waits for the
       // *complete* render — check for pipe first so streaming survives, and
@@ -1064,6 +1212,16 @@ export function startServe(
             `  if (result && result.${STREAM_BOX}) result = result.${STREAM_BOX};`,
           ]
         : []),
+      // Async mode adopts the thenable deliberately — the very thing the
+      // pipe-first check and the setup box exist to avoid in stream mode.
+      // It resolves with the full HTML once every boundary settled, each
+      // spliced in place pre-flush (no fallbacks, no swap scripts; hydration
+      // data still serialized), and the string then takes
+      // createSSRResponse's string path below: stub commit, transformChunk
+      // on the whole document, and a mid-render Location as a real 3xx.
+      `  if (renderMode === 'async' && result && typeof result.then === 'function') {`,
+      `    result = await result;`,
+      `  }`,
       // Raw Responses fold at the handler edge (handleRequest), after the
       // middleware chain unwinds — not here, where middleware above this
       // frame could still legitimately mutate headers.
@@ -1143,6 +1301,14 @@ export function startServe(
               'entry-server owns render() already, so call your setup step there instead ' +
               `(remove start.setup or the authored entry): ${options.setup}`,
           );
+        }
+        // Server-mode only as well: the client-mode shell renders no app,
+        // so there is nothing to settle. Validated in every mode though —
+        // a typo should not hide behind the `ssr` boolean.
+        ({ mode: renderMode, path: renderModePath } = resolveRenderMode(root, options.renderMode));
+        if (clientMode) {
+          renderMode = 'stream';
+          renderModePath = null;
         }
         if (env.isPreview) {
           if (clientMode) {

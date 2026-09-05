@@ -27,6 +27,11 @@ import solidPlugin from '@solidjs/vite-plugin';
 // - SSR_SETUP=1 wires src/setup.tsx through `start.setup` (middleware mode):
 //   the per-request app-setup hook, awaited between the middleware chain and
 //   renderToStream with the shared request event in hand.
+// - SSR_RENDER_MODE sets `start.renderMode` (render-mode mode): `module`
+//   wires src/render-mode.ts (the per-request policy: header / crawler UA /
+//   `?nojs`); any other value passes through verbatim — `async` for the
+//   static complete-document mode, and bogus literals or missing paths for
+//   the config-validation assertions.
 // - SERVER_FN_DEV_MIDDLEWARE=0 disables the built-in dev middleware via
 //   `serverFunctions.devMiddleware` (no-middleware mode) — endpoint dispatch
 //   becomes the host's job, like a Cloudflare-style environment plugin.
@@ -161,6 +166,17 @@ export default defineConfig({
               // renderToStream, receiving the event and returning the
               // component to render (the TanStack-style async router seam).
               ...(process.env.SSR_SETUP ? { setup: './src/setup.tsx' } : {}),
+              // SSR_RENDER_MODE (render-mode mode): `module` → the
+              // per-request policy module; anything else verbatim
+              // (`async`, or an invalid value for the validation checks).
+              ...(process.env.SSR_RENDER_MODE
+                ? {
+                    renderMode:
+                      process.env.SSR_RENDER_MODE === 'module'
+                        ? './src/render-mode.ts'
+                        : process.env.SSR_RENDER_MODE,
+                  }
+                : {}),
             },
       serverFunctions: serverComponents
         ? { components: true }

@@ -50,6 +50,16 @@ declare module "virtual:solid-ssr-handler" {
       /** Status/headers for the HTML response. */
       responseInit?: ResponseInit;
       /**
+       * Per-call render mode, overriding `start.renderMode` (static value or
+       * per-request module alike). `'stream'` flushes the document shell
+       * with `<Loading>` fallbacks and streams boundary content behind it;
+       * `'async'` awaits the render until every boundary settled and sends
+       * one complete document — no fallbacks, no swap scripts, hydration
+       * data intact — for clients that never run JavaScript. A mid-render
+       * `Location` becomes a real 3xx under `'async'`.
+       */
+      renderMode?: 'stream' | 'async';
+      /**
        * Extra fields spread into the request event at creation — the public
        * wrapper→event extension seam. Conventionally `nativeEvent` carries
        * the platform's raw request object; the plugin's dev/preview
