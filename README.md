@@ -180,8 +180,8 @@ same server functions.
 The object form carries the options (`start: true` is pure sugar for
 `start: {}` — both mean the identical start mode with defaults, and
 `false`/absent means off): `app`, `document`, `entryServer`, `entryClient`,
-`middleware`, `setup`, `env`, `devtools`, `errorBoundary`, `css`, `external`,
-all documented below.
+`middleware`, `setup`, `renderMode`, `env`, `devtools`, `errorBoundary`,
+`css`, `external`, all documented below.
 
 Install `@solidjs/start-devtools` as a development dependency to add the
 development toolbar with runtime errors and server function calls:
@@ -375,6 +375,76 @@ configuring both is an error). And as with any server-side tree shaping,
 whatever the hook renders must be matched client-side for hydration —
 routers that own both sides (their client entry re-creates the router and
 hydrates the same tree) fit naturally.
+
+**`renderMode`** — how a page render becomes a response body: `'stream'`
+(the default) or `'async'`, or a module path deciding per request.
+
+Streaming flushes the document shell as soon as it is ready, with every
+`<Loading>` fallback in place, and streams the boundaries' content behind it
+in later chunks; inline scripts swap that content into the page as it
+arrives. That is the best time-to-first-byte a server render can have, but a
+client that never runs JavaScript — a crawler, `curl`, a browser with
+scripts disabled — is left looking at the fallbacks forever
+([solidjs/solid#3280](https://github.com/solidjs/solid/issues/3280)).
+`'async'` is the other end of that trade: the handler awaits the render until
+every boundary has settled and sends one complete document.
+
+```ts
+solid({ start: { renderMode: 'async' }, ssr: true });
+```
+
+Because nothing has flushed when a boundary resolves, its content is spliced
+in place of its placeholder — the document carries no fallback markup, no
+swap templates, no swap scripts — while hydration data still serializes
+exactly as before, so JavaScript clients hydrate the settled document the
+same way they hydrate a streamed one. The tradeoffs are inherent: the
+response waits for the slowest boundary before its first byte, and the whole
+page buffers in memory before it goes out. Two consequences worth knowing:
+`deferStream` is moot under `'async'` (everything defers), and a `Location`
+header written mid-render — the post-flush script redirect in stream mode —
+becomes a real 3xx with no body, which is exactly what a no-JS client needs.
+
+Most apps want streaming for browsers and a complete document for the few
+clients that cannot run the swap. The per-request form is a module path
+(relative to the Vite root, following the `middleware`/`setup` convention
+— a Vite config cannot serialize a closure into the generated handler)
+default-exporting `(event) => 'stream' | 'async' | Promise<'stream' |
+'async'>`. It runs inside the request scope after the middleware chain, so
+`event.locals` is decorated by the time it decides:
+
+```ts
+// vite.config.ts
+solid({ start: { renderMode: './src/render-mode.ts' }, ssr: true });
+
+// src/render-mode.ts
+import type { RequestEvent } from '@solidjs/web';
+
+const CRAWLER = /Googlebot|bingbot|DuckDuckBot|Slurp|Baiduspider|YandexBot/i;
+
+export default function renderMode(event: RequestEvent) {
+  const { request } = event;
+  if (new URL(request.url).searchParams.has('nojs')) return 'async';
+  if (CRAWLER.test(request.headers.get('user-agent') ?? '')) return 'async';
+  return 'stream';
+}
+```
+
+Hosts driving the handler directly can decide per call instead:
+`handleRequest(request, { renderMode: 'async' })`. Precedence is that
+runtime option, then the module function's result, then the static config;
+an unknown value from any of the three is an error naming its source. The
+mode applies to generated and authored entries alike — an authored
+`render()` returning a `renderToStream` result is awaited the same way (and
+in production its client-entry reference is still rewritten). One caveat for
+authored entries: `httpStatus()` / `httpHeader()` declarations made during
+the render are reverted when the runtime disposes it, which under `'async'`
+happens before the response head is committed — the generated entry commits
+the head at render completion (`renderToStream`'s `onCompleteAll`) to keep
+them, so an authored entry that needs them under `'async'` should pass the
+same hook (`onCompleteAll: () => commitResponseStub(getRequestEvent().response)`);
+a `Location` written straight onto `event.response.headers` is unaffected.
+Server mode only — in client mode the served shell has no boundaries to
+settle, so the option is a documented no-op there.
 
 **`env`** — first-party typed environment variables. A schema file at the
 project root — `env.ts` (or `env.js`), probed automatically; point
