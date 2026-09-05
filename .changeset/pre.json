@@ -80,6 +80,7 @@
     "server-components-option",
     "server-components-single-flight",
     "server-environments-reload",
+    "server-function-manifest-ids",
     "server-functions-compiler",
     "server-functions-default-runtime",
     "server-functions-server-subpath-docs",
