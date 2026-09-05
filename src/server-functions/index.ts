@@ -183,13 +183,30 @@ const HANDLER_ID = 'virtual:solid-server-function-handler';
 // (`vite build` then `vite build --ssr`) does not, so the client build
 // persists its findings for the SSR build to merge (mirroring the plugin's
 // dist/client/.vite/manifest.json convention).
+//
+// The file doubles as the build's statement of which server functions the
+// CLIENT can reach — every reference the client compile emitted, by wire id
+// — for build tooling that needs that set without re-deriving it from
+// compiled output (a static-site prerenderer checking that each reachable
+// function was captured, for example). Paths are root-relative, posix.
 const PERSISTED_MANIFEST_PATH = '.vite/solid-server-functions.json';
+
+/** The persisted manifest's on-disk shape (the array form is the pre-`functions` legacy). */
+export interface PersistedServerFunctionManifest {
+  /** Modules containing server functions, root-relative. */
+  modules: string[];
+  /** Every server function the client build emitted a reference to. */
+  functions: Array<{ id: string; name: string; module: string }>;
+}
 
 function readPersistedManifest(root: string): Set<string> {
   const file = path.resolve(root, 'dist/client', PERSISTED_MANIFEST_PATH);
   if (!existsSync(file)) return new Set();
   try {
-    const entries: string[] = JSON.parse(readFileSync(file, 'utf-8'));
+    const parsed: string[] | PersistedServerFunctionManifest = JSON.parse(
+      readFileSync(file, 'utf-8'),
+    );
+    const entries = Array.isArray(parsed) ? parsed : parsed.modules;
     return new Set(
       entries.map((entry) => path.resolve(root, entry)).filter((entry) => existsSync(entry)),
     );
@@ -198,21 +215,46 @@ function readPersistedManifest(root: string): Set<string> {
   }
 }
 
-function writePersistedManifest(root: string, outDir: string, entries: Set<string>): void {
+function writePersistedManifest(
+  root: string,
+  outDir: string,
+  entries: Set<string>,
+  functions: Map<string, FunctionRecord>,
+): void {
   const file = path.resolve(root, outDir, PERSISTED_MANIFEST_PATH);
   mkdirSync(path.dirname(file), { recursive: true });
-  const relative = [...entries].map((entry) =>
-    path.relative(root, entry).split(path.sep).join('/'),
-  );
-  writeFileSync(file, JSON.stringify(relative, null, 2));
+  const relative = (entry: string) => path.relative(root, entry).split(path.sep).join('/');
+  const manifest: PersistedServerFunctionManifest = {
+    modules: [...entries].map(relative),
+    functions: [...functions].map(([id, record]) => ({
+      id,
+      name: record.name,
+      module: relative(record.module),
+    })),
+  };
+  writeFileSync(file, JSON.stringify(manifest, null, 2));
 }
 
-type Manifest = Record<CompileOptions['mode'], Set<string>>;
+interface FunctionRecord {
+  name: string;
+  /** Absolute path of the declaring module. */
+  module: string;
+}
+
+interface Manifest {
+  /** Modules with server functions, per consumer. */
+  modules: Record<CompileOptions['mode'], Set<string>>;
+  /** Wire id -> declaring function, for every reference the CLIENT compile emitted. */
+  clientFunctions: Map<string, FunctionRecord>;
+}
 
 function createManifest(): Manifest {
   return {
-    server: new Set(),
-    client: new Set(),
+    modules: {
+      server: new Set(),
+      client: new Set(),
+    },
+    clientFunctions: new Map(),
   };
 }
 
@@ -477,13 +519,13 @@ export function serverFunctions(
   const hashIndex = new Map<string, string>();
   let hashIndexSize = -1;
   function moduleForFunctionId(functionId: string): string | undefined {
-    if (manifest.server.size !== hashIndexSize) {
+    if (manifest.modules.server.size !== hashIndexSize) {
       hashIndex.clear();
-      for (const entry of manifest.server) {
+      for (const entry of manifest.modules.server) {
         const relative = path.relative(root, entry).split(path.sep).join('/');
         hashIndex.set(xxHash32(relative).toString(16), entry);
       }
-      hashIndexSize = manifest.server.size;
+      hashIndexSize = manifest.modules.server.size;
     }
     return hashIndex.get(functionId.split('-')[1]!);
   }
@@ -628,11 +670,24 @@ export function serverFunctions(
 
     if (!result.valid) return null;
 
+    // The client compile is the authority on what the browser can dispatch:
+    // record every reference it emitted, by wire id, for the persisted
+    // manifest. A module is re-transformed on change, so its previous ids
+    // are dropped first (a renamed function must not linger as reachable).
+    if (mode === 'client') {
+      for (const [functionId, record] of manifest.clientFunctions) {
+        if (record.module === id) manifest.clientFunctions.delete(functionId);
+      }
+      for (const fn of result.functions) {
+        manifest.clientFunctions.set(fn.id, { name: fn.name, module: id });
+      }
+    }
+
     const preloader = preload[mode];
     if (preloader) preloader.defer();
     invalidateModules(
       currentServer,
-      mergeManifestRecord(manifest.server, new Set([id])),
+      mergeManifestRecord(manifest.modules.server, new Set([id])),
       manifestId,
     );
 
@@ -689,7 +744,7 @@ export function serverFunctions(
           // build discovered so the server manifest registers them even when
           // the SSR module graph never imports them.
           for (const entry of readPersistedManifest(root)) {
-            manifest.server.add(entry);
+            manifest.modules.server.add(entry);
           }
         }
       },
@@ -704,7 +759,7 @@ export function serverFunctions(
         const consumer = ctx.environment?.config?.consumer;
         const isClient = consumer ? consumer === 'client' : !isSsrBuild;
         if (isBuild && isClient) {
-          writePersistedManifest(root, outDir, manifest.server);
+          writePersistedManifest(root, outDir, manifest.modules.server, manifest.clientFunctions);
         }
       },
     },
@@ -727,11 +782,11 @@ export function serverFunctions(
             // configs resolve before the client build has written the file,
             // but this load runs once the SSR environment builds — after it.
             for (const entry of readPersistedManifest(root)) {
-              manifest.server.add(entry);
+              manifest.modules.server.add(entry);
             }
           }
           const current = new Debouncer(() =>
-            [...manifest[mode]].map((entry) => `import ${JSON.stringify(entry)};`).join('\n'),
+            [...manifest.modules[mode]].map((entry) => `import ${JSON.stringify(entry)};`).join('\n'),
           );
           preload[mode] = current;
           const result = await current.promise.reference;

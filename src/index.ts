@@ -33,7 +33,10 @@ import {
 export { devStylePatch } from './dev-manifest.js';
 export { serverFunctions };
 export type { ServerFunctionsOptions };
-export type { ServerFunctionsFilter } from './server-functions/index.js';
+export type {
+  PersistedServerFunctionManifest,
+  ServerFunctionsFilter,
+} from './server-functions/index.js';
 export type { StartOptions };
 import path from 'path';
 import type { FilterPattern, Plugin, ViteDevServer } from 'vite';
