@@ -1,6 +1,36 @@
 import { defineConfig, type Plugin } from 'vite';
 import solidPlugin from '@solidjs/vite-plugin';
 
+// Records what a downstream plugin sees in the client bundle after the solid
+// plugin's generateBundle (post order, like TanStack Start's manifest
+// capture): entry classification per chunk, written next to Vite's manifest
+// for test/run.mjs to assert against (#269/#271/#342).
+function bundleChunksProbe(): Plugin {
+  return {
+    name: 'css-matrix:bundle-chunks-probe',
+    apply: 'build',
+    enforce: 'post',
+    generateBundle(_outputOptions, bundle) {
+      if (this.environment.config.consumer !== 'client') return;
+      const chunks: Record<string, unknown> = {};
+      for (const [fileName, output] of Object.entries(bundle)) {
+        if (output.type !== 'chunk') continue;
+        chunks[fileName] = {
+          facadeModuleId: output.facadeModuleId,
+          isEntry: output.isEntry,
+          isDynamicEntry: output.isDynamicEntry,
+          dynamicImports: output.dynamicImports,
+        };
+      }
+      this.emitFile({
+        type: 'asset',
+        fileName: '.vite/bundle-chunks.json',
+        source: JSON.stringify(chunks, null, 2),
+      });
+    },
+  };
+}
+
 // Virtual CSS modules (CSS with no backing file, e.g. generated styles).
 // Handles query suffixes (?direct, ?inline, ?url) the way real plugins must:
 // Vite's css pipeline re-requests the module with queries appended.
@@ -26,7 +56,11 @@ function virtualCssPlugin(): Plugin {
 }
 
 export default defineConfig({
-  plugins: [virtualCssPlugin(), solidPlugin({ compiler: 'native', ssr: true })],
+  plugins: [
+    virtualCssPlugin(),
+    solidPlugin({ compiler: 'native', ssr: true }),
+    bundleChunksProbe(),
+  ],
   // TEMPORARY: the workspace links solid-js to a sibling worktree (see
   // pnpm-workspace.yaml), which stops Vite from externalizing it in SSR and
   // splits it into two instances (bundled app copy vs the one the external
