@@ -137,6 +137,7 @@
 // (default: all)
 
 import { spawn, execSync, execFileSync } from 'node:child_process';
+import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import path from 'node:path';
 import {
@@ -2729,6 +2730,37 @@ async function runFramesMode() {
 // - error middleware (/boom: a render throw becomes the middleware's 500).
 async function runMiddlewareChecksOverHttp(mode, origin, functionId) {
   const page = await fetchStreamed(origin + '/');
+  // ---- start.instrument (src/instrument.ts) -------------------------------
+  // What middleware.ts saw at ITS module load, i.e. after `@solidjs/web`
+  // and the handler graph began evaluating: the instrument had run first
+  // (nothing ahead of it in the register), had been awaited to completion
+  // (its timer finished: `done`), and had evaluated once for the process.
+  const instrumentRaw = page.headers.get('x-instrument');
+  let instrument = null;
+  try {
+    instrument = instrumentRaw ? JSON.parse(instrumentRaw) : null;
+  } catch {}
+  record(
+    mode,
+    'instrument',
+    'instrument module ran before the handler graph, first in the register',
+    !!instrument && instrument.order[0] === 'instrument(before:0)',
+    `x-instrument: ${instrumentRaw}`,
+  );
+  record(
+    mode,
+    'instrument',
+    'instrument module was awaited to completion before @solidjs/web loaded',
+    !!instrument && instrument.done === true,
+    `x-instrument: ${instrumentRaw}`,
+  );
+  record(
+    mode,
+    'instrument',
+    'instrument module evaluated once per server process',
+    !!instrument && instrument.evaluations === 1,
+    `x-instrument: ${instrumentRaw}`,
+  );
   record(
     mode,
     'mw',
@@ -3015,7 +3047,15 @@ async function runMiddlewareMode() {
   // SSR_SETUP rides the middleware mode: the hook's contract (ordering
   // after the chain, shared locals) is only observable with a middleware
   // in front anyway.
-  const env = { ...process.env, SSR_MIDDLEWARE: '1', SSR_SETUP: '1', SSR_DEVTOOLS: '0' };
+  // SSR_INSTRUMENT rides along too: the instrument module's evidence is a
+  // header the middleware sets, so it needs the chain in front as well.
+  const env = {
+    ...process.env,
+    SSR_MIDDLEWARE: '1',
+    SSR_SETUP: '1',
+    SSR_INSTRUMENT: '1',
+    SSR_DEVTOOLS: '0',
+  };
 
   let server;
   let serverLog = '';
@@ -3034,10 +3074,34 @@ async function runMiddlewareMode() {
     // mutation stays possible through the whole unwind.
     process.env.SSR_MIDDLEWARE = '1';
     process.env.SSR_SETUP = '1';
+    process.env.SSR_INSTRUMENT = '1';
     let probe;
     try {
       probe = await createServer({ root: exampleDir, server: { middlewareMode: true } });
-      const transformed = await probe.environments.ssr.transformRequest('virtual:solid-ssr-handler');
+      // ---- Codegen: start.instrument sequences the handler behind two awaits
+      // The entry the plugin hands out is a wrapper: `await import(instrument)`
+      // then `await import(impl)`, exports re-declared by name. Static
+      // imports would be hoisted and defeat the ordering.
+      const wrapper = (await probe.environments.ssr.transformRequest('virtual:solid-ssr-handler'))?.code || '';
+      const instrumentAt = wrapper.indexOf('instrument.ts');
+      const implAt = wrapper.indexOf('virtual:solid-ssr-handler-impl');
+      record(
+        'mw-codegen',
+        'instrument',
+        'handler entry awaits the instrument module before importing the handler',
+        instrumentAt !== -1 && implAt !== -1 && instrumentAt < implAt && /await\s+__vite_ssr_dynamic_import__|await\s+import/.test(wrapper),
+        wrapper.slice(0, 400),
+      );
+      record(
+        'mw-codegen',
+        'instrument',
+        'wrapper re-declares the handler surface by name (handleRequest, default)',
+        // The SSR transform rewrites `export const`/`export default` into
+        // defineProperty calls on the exports object; match the names.
+        /["']?handleRequest["']?/.test(wrapper) && /["']default["']|export\s+default/.test(wrapper),
+        wrapper.slice(0, 400),
+      );
+      const transformed = await probe.environments.ssr.transformRequest('virtual:solid-ssr-handler-impl');
       const code = transformed?.code || '';
       const unwind = code.indexOf('runMiddleware(request');
       // The SSR transform rewrites the imported binding to a member access
@@ -3115,6 +3179,7 @@ async function runMiddlewareMode() {
       await probe?.close();
       delete process.env.SSR_MIDDLEWARE;
       delete process.env.SSR_SETUP;
+      delete process.env.SSR_INSTRUMENT;
     }
 
     // ---- Dev: the chain fronts the dev middlewares -----------------------
@@ -3207,7 +3272,9 @@ async function runPreviewMode() {
   // SSR_SETUP rides along like in middleware mode: the shared chain checks
   // assert the per-request setup hook, and preview must serve the built
   // entry that threads it exactly like dev and prod.
-  const env = { ...process.env, SSR_MIDDLEWARE: '1', SSR_SETUP: '1' };
+  // SSR_INSTRUMENT too: `vite preview` serves the built handler, so the
+  // instrument sequencing is asserted on the third surface here.
+  const env = { ...process.env, SSR_MIDDLEWARE: '1', SSR_SETUP: '1', SSR_INSTRUMENT: '1' };
 
   let server;
   let serverLog = '';
@@ -4159,6 +4226,92 @@ async function runBabelHmrMode() {
       process.kill(-server.pid, 'SIGTERM');
     } catch {}
   }
+}
+
+// `observe: true` (SOLID_OBSERVE=1, src/App.tsx unchanged): a production
+// build on Solid's observe tier. What the built bundles must show:
+// - the client resolved the observe artifact (`web.observe` chunk) and every
+//   component call carries its source label — `createComponent(Comp, props,
+//   "Comp")` survives minification as a string, which is what lets owner
+//   paths read `<App> › <Feed>` in a minified app;
+// - the server resolved solid-js's observe build (findings and boundary
+//   records need it);
+// - the server bundle carries component labels in its SSR output and
+//   @solidjs/web's observe server build. Both landed in Solid after
+//   2.0.0-rc.8 (solidjs/solid#3441, #3433), so on older installs the two
+//   checks record the reason instead of failing; they become real
+//   assertions the moment the workspace rides an rc that carries them.
+async function runObserveMode() {
+  const mode = 'observe';
+  console.log(`\n=== ${mode.toUpperCase()} ===`);
+  const env = { ...process.env, SOLID_OBSERVE: '1' };
+  console.log('  building…');
+  execSync('pnpm run build', { cwd: exampleDir, stdio: 'pipe', env });
+
+  const clientDir = path.join(exampleDir, 'dist/client/assets');
+  const clientFiles = readdirSync(clientDir).filter((f) => f.endsWith('.js'));
+  const entryFile = clientFiles.find((f) => f.startsWith('virtual_solid-ssr-entry-client-'));
+  const entry = entryFile ? readFileSync(path.join(clientDir, entryFile), 'utf-8') : '';
+  record(
+    mode,
+    'client',
+    'client entry resolves the observe artifact of @solidjs/web',
+    clientFiles.some((f) => f.startsWith('web.observe-')) && /web\.observe-/.test(entry),
+    clientFiles.join(', '),
+  );
+  // Minifiers emit the label with either quote style; the App's component
+  // tags are the labels expected.
+  const labelsIn = (code) =>
+    [...code.matchAll(/,\s*(["'`])([A-Z][A-Za-z]*)\1\)/g)].map((m) => m[2]);
+  const clientLabels = new Set(labelsIn(entry));
+  record(
+    mode,
+    'client',
+    'client components compile with their source labels (componentNames)',
+    clientLabels.has('HmrTarget') && clientLabels.size >= 5,
+    `labels: ${[...clientLabels].join(', ') || 'none'}`,
+  );
+
+  const serverBundle = readFileSync(path.join(exampleDir, 'dist/server/server.js'), 'utf-8');
+  record(
+    mode,
+    'server',
+    'server bundle resolves the observe build of solid-js',
+    /solid-js\/dist\/server\.observe\.js|server\.observe/.test(serverBundle),
+  );
+  // The two rc.9 checks: what the installed Solid can and cannot do yet.
+  const exampleRequire = createRequire(path.join(exampleDir, 'package.json'));
+  const prereleaseOf = (pkg) => {
+    // `package.json` may not be exported; resolve the entry and walk up.
+    let dir = path.dirname(exampleRequire.resolve(pkg));
+    while (!existsSync(path.join(dir, 'package.json'))) dir = path.dirname(dir);
+    const v = JSON.parse(readFileSync(path.join(dir, 'package.json'), 'utf-8')).version;
+    const m = /-rc\.(\d+)$/.exec(v);
+    return { version: v, rc: m ? Number(m[1]) : Infinity };
+  };
+  const compiler = prereleaseOf('@solidjs/compiler');
+  const web = prereleaseOf('@solidjs/web');
+  const serverLabels = new Set(labelsIn(serverBundle));
+  const ssrLabelsExpected = compiler.rc >= 9;
+  record(
+    mode,
+    'server',
+    'SSR output compiles with component labels (compilers from solidjs/solid#3441, 2.0.0-rc.9)',
+    ssrLabelsExpected ? serverLabels.has('HmrTarget') : true,
+    ssrLabelsExpected
+      ? `labels: ${[...serverLabels].join(', ') || 'none'}`
+      : `not asserted: @solidjs/compiler ${compiler.version} predates SSR componentNames`,
+  );
+  const webObserveExpected = web.rc >= 9;
+  record(
+    mode,
+    'server',
+    "server bundle resolves @solidjs/web's observe build (server records and findings, 2.0.0-rc.9)",
+    webObserveExpected ? /@solidjs\/web\/dist\/server\.observe\.js/.test(serverBundle) : true,
+    webObserveExpected
+      ? 'expected @solidjs/web/dist/server.observe.js in the bundle'
+      : `not asserted: @solidjs/web ${web.version} has no server observe build`,
+  );
 }
 
 async function runExternalMode() {
@@ -5159,6 +5312,7 @@ const ALL_MODES = [
   'frames',
   'babel-hmr',
   'external',
+  'observe',
   'detect',
   'vitest',
   'node',
@@ -5184,6 +5338,7 @@ for (const mode of modes) {
   else if (mode === 'frames') await runFramesMode();
   else if (mode === 'babel-hmr') await runBabelHmrMode();
   else if (mode === 'external') await runExternalMode();
+  else if (mode === 'observe') await runObserveMode();
   else if (mode === 'vitest') await runVitestMode();
   else if (mode === 'node') await runNodeMode();
   else await runDetectMode();

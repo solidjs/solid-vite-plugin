@@ -451,6 +451,32 @@ whatever the hook renders must be matched client-side for hydration —
 routers that own both sides (their client entry re-creates the router and
 hydrates the same tree) fit naturally.
 
+**`instrument`** — a server-only module that runs to completion before
+anything else in the server graph loads: the app, the middleware,
+`@solidjs/web`, every dependency. The seam for instrumentation that must
+patch the runtime before the modules it patches are loaded — an APM's
+OpenTelemetry setup, a profiler, a `module.register` hook:
+
+```ts
+// vite.config.ts
+solid({ start: { instrument: './src/instrument.ts' }, ssr: true });
+
+// src/instrument.ts
+import * as Sentry from '@sentry/node';
+Sentry.init({ dsn: process.env.SENTRY_DSN, tracesSampleRate: 1 });
+```
+
+Import order alone cannot do this in ESM: static imports are hoisted and
+evaluated in dependency order, so `import './instrument'` at the top of an
+entry still runs after everything the entry imports. The plugin therefore
+hands out the handler as `await import(instrument); await import(handler)`
+— top-level await sequencing, the one construct that guarantees the order —
+on every surface (`vite dev`, `vite build`, `vite preview`, a host consuming
+the handler entry). This replaces the per-host `node --import
+instrument.mjs` dance. The module may be async and needs no exports; the
+server build must keep code splitting on (the default), since inlining
+dynamic imports would hoist the handler graph back above the instrument.
+
 **`renderMode`** — how a page render becomes a response body: `'stream'`
 (the default) or `'async'`, or a module path deciding per request.
 
