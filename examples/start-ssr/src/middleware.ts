@@ -48,10 +48,13 @@ async function api(request: Request, next: Next): Promise<Response> {
     // handleRequest(request, { event }) call.
     const event = getRequestEvent()! as unknown as {
       nativeEvent?: { socket?: { remoteAddress?: string } };
+      custom?: unknown;
     };
     return Response.json({
       hasNativeEvent: !!event.nativeEvent,
       remoteAddress: event.nativeEvent?.socket?.remoteAddress ?? null,
+      // Any extra field the entry's `event` option merged in (node mode).
+      custom: event.custom ?? null,
     });
   }
   if (request.method === 'GET' && pathname === '/api/request-info') {

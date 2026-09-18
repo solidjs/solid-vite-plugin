@@ -15,6 +15,21 @@ import solidPlugin from '@solidjs/vite-plugin';
 // SOLID_FLIP_SSR=1 flips the one boolean (test/run.mjs's flip mode): the
 // identical app SSRs and hydrates with zero source changes. All suite modes
 // run on the boolean `start: true` form, covering the sugar end to end.
+//
+// SOLID_START_NODE=1 (node mode) turns on `serverFunctions` — which keeps
+// dist/server for the endpoint — and `start.node`, so the build also emits
+// the Node server entry dist/server/node.js: static dist/client with an
+// index.html history fallback for HTML navigations, /_server through the
+// kept handler. SOLID_START_NODE_ONLY=1 sets `start.node` alone (no server
+// functions): the purely static build has no server bundle to wrap, so the
+// build warns and emits nothing.
+const startNode = !!process.env.SOLID_START_NODE || !!process.env.SOLID_START_NODE_ONLY;
 export default defineConfig({
-  plugins: [solidPlugin({ start: true, ssr: !!process.env.SOLID_FLIP_SSR })],
+  plugins: [
+    solidPlugin({
+      start: startNode ? { node: true } : true,
+      ssr: !!process.env.SOLID_FLIP_SSR,
+      ...(process.env.SOLID_START_NODE ? { serverFunctions: true } : {}),
+    }),
+  ],
 });

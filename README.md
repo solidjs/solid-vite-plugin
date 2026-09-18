@@ -192,7 +192,7 @@ The object form carries the options (`start: true` is pure sugar for
 `start: {}` — both mean the identical start mode with defaults, and
 `false`/absent means off): `app`, `document`, `entryServer`, `entryClient`,
 `middleware`, `setup`, `renderMode`, `env`, `devtools`, `errorBoundary`,
-`css`, `external`, all documented below.
+`css`, `external`, `node`, all documented below.
 
 Install `@solidjs/start-devtools` as a development dependency to add the
 development toolbar with runtime errors and server function calls:
@@ -264,12 +264,75 @@ The Fetchable wrapper deliberately accepts only the request. Hosts may pass
 environment or execution-context arguments after it; those are not the
 Solid options accepted by `handleRequest`'s second parameter.
 
-Among those options, **`event`** is the supported public seam for extending
-the request event: its fields spread into the event at creation, so a custom
-server entry (or a host wrapper) can attach whatever its platform knows and
-read it back anywhere in the request scope with `getRequestEvent()`. The
-conventional field name is `nativeEvent` — the platform's raw request
-object. A Node entry passes the `IncomingMessage`:
+- **Deploying to Node** — **`node`**: Node is the one mainstream runtime
+  without a fetch-shaped server API (Workers, Deno, Bun, Netlify, and Nitro
+  consume `{ fetch }` directly), so the build can emit the Node server for
+  you. With `start: { node: true }` the ssr build writes
+  `dist/server/node.js` beside `server.js`, and the production start
+  command is:
+
+```sh
+node dist/server/node.js   # PORT (default 3000), HOST
+```
+
+The entry serves `dist/client` statically — files under
+`build.assetsDir` as `Cache-Control: public, max-age=31536000, immutable`
+(their names are content hashes), everything else `public, max-age=0,
+must-revalidate` with `Last-Modified`; `HEAD` supported, dot-segment
+paths and `..` traversal refused — and hands every other request to
+`handleRequest` with the raw Node request as `nativeEvent`, so
+`getRequestEvent().nativeEvent` is the `IncomingMessage` (client IP:
+`event.nativeEvent.socket.remoteAddress`; behind a proxy read the
+forwarding headers off `event.request` instead, only when you trust the
+proxy). The node<->web bridge is the plugin's own — the same code the dev
+and preview middlewares run: HTTP/2 pseudo-headers, `https:` on TLS
+sockets, client disconnects as the request's `AbortSignal`, HEAD
+short-circuit, `set-cookie` split, backpressure that also settles when
+the client goes away. Errors log to `console.error` and answer 500. The
+file is ESM, depends on nothing but `node:*` and `./server.js`, and
+exports `listener` — the `(req, res)` function — plus
+`createListener(options?)` and `serve(options?)`, so it composes with an
+existing server. With Express, either let the entry serve everything or
+keep only the bridge behind Express's own static handling:
+
+```js
+import express from 'express';
+import compression from 'compression';
+import { listener, createListener } from './dist/server/node.js';
+
+const app = express();
+app.use(compression());
+app.use(listener); // static + pages + server functions
+// — or — let Express own static files (point it at dist/client):
+app.use(express.static('dist/client', { immutable: true, maxAge: '1y' }));
+app.use(createListener({ static: false }));
+app.listen(process.env.PORT || 3000);
+```
+
+`createListener({ static: false })` skips the file lookup and, in client
+mode, the `index.html` history fallback — the framework owns both.
+`createListener({ event: (req) => ({ ... }) })` merges extra fields over
+`{ nativeEvent: req }` into the request event. `serve({ port, host, static,
+event })` takes the same two options on top of the listen address.
+
+`node.js` is an emitted asset, not a second build input: `server.js` and
+its `handleRequest` / `{ fetch }` contracts are unchanged. It applies to
+both start modes — in client mode with `serverFunctions` (which keeps
+`dist/server`) the entry serves the static client with an `index.html`
+history fallback for HTML navigations plus the endpoint. Nothing is
+emitted where no server bundle exists (client mode without
+`serverFunctions`, or `start.external`); the build warns. The
+compression/proxy stance is unchanged: the entry speaks plain HTTP —
+terminate TLS and compress at the reverse proxy or CDN in front of it.
+
+Among the `handleRequest` options, **`event`** is the supported public seam
+for extending the request event: its fields spread into the event at
+creation, so a custom server entry (or a host wrapper) can attach whatever
+its platform knows and read it back anywhere in the request scope with
+`getRequestEvent()`. The conventional field name is `nativeEvent` — the
+platform's raw request object. This is what the emitted `node.js` does; a
+hand-written Node entry (the custom-server recipe) passes the
+`IncomingMessage` the same way:
 
 ```js
 import { createServer } from 'node:http';
@@ -292,12 +355,13 @@ event.nativeEvent; // the Node IncomingMessage the entry passed
 
 The plugin's own dev and preview middlewares (and the server-function dev
 middleware) pass `event: { nativeEvent: req }` with the Node request, so
-`getRequestEvent().nativeEvent` answers the same under `vite dev` and
-`vite preview` as behind a Node entry written like the above. For the
-client's IP on bare Node, read `event.nativeEvent.socket.remoteAddress`;
-behind a proxy or load balancer that address is the proxy's, so read the
-forwarding headers off `event.request` instead (`x-forwarded-for` and
-friends) — only when you trust the proxy that set them.
+`getRequestEvent().nativeEvent` answers the same under `vite dev`,
+`vite preview`, and `node dist/server/node.js` as behind a Node entry
+written like the above. For the client's IP on bare Node, read
+`event.nativeEvent.socket.remoteAddress`; behind a proxy or load balancer
+that address is the proxy's, so read the forwarding headers off
+`event.request` instead (`x-forwarded-for` and friends) — only when you
+trust the proxy that set them.
 
 - **Preview**: `vite build && vite preview` runs the production artifact
   with no server file — Vite's preview statics serve `dist/client`, and

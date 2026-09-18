@@ -65,6 +65,8 @@ import solidPlugin from '@solidjs/vite-plugin';
 //   module App.tsx also lazily imports — as a further client build input,
 //   the shape filesystem-routing's `buildInputs` produces for every route
 //   module (#353). Vite merges the plugin's injected entry into this array.
+// - START_NODE=1 (node mode) sets `start.node`: the build emits the
+//   ready-to-run Node server entry dist/server/node.js beside server.js.
 const jsxCompiler =
   process.env.SOLID_JSX_COMPILER === 'babel' ? ('babel' as const) : ('native' as const);
 const serverComponents = !!process.env.SOLID_SERVER_COMPONENTS;
@@ -178,6 +180,8 @@ export default defineConfig({
               // @solidjs/start-devtools install is auto-detected, so plain dev
               // runs double as coverage for the default-on wiring.
               ...(process.env.SSR_DEVTOOLS === '0' ? { devtools: false } : {}),
+              // START_NODE=1 (node mode): emit the Node server entry.
+              ...(process.env.START_NODE ? { node: true } : {}),
               // SSR_MIDDLEWARE=1 (middleware/preview modes): a fetch-style
               // chain fronting every dispatch path — page SSR, /_server,
               // preview — with getRequestEvent() live inside it.

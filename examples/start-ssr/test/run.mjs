@@ -123,19 +123,34 @@
 //     the filesystem-routing `buildInputs` shape) don't displace the client
 //     entry: the built handler boots the real entry chunk and links the entry
 //     graph's stylesheet even though the extra input is an `isEntry` record
-//     sorting ahead of it (#353).
+//     sorting ahead of it (#353),
+//   - `start.node` (node mode, START_NODE=1): the build emits a ready-to-run
+//     Node server entry, dist/server/node.js, beside server.js — statics
+//     (immutable assets, must-revalidate otherwise, HEAD, no traversal),
+//     everything else through handleRequest with `nativeEvent`, PORT/HOST,
+//     the `listener` export mountable — while server.js stays byte-identical
+//     and nothing is emitted without the option (see runNodeMode).
 //
 // Requires the plugin built (pnpm build at the repo root) and Google Chrome.
 // Usage: node test/run.mjs
-// [dev|prod|document|css-filter|entries|endpoint|configure|no-middleware|middleware|preview|render-mode|base|builder-order|builder-prepare|extra-input|babel-hmr|frames]
+// [dev|prod|document|css-filter|entries|endpoint|configure|no-middleware|middleware|preview|render-mode|base|builder-order|builder-prepare|extra-input|babel-hmr|frames|external|detect|vitest|node]
 // (default: all)
 
 import { spawn, execSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import path from 'node:path';
-import { mkdirSync, rmSync, existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  existsSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+} from 'node:fs';
 import http from 'node:http';
+import os from 'node:os';
 import {
   createServer,
   createServerHotChannel,
@@ -4438,6 +4453,653 @@ async function runDetectMode() {
   }
 }
 
+// `start.node` (node mode, START_NODE=1 in vite.config.ts): the build emits a
+// ready-to-run Node server, dist/server/node.js, beside server.js — the
+// generic node<->web bridge the templates used to ship as a hand-written
+// server.js, now produced by the build so fixes reach every app. Asserts:
+//   - gating: without the option no node.js is emitted, and server.js is
+//     byte-identical with and without it (the entry is an emitted asset,
+//     never a second build input); the emitted file imports ./server.js
+//     relatively, depends on nothing but node:*, and carries the emit-time
+//     constants (client dir relative to the server dir, assetsDir, base),
+//   - `node dist/server/node.js` listens on PORT and logs the URL; the page
+//     SSRs and streams with the hashed client entry injected; the lifecycle
+//     surfaces (httpStatus/httpHeader/redirects) hold,
+//   - statics: hashed /assets/* files serve with the right MIME and an
+//     immutable Cache-Control, a non-asset file (robots.txt, written into
+//     dist/client by the test) serves must-revalidate + Last-Modified, HEAD
+//     returns the headers (Content-Length) with no body, dot-segment paths
+//     (.vite/manifest.json) are not served (as under `vite preview`), and
+//     encoded/raw `..` traversal never escapes dist/client (falls through to
+//     the handler, never file contents),
+//   - the handler path: `nativeEvent` is the Node IncomingMessage (the 4th
+//     surface after dev, preview, and the hand-written entry — /api/native
+//     via the middleware chain), the /_server endpoint dispatches (unknown id
+//     404, cross-site 403, a real call sees middleware locals), a HEAD on a
+//     streamed page answers with no body, a client abort mid-stream leaves
+//     the process responsive, and the browser hydrates and round-trips every
+//     server function through the entry,
+//   - the `listener` export mounts into a plain http.createServer (a script
+//     in a temp dir imports node.js — which must NOT auto-listen when
+//     imported — and serves pages and assets through it); `serve` is
+//     exported too; `createListener({ static: false, event })` mounted
+//     behind a framework-style handler still renders and dispatches server
+//     functions, never touches dist/client, and the `event` fields show up
+//     next to nativeEvent,
+//   - a Cloudflare-shaped setup (ssr `noExternal: true` + a config-level
+//     server-first `builder.buildApp`) emits nothing without the option and
+//     behaves as before; with it, node.js is still emitted and points at the
+//     client dir (the client build lands after the ssr build there, so the
+//     entry's client dir comes from the resolved outDirs).
+async function runNodeMode() {
+  const mode = 'node';
+  console.log(`\n=== ${mode.toUpperCase()} ===`);
+  // The middleware chain provides the bridge surfaces (/api/native,
+  // /api/abort-probe, /api/echo) and the whoAmI locals probe.
+  const env = { ...process.env, SSR_MIDDLEWARE: '1' };
+  const distDir = path.join(exampleDir, 'dist');
+  const serverJs = path.join(distDir, 'server/server.js');
+  const nodeJs = path.join(distDir, 'server/node.js');
+  let server;
+  let serverLog = '';
+  let tmpDir;
+  const rawPath = (origin, reqPath, method = 'GET') =>
+    new Promise((resolve, reject) => {
+      // http.request with an options object keeps the path verbatim (a URL
+      // string would normalize the dot segments away before they are sent).
+      const { hostname, port } = new URL(origin);
+      const req = http.request({ hostname, port, path: reqPath, method }, (res) => {
+        let text = '';
+        res.setEncoding('utf8');
+        res.on('data', (chunk) => (text += chunk));
+        res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, text }));
+      });
+      req.on('error', reject);
+      req.end();
+    });
+  const waitForLog = async (getLog, pattern, timeoutMs = 30000) => {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      const match = getLog().match(pattern);
+      if (match) return match;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    return null;
+  };
+  try {
+    // ---- Gating: no option, no entry; the server bundle is untouched -----
+    rmSync(distDir, { recursive: true, force: true });
+    console.log('  building (without start.node)…');
+    execSync('pnpm run build', { cwd: exampleDir, stdio: 'pipe', env });
+    record(mode, 'gate', 'no start.node: no dist/server/node.js', !existsSync(nodeJs));
+    const serverWithout = readFileSync(serverJs, 'utf-8');
+
+    rmSync(distDir, { recursive: true, force: true });
+    console.log('  building (with start.node)…');
+    execSync('pnpm run build', {
+      cwd: exampleDir,
+      stdio: 'pipe',
+      env: { ...env, START_NODE: '1' },
+    });
+    record(mode, 'build', 'dist/server/node.js emitted beside server.js', existsSync(nodeJs));
+    // The one thing that legitimately differs between two builds is the
+    // per-build random deployment secret the server-function handler bakes
+    // in (`globalThis.__SOLID_SECRET__ ??= "<hex>"`); everything else must
+    // be byte-identical — the entry is an emitted asset, not a build input.
+    const withoutSecret = (source) =>
+      source.replace(/__SOLID_SECRET__ \?\?= "[0-9a-f]+"/, '__SOLID_SECRET__ ??= "<per-build>"');
+    const serverWith = readFileSync(serverJs, 'utf-8');
+    record(
+      mode,
+      'build',
+      'server.js byte-identical with and without start.node (modulo the per-build secret)',
+      withoutSecret(serverWithout) === withoutSecret(serverWith) &&
+        serverWithout.length === serverWith.length,
+      `${serverWithout.length} vs ${serverWith.length} bytes`,
+    );
+    const nodeSource = existsSync(nodeJs) ? readFileSync(nodeJs, 'utf-8') : '';
+    record(
+      mode,
+      'build',
+      'entry imports the sibling server bundle relatively',
+      nodeSource.includes("from './server.js'"),
+    );
+    const specifiers = [...nodeSource.matchAll(/^import\b[^'"]*['"]([^'"]+)['"]/gm)].map(
+      (m) => m[1],
+    );
+    record(
+      mode,
+      'build',
+      'entry depends on nothing but node:* and ./server.js',
+      specifiers.length > 0 &&
+        specifiers.every((s) => s.startsWith('node:') || s === './server.js'),
+      specifiers.join(', '),
+    );
+    const configMatch = nodeSource.match(/^const SOLID_NODE_CONFIG = (\{.*\});$/m);
+    let entryConfig = null;
+    try {
+      entryConfig = configMatch && JSON.parse(configMatch[1]);
+    } catch {}
+    record(
+      mode,
+      'build',
+      'entry carries the emit-time constants (client dir relative to server dir, assetsDir, base)',
+      !!entryConfig &&
+        entryConfig.clientDir === '../client' &&
+        entryConfig.assetsDir === 'assets' &&
+        entryConfig.base === '/' &&
+        entryConfig.spa === false,
+      JSON.stringify(entryConfig),
+    );
+    record(
+      mode,
+      'build',
+      'entry exports listener, createListener and serve',
+      /export \{[^}]*\blistener\b[^}]*\}/.test(nodeSource) &&
+        /export \{[^}]*\bcreateListener\b[^}]*\}/.test(nodeSource) &&
+        /export \{[^}]*\bserve\b[^}]*\}/.test(nodeSource),
+    );
+    record(
+      mode,
+      'build',
+      'entry ships without the bridge source comments (only the generated header)',
+      !nodeSource.includes('/*') &&
+        nodeSource.split('\n').filter((line) => line.trimStart().startsWith('//')).length === 2,
+      `${nodeSource.length} bytes`,
+    );
+    const serverBundle = readFileSync(serverJs, 'utf-8');
+    const registeredId = serverBundle.match(/registerServerReference\w*\("([^"]+)"/)?.[1] ?? null;
+    const whoAmIId =
+      serverBundle.match(/registerServerReference\w*\("(whoAmI-[^"]*)"/)?.[1] ?? null;
+    // A non-asset static file for the must-revalidate branch (the example
+    // has no public dir; Vite would copy one into dist/server as well).
+    writeFileSync(path.join(distDir, 'client/robots.txt'), 'User-agent: *\nAllow: /\n');
+    const manifest = JSON.parse(
+      readFileSync(path.join(distDir, 'client/.vite/manifest.json'), 'utf-8'),
+    );
+    const entryRecord =
+      manifest[manifest._entry] ?? Object.values(manifest).find((r) => r?.isEntry);
+    const entryAsset = entryRecord?.file ?? null;
+    const cssAsset = Object.values(manifest).find((r) => r?.css?.length)?.css?.[0] ?? null;
+
+    // ---- Run: node dist/server/node.js ------------------------------------
+    // PORT=0 asks the OS for a free port; the entry logs the bound URL.
+    server = startProcess('node', ['dist/server/node.js'], {
+      cwd: exampleDir,
+      env: { ...env, PORT: '0', NODE_ENV: 'production' },
+    });
+    server.stdout.on('data', (d) => (serverLog += d));
+    server.stderr.on('data', (d) => (serverLog += d));
+    const listening = await waitForLog(() => serverLog, /Listening on (http:\/\/localhost:\d+)/);
+    record(mode, 'run', 'listens on PORT and logs the URL', !!listening, serverLog.slice(-300));
+    if (!listening) throw new Error('node entry did not start');
+    const origin = listening[1];
+    await waitForHttp(origin + '/', 30000, { headers: { accept: 'text/html' } });
+
+    const html = await runSsrChecks(mode, origin);
+    record(
+      mode,
+      'prod',
+      'hashed client entry script injected',
+      /<script type="module" src="\/assets\/[^"]+\.js" async><\/script>/.test(html),
+    );
+    record(mode, 'prod', 'no dev injections leaked', !html.includes('/@vite/client'));
+    await runHttpChecks(mode, origin);
+
+    // ---- Statics ------------------------------------------------------------
+    const asset = await fetch(`${origin}/${entryAsset}`);
+    const assetBody = await asset.text();
+    record(
+      mode,
+      'static',
+      'hashed asset serves 200 with a JavaScript MIME type',
+      asset.status === 200 &&
+        (asset.headers.get('content-type') || '').startsWith('text/javascript'),
+      `status ${asset.status}, type ${asset.headers.get('content-type')}`,
+    );
+    record(
+      mode,
+      'static',
+      'hashed asset is immutable',
+      asset.headers.get('cache-control') === 'public, max-age=31536000, immutable',
+      `cache-control: ${asset.headers.get('cache-control')}`,
+    );
+    record(
+      mode,
+      'static',
+      'hashed asset body is the file',
+      !!entryAsset && assetBody === readFileSync(path.join(distDir, 'client', entryAsset), 'utf-8'),
+    );
+    const css = await fetch(`${origin}/${cssAsset}`);
+    record(
+      mode,
+      'static',
+      'stylesheet serves text/css',
+      css.status === 200 && (css.headers.get('content-type') || '').startsWith('text/css'),
+      `status ${css.status}, type ${css.headers.get('content-type')}`,
+    );
+    const robots = await fetch(`${origin}/robots.txt`);
+    record(
+      mode,
+      'static',
+      'non-asset static file serves must-revalidate with Last-Modified',
+      robots.status === 200 &&
+        (robots.headers.get('content-type') || '').startsWith('text/plain') &&
+        robots.headers.get('cache-control') === 'public, max-age=0, must-revalidate' &&
+        !!robots.headers.get('last-modified') &&
+        (await robots.text()).startsWith('User-agent'),
+      `status ${robots.status}, cache-control ${robots.headers.get('cache-control')}`,
+    );
+    const headAsset = await rawPath(origin, `/${entryAsset}`, 'HEAD');
+    record(
+      mode,
+      'static',
+      'HEAD on an asset returns the headers and no body',
+      headAsset.status === 200 &&
+        headAsset.text === '' &&
+        headAsset.headers['cache-control'] === 'public, max-age=31536000, immutable' &&
+        Number(headAsset.headers['content-length']) === Buffer.byteLength(assetBody),
+      `status ${headAsset.status}, content-length ${headAsset.headers['content-length']}`,
+    );
+    const headRobots = await rawPath(origin, '/robots.txt', 'HEAD');
+    record(
+      mode,
+      'static',
+      'HEAD on a non-asset file returns the headers and no body',
+      headRobots.status === 200 &&
+        headRobots.text === '' &&
+        headRobots.headers['cache-control'] === 'public, max-age=0, must-revalidate' &&
+        !!headRobots.headers['last-modified'],
+      `status ${headRobots.status}`,
+    );
+    // Traversal: none of these may ever answer with the project's
+    // package.json (the static handler refuses; the request falls through to
+    // the handler, which renders a page at it).
+    const traversals = [
+      '/../package.json',
+      '/../../package.json',
+      '/%2e%2e/package.json',
+      '/%2e%2e/%2e%2e/package.json',
+      '/assets/../../package.json',
+      '/assets/..%2f..%2fpackage.json',
+      '/..%2Fpackage.json',
+    ];
+    const escaped = [];
+    for (const reqPath of traversals) {
+      const res = await rawPath(origin, reqPath);
+      if (res.text.includes('"name": "example-start-ssr"') || res.text.includes('"private"')) {
+        escaped.push(`${reqPath} (${res.status})`);
+      }
+    }
+    record(
+      mode,
+      'static',
+      'encoded and raw `..` traversal never escapes the client dir',
+      escaped.length === 0,
+      escaped.join(', '),
+    );
+    const dotfile = await fetch(`${origin}/.vite/manifest.json`);
+    const dotfileBody = await dotfile.text();
+    record(
+      mode,
+      'static',
+      'dot-segment paths are not served (.vite/manifest.json falls through)',
+      !dotfileBody.trimStart().startsWith('{') && !dotfileBody.includes('"isEntry"'),
+      `status ${dotfile.status}, body ${JSON.stringify(dotfileBody.slice(0, 40))}`,
+    );
+
+    // ---- Handler path -------------------------------------------------------
+    // The 4th nativeEvent surface (after dev, preview, and a hand-written
+    // Node entry): the emitted entry passes the IncomingMessage.
+    const native = await fetch(origin + '/api/native', { headers: { accept: 'application/json' } });
+    const nativeBody = native.ok ? await native.json() : null;
+    record(
+      mode,
+      'event',
+      'request event exposes nativeEvent (Node req, readable remote address)',
+      native.status === 200 &&
+        nativeBody?.hasNativeEvent === true &&
+        typeof nativeBody?.remoteAddress === 'string' &&
+        nativeBody.remoteAddress.length > 0 &&
+        // The default listener adds nothing beyond nativeEvent.
+        nativeBody.custom === null,
+      `status ${native.status}, body ${JSON.stringify(nativeBody)}`,
+    );
+    const echo = await fetch(origin + '/api/echo', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ via: 'node-entry' }),
+    });
+    const echoBody = echo.ok ? await echo.json() : null;
+    record(
+      mode,
+      'event',
+      'POST body round-trips through the bridge',
+      echo.status === 200 && echoBody?.echoed?.via === 'node-entry',
+      `status ${echo.status}, body ${JSON.stringify(echoBody)}`,
+    );
+    const bogus = await fetch(origin + '/_server/bogus-0', { method: 'POST' });
+    record(
+      mode,
+      'sf',
+      'endpoint dispatches through the entry (unknown id 404)',
+      bogus.status === 404,
+    );
+    await runCsrfChecks(mode, origin, registeredId);
+    if (whoAmIId) {
+      const fn = await fetch(
+        `${origin}/_server/${encodeURIComponent(whoAmIId)}?args=${encodeURIComponent('[]')}`,
+        { method: 'POST' },
+      );
+      const fnBody = await fn.text();
+      record(
+        mode,
+        'sf',
+        'server function call through the entry (sees middleware locals)',
+        fn.status === 200 && fnBody === 'mw-user',
+        `status ${fn.status}, body ${JSON.stringify(fnBody.slice(0, 60))}`,
+      );
+    } else {
+      record(
+        mode,
+        'sf',
+        'server function call through the entry',
+        false,
+        'whoAmI id not found in server bundle',
+      );
+    }
+    // HEAD on a streamed page: the bridge ends the response with the head
+    // only and cancels the body.
+    const headPage = await rawPath(origin, '/', 'HEAD');
+    record(
+      mode,
+      'bridge',
+      'HEAD on a streamed page answers with no body',
+      headPage.status === 200 &&
+        headPage.text === '' &&
+        (headPage.headers['content-type'] || '').includes('text/html'),
+      `status ${headPage.status}, body ${JSON.stringify(headPage.text.slice(0, 40))}`,
+    );
+    // Client abort mid-stream (the never-ending /api/abort-probe): the
+    // process must stay responsive afterwards — the bridge's drain wait
+    // settles on 'close' and the reader is cancelled.
+    await new Promise((resolve, reject) => {
+      const { hostname, port } = new URL(origin);
+      const req = http.request({ hostname, port, path: '/api/abort-probe' }, (res) => {
+        res.once('data', () => {
+          req.destroy();
+          resolve();
+        });
+      });
+      req.on('error', reject);
+      req.end();
+    });
+    const afterAbort = await Promise.race([
+      fetch(origin + '/', { headers: { accept: 'text/html' } }).then((res) => res.status),
+      new Promise((resolve) => setTimeout(() => resolve('timeout'), 5000)),
+    ]);
+    record(
+      mode,
+      'bridge',
+      'client abort mid-stream leaves the server responsive',
+      afterAbort === 200,
+      `next request: ${afterAbort}`,
+    );
+
+    // Browser: hydration + every server function round-trip rides the entry.
+    await runBrowserChecks(mode, origin, { devtools: false });
+
+    const exited = new Promise((resolve) => {
+      server.once('exit', () => resolve(true));
+      setTimeout(() => resolve(false), 5000);
+    });
+    try {
+      process.kill(-server.pid, 'SIGTERM');
+    } catch {}
+    record(mode, 'run', 'process exits on SIGTERM', await exited);
+    server = undefined;
+
+    // ---- listener export: mount into a plain http server -------------------
+    tmpDir = mkdtempSync(path.join(os.tmpdir(), 'solid-node-entry-'));
+    const mountScript = path.join(tmpDir, 'mount.mjs');
+    writeFileSync(
+      mountScript,
+      [
+        `import http from 'node:http';`,
+        `import * as entry from ${JSON.stringify(pathToFileURL(nodeJs).href)};`,
+        `console.log('EXPORTS=' + Object.keys(entry).sort().join(','));`,
+        `const server = http.createServer(entry.listener);`,
+        `server.listen(0, () => console.log('MOUNTED=' + server.address().port));`,
+        ``,
+      ].join('\n'),
+    );
+    let mountLog = '';
+    server = startProcess('node', [mountScript], { cwd: tmpDir, env });
+    server.stdout.on('data', (d) => (mountLog += d));
+    server.stderr.on('data', (d) => (mountLog += d));
+    const mounted = await waitForLog(() => mountLog, /MOUNTED=(\d+)/);
+    record(
+      mode,
+      'mount',
+      'listener mounts into http.createServer',
+      !!mounted,
+      mountLog.slice(-300),
+    );
+    if (mounted) {
+      const mountOrigin = `http://localhost:${mounted[1]}`;
+      record(
+        mode,
+        'mount',
+        'importing node.js does not auto-listen (only the program does)',
+        !mountLog.includes('Listening on'),
+        mountLog.slice(-200),
+      );
+      record(
+        mode,
+        'mount',
+        'exports: createListener, listener and serve',
+        /EXPORTS=createListener,listener,serve/.test(mountLog),
+        mountLog.match(/EXPORTS=.*/)?.[0],
+      );
+      const mountedPage = await fetchStreamed(mountOrigin + '/');
+      record(
+        mode,
+        'mount',
+        'mounted listener SSRs the page',
+        mountedPage.status === 200 && mountedPage.html.includes('SSR Start Mode'),
+        `status ${mountedPage.status}`,
+      );
+      const mountedAsset = await fetch(`${mountOrigin}/${entryAsset}`);
+      record(
+        mode,
+        'mount',
+        'mounted listener serves the client assets (relative to node.js, not cwd)',
+        mountedAsset.status === 200 &&
+          mountedAsset.headers.get('cache-control') === 'public, max-age=31536000, immutable',
+        `status ${mountedAsset.status}`,
+      );
+    }
+    try {
+      process.kill(-server.pid, 'SIGTERM');
+    } catch {}
+    server = undefined;
+
+    // ---- createListener: a framework owns static files -----------------------
+    // `static: false` leaves every request — assets included — to the handler,
+    // for setups where express.static or a CDN sits in front; `event` merges
+    // extra fields over { nativeEvent } into the request event. The script
+    // plays the framework: it 404s /assets/* itself and hands the rest to
+    // the entry.
+    const factoryScript = path.join(tmpDir, 'factory.mjs');
+    writeFileSync(
+      factoryScript,
+      [
+        `import http from 'node:http';`,
+        `import { createListener } from ${JSON.stringify(pathToFileURL(nodeJs).href)};`,
+        `const behind = createListener({ static: false, event: (req) => ({ custom: 'from-' + req.method }) });`,
+        `const server = http.createServer((req, res) => {`,
+        `  if (req.url.startsWith('/assets/')) {`,
+        `    res.statusCode = 404;`,
+        `    res.setHeader('x-static-owner', 'framework');`,
+        `    return res.end('framework 404');`,
+        `  }`,
+        `  return behind(req, res);`,
+        `});`,
+        `server.listen(0, () => console.log('MOUNTED=' + server.address().port));`,
+        ``,
+      ].join('\n'),
+    );
+    let factoryLog = '';
+    server = startProcess('node', [factoryScript], { cwd: tmpDir, env });
+    server.stdout.on('data', (d) => (factoryLog += d));
+    server.stderr.on('data', (d) => (factoryLog += d));
+    const factoryMounted = await waitForLog(() => factoryLog, /MOUNTED=(\d+)/);
+    record(
+      mode,
+      'factory',
+      'createListener({ static: false, event }) mounts behind a framework handler',
+      !!factoryMounted,
+      factoryLog.slice(-300),
+    );
+    if (factoryMounted) {
+      const factoryOrigin = `http://localhost:${factoryMounted[1]}`;
+      const factoryPage = await fetchStreamed(factoryOrigin + '/');
+      record(
+        mode,
+        'factory',
+        'static: false still SSRs the page',
+        factoryPage.status === 200 && factoryPage.html.includes('SSR Start Mode'),
+        `status ${factoryPage.status}`,
+      );
+      if (whoAmIId) {
+        const factoryFn = await fetch(
+          `${factoryOrigin}/_server/${encodeURIComponent(whoAmIId)}?args=${encodeURIComponent('[]')}`,
+          { method: 'POST' },
+        );
+        record(
+          mode,
+          'factory',
+          'static: false still dispatches server functions',
+          factoryFn.status === 200 && (await factoryFn.text()) === 'mw-user',
+          `status ${factoryFn.status}`,
+        );
+      }
+      // The framework answered, so the entry never looked at dist/client.
+      const frameworkAsset = await fetch(`${factoryOrigin}/${entryAsset}`);
+      record(
+        mode,
+        'factory',
+        'static: false leaves /assets/* to the framework (entry does not serve files)',
+        frameworkAsset.status === 404 &&
+          frameworkAsset.headers.get('x-static-owner') === 'framework' &&
+          (await frameworkAsset.text()) === 'framework 404',
+        `status ${frameworkAsset.status}, cache-control ${frameworkAsset.headers.get('cache-control')}`,
+      );
+      // A file the framework does not intercept: with static off, the entry
+      // does not serve it either — the request reaches handleRequest.
+      const factoryRobots = await fetch(`${factoryOrigin}/robots.txt`);
+      const factoryRobotsBody = await factoryRobots.text();
+      record(
+        mode,
+        'factory',
+        'static: false skips the file lookup entirely (robots.txt goes to the handler)',
+        factoryRobots.headers.get('last-modified') === null &&
+          !factoryRobotsBody.startsWith('User-agent'),
+        `status ${factoryRobots.status}, content-type ${factoryRobots.headers.get('content-type')}`,
+      );
+      const factoryNative = await fetch(factoryOrigin + '/api/native', {
+        headers: { accept: 'application/json' },
+      });
+      const factoryNativeBody = factoryNative.ok ? await factoryNative.json() : null;
+      record(
+        mode,
+        'factory',
+        'event option merges fields over nativeEvent (both visible via getRequestEvent)',
+        factoryNative.status === 200 &&
+          factoryNativeBody?.hasNativeEvent === true &&
+          factoryNativeBody?.custom === 'from-GET',
+        `status ${factoryNative.status}, body ${JSON.stringify(factoryNativeBody)}`,
+      );
+    }
+    try {
+      process.kill(-server.pid, 'SIGTERM');
+    } catch {}
+    server = undefined;
+
+    // ---- Cloudflare-shaped setup ---------------------------------------------
+    // ssr `noExternal: true` plus a config-level orchestrator that builds the
+    // ssr environment before the client (the @cloudflare/vite-plugin shape).
+    const { default: solid } = await import('@solidjs/vite-plugin');
+    const { createBuilder } = await import('vite');
+    const cloudflareShaped = async (startOptions) => {
+      rmSync(distDir, { recursive: true, force: true });
+      const builder = await createBuilder({
+        root: exampleDir,
+        configFile: false,
+        logLevel: 'silent',
+        // The example's vite.config.ts is bypassed; App.tsx reads this.
+        define: { __JSX_COMPILER__: JSON.stringify('native') },
+        environments: { ssr: { resolve: { noExternal: true } } },
+        builder: {
+          async buildApp(b) {
+            await b.build(b.environments.ssr);
+            await b.build(b.environments.client);
+          },
+        },
+        plugins: [solid({ start: startOptions, ssr: true, serverFunctions: true })],
+      });
+      await builder.buildApp();
+    };
+    console.log('  building (cloudflare-shaped, without start.node)…');
+    await cloudflareShaped({});
+    record(
+      mode,
+      'cf',
+      'cloudflare-shaped build without start.node emits no node.js',
+      !existsSync(nodeJs),
+    );
+    const cfHandler = await import(pathToFileURL(serverJs).href + `?cf=${Date.now()}`);
+    const cfResponse = await cfHandler.handleRequest(new Request('http://localhost/'));
+    record(
+      mode,
+      'cf',
+      'cloudflare-shaped build behaves as before (server-first order, manifest baked)',
+      cfResponse.status === 200 && (await cfResponse.text()).includes('SSR Start Mode'),
+      `status ${cfResponse.status}`,
+    );
+    console.log('  building (cloudflare-shaped, with start.node)…');
+    await cloudflareShaped({ node: true });
+    const cfNodeSource = existsSync(nodeJs) ? readFileSync(nodeJs, 'utf-8') : '';
+    record(
+      mode,
+      'cf',
+      'cloudflare-shaped build with start.node emits node.js pointing at the client dir',
+      cfNodeSource.includes('"clientDir":"../client"') &&
+        cfNodeSource.includes("from './server.js'"),
+      cfNodeSource.match(/^const SOLID_NODE_CONFIG = .*$/m)?.[0] ?? 'no node.js',
+    );
+  } catch (e) {
+    record(
+      mode,
+      'run',
+      'mode completed',
+      false,
+      String(e) + (serverLog ? `\nserver: ${serverLog.slice(-2000)}` : ''),
+    );
+  } finally {
+    if (server) {
+      try {
+        process.kill(-server.pid, 'SIGTERM');
+      } catch {}
+    }
+    if (tmpDir) rmSync(tmpDir, { recursive: true, force: true });
+    // Leave dist in the standard state for anyone poking at it.
+    try {
+      execSync('pnpm run build', { cwd: exampleDir, stdio: 'pipe' });
+    } catch {}
+  }
+}
+
 // Vitest posture: even though this app is `ssr: true`, tests compile and
 // resolve with the client posture — dom codegen, non-hydratable, browser
 // conditions, jsdom default — with no `test` block and no
@@ -4566,6 +5228,7 @@ const ALL_MODES = [
   'observe',
   'detect',
   'vitest',
+  'node',
 ];
 const arg = process.argv[2];
 const modes = ALL_MODES.includes(arg) ? [arg] : ALL_MODES;
@@ -4590,6 +5253,7 @@ for (const mode of modes) {
   else if (mode === 'external') await runExternalMode();
   else if (mode === 'observe') await runObserveMode();
   else if (mode === 'vitest') await runVitestMode();
+  else if (mode === 'node') await runNodeMode();
   else await runDetectMode();
 }
 
