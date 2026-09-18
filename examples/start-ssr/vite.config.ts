@@ -27,6 +27,13 @@ import solidPlugin from '@solidjs/vite-plugin';
 // - SSR_SETUP=1 wires src/setup.tsx through `start.setup` (middleware mode):
 //   the per-request app-setup hook, awaited between the middleware chain and
 //   renderToStream with the shared request event in hand.
+// - SSR_INSTRUMENT=1 wires src/instrument.ts through `start.instrument`
+//   (middleware mode): the module awaited to completion before the handler
+//   graph loads — the APM/OpenTelemetry seam; middleware.ts reports what it
+//   saw at its own load in an `x-instrument` header.
+// - SOLID_OBSERVE=1 (observe mode) turns on `observe`: the `observe` export
+//   condition everywhere and the compiler's `componentNames` for both
+//   postures, so the built server AND client bundles carry component labels.
 // - SSR_RENDER_MODE sets `start.renderMode` (render-mode mode): `module`
 //   wires src/render-mode.ts (the per-request policy: header / crawler UA /
 //   `?nojs`); any other value passes through verbatim — `async` for the
@@ -135,6 +142,11 @@ export default defineConfig({
     solidPlugin({
       compiler: jsxCompiler,
       ssr: true,
+      // SOLID_OBSERVE=1 (observe mode): the production-speed runtime that
+      // keeps `OBSERVE` alive, with component labels compiled into BOTH
+      // postures — the server bundle's boundary records and findings locate
+      // by component the same way the client's do.
+      ...(process.env.SOLID_OBSERVE ? { observe: true } : {}),
       start: serverComponents
         ? { app: 'src/frames/FramesApp.tsx' }
         : process.env.SSR_DOCUMENT
@@ -181,6 +193,7 @@ export default defineConfig({
               // renderToStream, receiving the event and returning the
               // component to render (the TanStack-style async router seam).
               ...(process.env.SSR_SETUP ? { setup: './src/setup.tsx' } : {}),
+              ...(process.env.SSR_INSTRUMENT ? { instrument: './src/instrument.ts' } : {}),
               // SSR_RENDER_MODE (render-mode mode): `module` → the
               // per-request policy module; anything else verbatim
               // (`async`, or an invalid value for the validation checks).
