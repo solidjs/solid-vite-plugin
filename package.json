@@ -1,6 +1,6 @@
 {
   "name": "@solidjs/vite-plugin",
-  "version": "3.0.0-next.43",
+  "version": "3.0.0-next.44",
   "description": "solid-js integration plugin for Vite",
   "type": "module",
   "engines": {
