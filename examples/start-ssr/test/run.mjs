@@ -4389,6 +4389,29 @@ async function runVitestMode() {
     browserEnvPass,
     browserEnvPass ? undefined : envError || `browser: ${browserEnv}, default: ${defaultEnv}`,
   );
+
+  // A root config that defines `test.projects` runs no tests itself — each
+  // project controls its own environment — so it must NOT get the jsdom
+  // default either: vitest probes for the root environment's package at
+  // startup and prompts for jsdom even when every project runs under node
+  // or in the browser (solidjs/solid-vite-plugin#205, forward-port of #323).
+  let projectsEnv;
+  let projectsEnvError = '';
+  try {
+    projectsEnv = await resolveTestEnvironment({
+      projects: [{ extends: true, test: { name: 'node', environment: 'node' } }],
+    });
+  } catch (e) {
+    projectsEnvError = String(e);
+  }
+  const projectsEnvPass = !projectsEnvError && projectsEnv === undefined;
+  record(
+    mode,
+    'projects-env',
+    'root config with test.projects gets no injected jsdom environment',
+    projectsEnvPass,
+    projectsEnvPass ? undefined : projectsEnvError || `environment: ${projectsEnv}`,
+  );
 }
 
 const ALL_MODES = [

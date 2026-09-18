@@ -1130,7 +1130,21 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
         // them to jsdom — vitest probes for the environment's package at
         // startup and fails the run if jsdom isn't installed. They fall
         // back to vitest's own node default (no package probe).
-        if (!userTest.environment && !userTest.browser?.enabled) {
+        // A root config that defines `test.projects` (or the pre-vitest-4
+        // `test.workspace`) doesn't run tests itself: each project controls
+        // its own environment, so the root gets no jsdom default either —
+        // otherwise vitest probes for jsdom at the root on startup even when
+        // every project runs under node or in the browser. Note that an
+        // inline project with `extends: true` inherits the root file's
+        // `test.projects` and opts out too: projects declare their
+        // environment explicitly, as in vitest's own projects guide.
+        // https://github.com/solidjs/solid-vite-plugin/issues/205
+        if (
+          !userTest.environment &&
+          !userTest.browser?.enabled &&
+          !userTest.workspace &&
+          !userTest.projects
+        ) {
           test.environment = 'jsdom';
         }
 
