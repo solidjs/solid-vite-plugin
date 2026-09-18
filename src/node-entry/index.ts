@@ -2,8 +2,8 @@
 // `start.node`): serves the client build statically and hands every other
 // request to the built handler in ./server.js. Runtime config is
 // environment-only — PORT (default 3000) and HOST. Listens when run
-// directly; `listener` and `serve` are exported for mounting into an
-// existing http server or framework.
+// directly; `listener`, `createListener` and `serve` are exported for
+// mounting into an existing http server or framework.
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { createReadStream } from 'node:fs';
 import { stat } from 'node:fs/promises';
@@ -112,46 +112,68 @@ function staticFile(pathname: string): string | null {
   return file.startsWith(clientRoot + path.sep) ? file : null;
 }
 
-/** The `(req, res)` handler: mount it with `http.createServer(listener)`. */
-export async function listener(req: IncomingMessage, res: ServerResponse): Promise<void> {
-  try {
-    if (isReadRequest(req)) {
-      const pathname = new URL(req.url || '/', 'http://localhost').pathname;
-      const file = staticFile(pathname);
-      if (file && (await sendFile(req, res, file))) return;
-      // Client start mode: history fallback for HTML navigations.
-      if (
-        spa &&
-        (req.headers.accept || '').includes('text/html') &&
-        (await sendFile(req, res, path.join(clientRoot, 'index.html')))
-      ) {
-        return;
+export interface ListenerOptions {
+  /**
+   * Serve the client build (dist/client) before the handler. `false` skips
+   * the file lookup and the client-mode index.html fallback — for when a
+   * framework (`express.static`) or a CDN owns static files. Default true.
+   */
+  static?: boolean;
+  /** Extra request-event fields, merged over `{ nativeEvent: req }`. */
+  event?: (req: IncomingMessage) => Record<string, unknown>;
+}
+
+export type Listener = (req: IncomingMessage, res: ServerResponse) => Promise<void>;
+
+/** Builds a `(req, res)` handler; `listener` is `createListener()`. */
+export function createListener({
+  static: serveStatic = true,
+  event,
+}: ListenerOptions = {}): Listener {
+  return async function listener(req, res) {
+    try {
+      if (serveStatic && isReadRequest(req)) {
+        const pathname = new URL(req.url || '/', 'http://localhost').pathname;
+        const file = staticFile(pathname);
+        if (file && (await sendFile(req, res, file))) return;
+        // Client start mode: history fallback for HTML navigations.
+        if (
+          spa &&
+          (req.headers.accept || '').includes('text/html') &&
+          (await sendFile(req, res, path.join(clientRoot, 'index.html')))
+        ) {
+          return;
+        }
+      }
+      // Pages, the server-function endpoint, middleware — everything else.
+      // `nativeEvent` is the raw Node request, readable via getRequestEvent().
+      const response = await handleRequest(webRequestFromNode(req, undefined, res), {
+        event: { nativeEvent: req, ...event?.(req) },
+      });
+      await sendWebResponse(res, response);
+    } catch (error) {
+      console.error(error);
+      if (res.headersSent) {
+        res.destroy();
+      } else {
+        res.statusCode = 500;
+        res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+        res.end('Internal Server Error');
       }
     }
-    // Pages, the server-function endpoint, middleware — everything else.
-    // `nativeEvent` is the raw Node request, readable via getRequestEvent().
-    const response = await handleRequest(webRequestFromNode(req, undefined, res), {
-      event: { nativeEvent: req },
-    });
-    await sendWebResponse(res, response);
-  } catch (error) {
-    console.error(error);
-    if (res.headersSent) {
-      res.destroy();
-    } else {
-      res.statusCode = 500;
-      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-      res.end('Internal Server Error');
-    }
-  }
+  };
 }
+
+/** The default handler: mount it with `http.createServer(listener)`. */
+export const listener: Listener = createListener();
 
 /** Creates and starts the server; defaults come from PORT and HOST. */
 export function serve({
   port = Number(process.env.PORT || 3000),
   host = process.env.HOST,
-}: { port?: number; host?: string } = {}) {
-  const server = createServer(listener);
+  ...options
+}: { port?: number; host?: string } & ListenerOptions = {}) {
+  const server = createServer(createListener(options));
   server.listen(port, host, () => {
     const address = server.address();
     const bound = typeof address === 'object' && address ? address.port : port;

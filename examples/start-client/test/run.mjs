@@ -24,14 +24,17 @@
 //   - node: `start.node` with `serverFunctions` (SOLID_START_NODE=1) emits
 //     dist/server/node.js, which serves the static build with an index.html
 //     history fallback and dispatches /_server through the kept handler;
-//     without `serverFunctions` the option warns and emits nothing.
+//     `createListener({ static: false })` disables both the file lookup
+//     and that fallback (a framework owns them); without `serverFunctions`
+//     the option warns and emits nothing.
 //
 // Usage: node test/run.mjs [dev|prod|flip|node] (default: all)
 
 import { spawn } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import path from 'node:path';
-import { existsSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import os from 'node:os';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 
 const exampleDir = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const CHROME =
@@ -653,6 +656,89 @@ async function nodeMode() {
       try {
         process.kill(-chrome.pid, 'SIGTERM');
       } catch {}
+    }
+
+    // createListener({ static: false }): the framework owns files AND the
+    // history fallback, so a deep HTML GET reaches the handler instead of
+    // getting index.html from the entry.
+    const tmpDir = mkdtempSync(path.join(os.tmpdir(), 'solid-node-entry-client-'));
+    const factoryScript = path.join(tmpDir, 'factory.mjs');
+    writeFileSync(
+      factoryScript,
+      [
+        `import http from 'node:http';`,
+        `import { createListener } from ${JSON.stringify(pathToFileURL(nodeJs).href)};`,
+        `const server = http.createServer(createListener({ static: false }));`,
+        `server.listen(0, () => console.log('MOUNTED=' + server.address().port));`,
+        ``,
+      ].join('\n'),
+    );
+    const factory = startProcess('node', [factoryScript], {
+      cwd: tmpDir,
+      env: { ...env, NODE_ENV: 'production' },
+    });
+    let factoryLog = '';
+    factory.stdout.on('data', (d) => (factoryLog += d));
+    factory.stderr.on('data', (d) => (factoryLog += d));
+    try {
+      let factoryOrigin = null;
+      for (let i = 0; i < 300 && !factoryOrigin; i++) {
+        const port = factoryLog.match(/MOUNTED=(\d+)/)?.[1];
+        factoryOrigin = port ? `http://localhost:${port}` : null;
+        if (!factoryOrigin) await new Promise((r) => setTimeout(r, 100));
+      }
+      record(
+        'node',
+        'factory',
+        'createListener({ static: false }) mounts into http.createServer',
+        !!factoryOrigin,
+        factoryLog.slice(-300),
+      );
+      if (factoryOrigin) {
+        // In client mode the handler renders the same shell index.html was
+        // prerendered from, so tell the two apart by the file-serving
+        // headers: a served file carries Last-Modified + must-revalidate.
+        const deepBehind = await fetch(factoryOrigin + '/some/deep/route', {
+          headers: { accept: 'text/html' },
+        });
+        const deepBehindHtml = await deepBehind.text();
+        record(
+          'node',
+          'factory',
+          'static: false disables the index.html fallback (deep HTML GET is rendered by the handler, not served from the file)',
+          deepBehind.status === 200 &&
+            deepBehind.headers.get('last-modified') === null &&
+            deepBehind.headers.get('cache-control') !== 'public, max-age=0, must-revalidate' &&
+            deepBehindHtml.includes(entryAsset),
+          `status ${deepBehind.status}, last-modified ${deepBehind.headers.get('last-modified')}, cache-control ${deepBehind.headers.get('cache-control')}`,
+        );
+        const assetBehind = await fetch(`${factoryOrigin}/${entryAsset}`);
+        const assetBehindBody = await assetBehind.text();
+        record(
+          'node',
+          'factory',
+          'static: false does not serve the client build (asset request reaches the handler)',
+          assetBehind.headers.get('cache-control') !== 'public, max-age=31536000, immutable' &&
+            assetBehindBody !== readFileSync(path.join(distDir, 'client', entryAsset), 'utf-8'),
+          `status ${assetBehind.status}, cache-control ${assetBehind.headers.get('cache-control')}`,
+        );
+        const bogusBehind = await fetch(factoryOrigin + '/_server/bogus-0', {
+          method: 'POST',
+          headers: { 'Sec-Fetch-Site': 'same-origin' },
+        });
+        record(
+          'node',
+          'factory',
+          'static: false still dispatches /_server (unknown id 404)',
+          bogusBehind.status === 404,
+          `status ${bogusBehind.status}`,
+        );
+      }
+    } finally {
+      try {
+        process.kill(-factory.pid, 'SIGTERM');
+      } catch {}
+      rmSync(tmpDir, { recursive: true, force: true });
     }
   } finally {
     try {

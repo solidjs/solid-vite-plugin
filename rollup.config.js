@@ -16,11 +16,12 @@ const external = [
   'vite',
 ];
 
-const babelPlugin = () =>
+const babelPlugin = (options = {}) =>
   babel({
     extensions,
     babelHelpers: 'bundled',
     presets: [['@babel/preset-env', { targets: { node: 'current' } }], '@babel/preset-typescript'],
+    ...options,
   });
 
 /**
@@ -56,6 +57,8 @@ const config = {
  * prepends the emit-time constants. Bundles the shared node<->web bridge
  * (src/http.ts) with it; `./server.js` — the sibling server bundle — stays
  * an external import, kept verbatim so it resolves in the user's dist.
+ * Comments are stripped: this file lands in every user's dist, and the
+ * source files keep the explanations.
  *
  * @type {import('rollup').RollupOptions}
  */
@@ -68,7 +71,10 @@ const nodeEntryConfig = {
   },
   external: (id) => id === './server.js' || id.startsWith('node:'),
   makeAbsoluteExternalsRelative: false,
-  plugins: [babelPlugin(), nodeResolve({ extensions, preferBuiltins: true, browser: false })],
+  plugins: [
+    babelPlugin({ comments: false }),
+    nodeResolve({ extensions, preferBuiltins: true, browser: false }),
+  ],
 };
 
 export default [config, nodeEntryConfig];

@@ -290,18 +290,30 @@ sockets, client disconnects as the request's `AbortSignal`, HEAD
 short-circuit, `set-cookie` split, backpressure that also settles when
 the client goes away. Errors log to `console.error` and answer 500. The
 file is ESM, depends on nothing but `node:*` and `./server.js`, and
-exports `listener` — the `(req, res)` function — and `serve(options?)`,
-so it composes with an existing server:
+exports `listener` — the `(req, res)` function — plus
+`createListener(options?)` and `serve(options?)`, so it composes with an
+existing server. With Express, either let the entry serve everything or
+keep only the bridge behind Express's own static handling:
 
 ```js
 import express from 'express';
-import { listener } from './dist/server/node.js';
+import compression from 'compression';
+import { listener, createListener } from './dist/server/node.js';
 
 const app = express();
-app.use('/health', (req, res) => res.end('ok'));
-app.use(listener); // pages, assets, /_server
-app.listen(3000);
+app.use(compression());
+app.use(listener); // static + pages + server functions
+// — or — let Express own static files (point it at dist/client):
+app.use(express.static('dist/client', { immutable: true, maxAge: '1y' }));
+app.use(createListener({ static: false }));
+app.listen(process.env.PORT || 3000);
 ```
+
+`createListener({ static: false })` skips the file lookup and, in client
+mode, the `index.html` history fallback — the framework owns both.
+`createListener({ event: (req) => ({ ... }) })` merges extra fields over
+`{ nativeEvent: req }` into the request event. `serve({ port, host, static,
+event })` takes the same two options on top of the listen address.
 
 `node.js` is an emitted asset, not a second build input: `server.js` and
 its `handleRequest` / `{ fetch }` contracts are unchanged. It applies to

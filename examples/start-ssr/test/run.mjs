@@ -4329,7 +4329,10 @@ async function runDetectMode() {
 //   - the `listener` export mounts into a plain http.createServer (a script
 //     in a temp dir imports node.js — which must NOT auto-listen when
 //     imported — and serves pages and assets through it); `serve` is
-//     exported too,
+//     exported too; `createListener({ static: false, event })` mounted
+//     behind a framework-style handler still renders and dispatches server
+//     functions, never touches dist/client, and the `event` fields show up
+//     next to nativeEvent,
 //   - a Cloudflare-shaped setup (ssr `noExternal: true` + a config-level
 //     server-first `builder.buildApp`) emits nothing without the option and
 //     behaves as before; with it, node.js is still emitted and points at the
@@ -4438,9 +4441,18 @@ async function runNodeMode() {
     record(
       mode,
       'build',
-      'entry exports listener and serve',
+      'entry exports listener, createListener and serve',
       /export \{[^}]*\blistener\b[^}]*\}/.test(nodeSource) &&
+        /export \{[^}]*\bcreateListener\b[^}]*\}/.test(nodeSource) &&
         /export \{[^}]*\bserve\b[^}]*\}/.test(nodeSource),
+    );
+    record(
+      mode,
+      'build',
+      'entry ships without the bridge source comments (only the generated header)',
+      !nodeSource.includes('/*') &&
+        nodeSource.split('\n').filter((line) => line.trimStart().startsWith('//')).length === 2,
+      `${nodeSource.length} bytes`,
     );
     const serverBundle = readFileSync(serverJs, 'utf-8');
     const registeredId = serverBundle.match(/registerServerReference\w*\("([^"]+)"/)?.[1] ?? null;
@@ -4595,7 +4607,9 @@ async function runNodeMode() {
       native.status === 200 &&
         nativeBody?.hasNativeEvent === true &&
         typeof nativeBody?.remoteAddress === 'string' &&
-        nativeBody.remoteAddress.length > 0,
+        nativeBody.remoteAddress.length > 0 &&
+        // The default listener adds nothing beyond nativeEvent.
+        nativeBody.custom === null,
       `status ${native.status}, body ${JSON.stringify(nativeBody)}`,
     );
     const echo = await fetch(origin + '/api/echo', {
@@ -4730,8 +4744,8 @@ async function runNodeMode() {
       record(
         mode,
         'mount',
-        'exports: listener and serve',
-        /EXPORTS=listener,serve/.test(mountLog),
+        'exports: createListener, listener and serve',
+        /EXPORTS=createListener,listener,serve/.test(mountLog),
         mountLog.match(/EXPORTS=.*/)?.[0],
       );
       const mountedPage = await fetchStreamed(mountOrigin + '/');
@@ -4750,6 +4764,108 @@ async function runNodeMode() {
         mountedAsset.status === 200 &&
           mountedAsset.headers.get('cache-control') === 'public, max-age=31536000, immutable',
         `status ${mountedAsset.status}`,
+      );
+    }
+    try {
+      process.kill(-server.pid, 'SIGTERM');
+    } catch {}
+    server = undefined;
+
+    // ---- createListener: a framework owns static files -----------------------
+    // `static: false` leaves every request — assets included — to the handler,
+    // for setups where express.static or a CDN sits in front; `event` merges
+    // extra fields over { nativeEvent } into the request event. The script
+    // plays the framework: it 404s /assets/* itself and hands the rest to
+    // the entry.
+    const factoryScript = path.join(tmpDir, 'factory.mjs');
+    writeFileSync(
+      factoryScript,
+      [
+        `import http from 'node:http';`,
+        `import { createListener } from ${JSON.stringify(pathToFileURL(nodeJs).href)};`,
+        `const behind = createListener({ static: false, event: (req) => ({ custom: 'from-' + req.method }) });`,
+        `const server = http.createServer((req, res) => {`,
+        `  if (req.url.startsWith('/assets/')) {`,
+        `    res.statusCode = 404;`,
+        `    res.setHeader('x-static-owner', 'framework');`,
+        `    return res.end('framework 404');`,
+        `  }`,
+        `  return behind(req, res);`,
+        `});`,
+        `server.listen(0, () => console.log('MOUNTED=' + server.address().port));`,
+        ``,
+      ].join('\n'),
+    );
+    let factoryLog = '';
+    server = startProcess('node', [factoryScript], { cwd: tmpDir, env });
+    server.stdout.on('data', (d) => (factoryLog += d));
+    server.stderr.on('data', (d) => (factoryLog += d));
+    const factoryMounted = await waitForLog(() => factoryLog, /MOUNTED=(\d+)/);
+    record(
+      mode,
+      'factory',
+      'createListener({ static: false, event }) mounts behind a framework handler',
+      !!factoryMounted,
+      factoryLog.slice(-300),
+    );
+    if (factoryMounted) {
+      const factoryOrigin = `http://localhost:${factoryMounted[1]}`;
+      const factoryPage = await fetchStreamed(factoryOrigin + '/');
+      record(
+        mode,
+        'factory',
+        'static: false still SSRs the page',
+        factoryPage.status === 200 && factoryPage.html.includes('SSR Start Mode'),
+        `status ${factoryPage.status}`,
+      );
+      if (whoAmIId) {
+        const factoryFn = await fetch(
+          `${factoryOrigin}/_server/${encodeURIComponent(whoAmIId)}?args=${encodeURIComponent('[]')}`,
+          { method: 'POST' },
+        );
+        record(
+          mode,
+          'factory',
+          'static: false still dispatches server functions',
+          factoryFn.status === 200 && (await factoryFn.text()) === 'mw-user',
+          `status ${factoryFn.status}`,
+        );
+      }
+      // The framework answered, so the entry never looked at dist/client.
+      const frameworkAsset = await fetch(`${factoryOrigin}/${entryAsset}`);
+      record(
+        mode,
+        'factory',
+        'static: false leaves /assets/* to the framework (entry does not serve files)',
+        frameworkAsset.status === 404 &&
+          frameworkAsset.headers.get('x-static-owner') === 'framework' &&
+          (await frameworkAsset.text()) === 'framework 404',
+        `status ${frameworkAsset.status}, cache-control ${frameworkAsset.headers.get('cache-control')}`,
+      );
+      // A file the framework does not intercept: with static off, the entry
+      // does not serve it either — the request reaches handleRequest.
+      const factoryRobots = await fetch(`${factoryOrigin}/robots.txt`);
+      const factoryRobotsBody = await factoryRobots.text();
+      record(
+        mode,
+        'factory',
+        'static: false skips the file lookup entirely (robots.txt goes to the handler)',
+        factoryRobots.headers.get('last-modified') === null &&
+          !factoryRobotsBody.startsWith('User-agent'),
+        `status ${factoryRobots.status}, content-type ${factoryRobots.headers.get('content-type')}`,
+      );
+      const factoryNative = await fetch(factoryOrigin + '/api/native', {
+        headers: { accept: 'application/json' },
+      });
+      const factoryNativeBody = factoryNative.ok ? await factoryNative.json() : null;
+      record(
+        mode,
+        'factory',
+        'event option merges fields over nativeEvent (both visible via getRequestEvent)',
+        factoryNative.status === 200 &&
+          factoryNativeBody?.hasNativeEvent === true &&
+          factoryNativeBody?.custom === 'from-GET',
+        `status ${factoryNative.status}, body ${JSON.stringify(factoryNativeBody)}`,
       );
     }
     try {
