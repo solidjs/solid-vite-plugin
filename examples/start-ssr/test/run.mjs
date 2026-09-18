@@ -136,7 +136,7 @@
 // [dev|prod|document|css-filter|entries|endpoint|configure|no-middleware|middleware|preview|render-mode|base|builder-order|builder-prepare|extra-input|babel-hmr|frames|external|detect|vitest|node]
 // (default: all)
 
-import { spawn, execSync } from 'node:child_process';
+import { spawn, execSync, execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import path from 'node:path';
@@ -5206,6 +5206,93 @@ async function runVitestMode() {
     'browser-mode project gets no injected jsdom environment (non-browser keeps the jsdom default)',
     browserEnvPass,
     browserEnvPass ? undefined : envError || `browser: ${browserEnv}, default: ${defaultEnv}`,
+  );
+
+  // A root config that defines `test.projects` runs no tests itself — each
+  // project controls its own environment — so it must NOT get the jsdom
+  // default either: vitest probes for the root environment's package at
+  // startup and prompts for jsdom even when every project runs under node
+  // or in the browser (solidjs/solid-vite-plugin#205, forward-port of #323).
+  let projectsEnv;
+  let projectsEnvError = '';
+  try {
+    projectsEnv = await resolveTestEnvironment({
+      projects: [{ extends: true, test: { name: 'node', environment: 'node' } }],
+    });
+  } catch (e) {
+    projectsEnvError = String(e);
+  }
+  const projectsEnvPass = !projectsEnvError && projectsEnv === undefined;
+  record(
+    mode,
+    'projects-env',
+    'root config with test.projects gets no injected jsdom environment',
+    projectsEnvPass,
+    projectsEnvPass ? undefined : projectsEnvError || `environment: ${projectsEnv}`,
+  );
+
+  // The jest-dom setup file is injected only when the PROJECT can resolve
+  // `@testing-library/jest-dom` — by walking node_modules up from the Vite
+  // root, the way vitest itself resolves bare `setupFiles`. Two ways the
+  // probe used to give a false positive (solidjs/solid-vite-plugin#231,
+  // forward-port of #364): it ran from the plugin's own location, which under
+  // pnpm reaches any jest-dom that is a transitive dep somewhere in the tree
+  // (here: the workspace root's copy, which this repo's plugin can always
+  // resolve), and `require.resolve` honours NODE_PATH, which pnpm's bin
+  // shims (`pnpm vitest`) point at the hoisted virtual store. Both are
+  // simulated at once: an empty project outside the repo, resolved in a
+  // child process whose NODE_PATH is the repo's node_modules. Control: the
+  // example root (whose ancestors include the repo's copy) still injects.
+  const repoRoot = path.resolve(exampleDir, '..', '..');
+  const emptyRoot = path.join(os.tmpdir(), `solid-vite-plugin-jest-dom-${process.pid}`);
+  const probe = `
+    import { resolveConfig } from 'vite';
+    import solid from '@solidjs/vite-plugin';
+    const resolved = await resolveConfig(
+      { root: process.argv[1], mode: 'test', configFile: false, logLevel: 'silent', plugins: [solid()] },
+      'serve',
+    );
+    console.log(JSON.stringify(resolved.test?.setupFiles ?? null));
+  `;
+  const resolveSetupFiles = (root) =>
+    JSON.parse(
+      execFileSync(process.execPath, ['--input-type=module', '-e', probe, '--', root], {
+        cwd: exampleDir,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: 60000,
+        env: { ...process.env, NODE_PATH: path.join(repoRoot, 'node_modules') },
+      })
+        .toString()
+        .trim(),
+    );
+  let emptySetupFiles;
+  let exampleSetupFiles;
+  let jestDomError = '';
+  try {
+    rmSync(emptyRoot, { recursive: true, force: true });
+    mkdirSync(emptyRoot, { recursive: true });
+    writeFileSync(path.join(emptyRoot, 'package.json'), '{ "name": "empty", "private": true }\n');
+    emptySetupFiles = resolveSetupFiles(emptyRoot);
+    exampleSetupFiles = resolveSetupFiles(exampleDir);
+  } catch (e) {
+    jestDomError = String(e.stderr || e);
+  } finally {
+    rmSync(emptyRoot, { recursive: true, force: true });
+  }
+  const jestDomPass =
+    !jestDomError &&
+    emptySetupFiles === null &&
+    Array.isArray(exampleSetupFiles) &&
+    exampleSetupFiles.includes('@testing-library/jest-dom/vitest');
+  record(
+    mode,
+    'jest-dom-root',
+    'jest-dom setup file is injected only when the project root resolves it (not the plugin, not NODE_PATH)',
+    jestDomPass,
+    jestDomPass
+      ? undefined
+      : jestDomError ||
+          `empty root: ${JSON.stringify(emptySetupFiles)}, example root: ${JSON.stringify(exampleSetupFiles)}`,
   );
 }
 

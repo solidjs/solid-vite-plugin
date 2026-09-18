@@ -50,8 +50,6 @@ import {
 import { getEnvironmentConsumer, isRunnableEnvironment } from './environment.js';
 import { crawlFrameworkPkgs } from 'vitefu';
 
-const require = createRequire(import.meta.url);
-
 /**
  * The `lazy()` module-URL placeholder contract, shared with the native
  * compiler's `transformLazy` pass: `lazy(() => import("spec"))` calls gain a
@@ -499,19 +497,55 @@ function containsSolidField(fields: Record<string, any>) {
   return false;
 }
 
-function getJestDomExport(setupFiles: string[]) {
-  return setupFiles?.some((path) => /jest-dom/.test(path))
-    ? undefined
-    : ['@testing-library/jest-dom/vitest', '@testing-library/jest-dom/extend-expect'].find(
-        (path) => {
-          try {
-            require.resolve(path);
-            return true;
-          } catch (e) {
-            return false;
-          }
-        },
-      );
+/**
+ * Locate a bare package the way Vite (and Node without `NODE_PATH`) does: walk
+ * `<dir>/node_modules/<name>` up from `root`. `require.resolve` can't be used
+ * for this — it also consults `NODE_PATH`, which pnpm's bin shims (`pnpm
+ * vitest`, `pnpm test`) point at the hoisted virtual store
+ * (`node_modules/.pnpm/node_modules`), where every transitive dependency of the
+ * whole tree is reachable.
+ */
+function findPackageDir(name: string, root: string): string | undefined {
+  let dir = root;
+  while (true) {
+    const candidate = path.join(dir, 'node_modules', name);
+    if (existsSync(path.join(candidate, 'package.json'))) return candidate;
+    const parent = path.dirname(dir);
+    if (parent === dir) return undefined;
+    dir = parent;
+  }
+}
+
+function getJestDomExport(setupFiles: string[], root: string) {
+  if (setupFiles?.some((file) => /jest-dom/.test(file))) return undefined;
+
+  // Resolve from the project root, not from this plugin's own location. With pnpm's
+  // isolated node_modules layout the plugin can reach a jest-dom that only exists as a
+  // transitive dependency (e.g. of Storybook), while Vitest resolves `setupFiles` from the
+  // project root, where it isn't installed, and fails to load it.
+  // https://github.com/solidjs/solid-vite-plugin/issues/231
+  // The bare specifier (not the resolved path) is injected on purpose: `require.resolve` picks
+  // jest-dom's CommonJS entry, which Vitest refuses to load, while Vitest itself resolves the
+  // specifier to the ESM entry.
+  const packageDir = findPackageDir('@testing-library/jest-dom', root);
+  if (!packageDir) return undefined;
+  // Check the subpath against THIS copy: resolving from inside the package
+  // self-references its `exports` map (v6+), or falls back to its own files
+  // for versions without one (v5's `extend-expect`). `NODE_PATH` still
+  // participates in that lookup, so make sure the hit landed in the package
+  // Vite will resolve rather than in some hoisted copy of another version.
+  const realPackageDir = realpathSync(packageDir);
+  const packageRequire = createRequire(path.join(packageDir, 'package.json'));
+  return ['@testing-library/jest-dom/vitest', '@testing-library/jest-dom/extend-expect'].find(
+    (specifier) => {
+      try {
+        const resolved = realpathSync(packageRequire.resolve(specifier));
+        return resolved.startsWith(realPackageDir + path.sep);
+      } catch (e) {
+        return false;
+      }
+    },
+  );
 }
 
 function getSolidOptions(
@@ -1140,7 +1174,21 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
         // them to jsdom — vitest probes for the environment's package at
         // startup and fails the run if jsdom isn't installed. They fall
         // back to vitest's own node default (no package probe).
-        if (!userTest.environment && !userTest.browser?.enabled) {
+        // A root config that defines `test.projects` (or the pre-vitest-4
+        // `test.workspace`) doesn't run tests itself: each project controls
+        // its own environment, so the root gets no jsdom default either —
+        // otherwise vitest probes for jsdom at the root on startup even when
+        // every project runs under node or in the browser. Note that an
+        // inline project with `extends: true` inherits the root file's
+        // `test.projects` and opts out too: projects declare their
+        // environment explicitly, as in vitest's own projects guide.
+        // https://github.com/solidjs/solid-vite-plugin/issues/205
+        if (
+          !userTest.environment &&
+          !userTest.browser?.enabled &&
+          !userTest.workspace &&
+          !userTest.projects
+        ) {
           test.environment = 'jsdom';
         }
 
@@ -1165,7 +1213,10 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
         // vitest browser mode already has bundled jest-dom assertions
         // https://main.vitest.dev/guide/browser/assertion-api.html#assertion-api
         if (!userTest.browser?.enabled && !serverTestPosture) {
-          const jestDomImport = getJestDomExport(userSetupFiles);
+          const jestDomImport = getJestDomExport(
+            userSetupFiles,
+            path.resolve(projectRoot || process.cwd()),
+          );
           if (jestDomImport) {
             test.setupFiles = [jestDomImport];
           }
