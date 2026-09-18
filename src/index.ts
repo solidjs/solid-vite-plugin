@@ -3,6 +3,7 @@ import solid from 'babel-preset-solid';
 import { readFileSync } from 'fs';
 import { mergeAndConcat } from 'merge-anything';
 import { createRequire } from 'module';
+import path from 'path';
 import solidRefresh from 'solid-refresh/babel';
 import type { Alias, AliasOptions, FilterPattern, Plugin } from 'vite';
 import { createFilter, version } from 'vite';
@@ -178,19 +179,28 @@ function containsSolidField(fields: Record<string, any>) {
   return false;
 }
 
-function getJestDomExport(setupFiles: string[]) {
-  return setupFiles?.some((path) => /jest-dom/.test(path))
-    ? undefined
-    : ['@testing-library/jest-dom/vitest', '@testing-library/jest-dom/extend-expect'].find(
-        (path) => {
-          try {
-            require.resolve(path);
-            return true;
-          } catch (e) {
-            return false;
-          }
-        },
-      );
+function getJestDomExport(setupFiles: string[], root: string) {
+  if (setupFiles?.some((file) => /jest-dom/.test(file))) return undefined;
+
+  // Resolve from the project root, not from this plugin's own location. With pnpm's
+  // isolated node_modules layout the plugin can reach a jest-dom that only exists as a
+  // transitive dependency (e.g. of Storybook), while Vitest resolves `setupFiles` from the
+  // project root, where it isn't installed, and fails to load it.
+  // https://github.com/solidjs/solid-vite-plugin/issues/231
+  // The bare specifier (not the resolved path) is injected on purpose: `require.resolve` picks
+  // jest-dom's CommonJS entry, which Vitest refuses to load, while Vitest itself resolves the
+  // specifier to the ESM entry.
+  const projectRequire = createRequire(path.join(root, 'package.json'));
+  return ['@testing-library/jest-dom/vitest', '@testing-library/jest-dom/extend-expect'].find(
+    (specifier) => {
+      try {
+        projectRequire.resolve(specifier);
+        return true;
+      } catch (e) {
+        return false;
+      }
+    },
+  );
 }
 
 export default function solidPlugin(options: Partial<Options> = {}): Plugin {
@@ -252,7 +262,10 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin {
         if (!userTest.browser?.enabled) {
           // vitest browser mode already has bundled jest-dom assertions
           // https://main.vitest.dev/guide/browser/assertion-api.html#assertion-api
-          const jestDomImport = getJestDomExport(userSetupFiles);
+          const jestDomImport = getJestDomExport(
+            userSetupFiles,
+            path.resolve(projectRoot || process.cwd()),
+          );
           if (jestDomImport) {
             test.setupFiles = [jestDomImport];
           }
