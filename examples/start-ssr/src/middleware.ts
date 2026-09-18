@@ -19,6 +19,16 @@
 //   handle fall back to Vite's own pipeline in dev.
 import { getRequestEvent } from '@solidjs/web';
 
+// `start.instrument` evidence (SSR_INSTRUMENT=1): this module evaluates as
+// part of the handler graph — after `@solidjs/web` above — so what the
+// instrument register holds HERE is what it held before the graph loaded.
+// A `done: true` at this point means the instrument module was awaited to
+// completion first, not merely imported first.
+const instrumentAtLoad = globalThis.__solidInstrument
+  ? { ...globalThis.__solidInstrument, order: [...globalThis.__solidInstrument.order] }
+  : null;
+globalThis.__solidInstrument?.order.push('middleware');
+
 type Next = (request?: Request) => Promise<Response>;
 
 // A minimal filesystem-routing/createAPIHandler stand-in: owns /api/* and
@@ -121,6 +131,7 @@ async function first(request: Request, next: Next): Promise<Response> {
     // these must be observable on the response head.
     response.headers.set('x-mw-order', (event.locals.order as string[]).join(','));
     response.headers.set('x-after-next', 'set-after-next');
+    if (instrumentAtLoad) response.headers.set('x-instrument', JSON.stringify(instrumentAtLoad));
     return response;
   } catch (error) {
     return new Response(`caught: ${error instanceof Error ? error.message : String(error)}`, {

@@ -172,6 +172,29 @@ export interface StartOptions {
    */
   middleware?: string;
   /**
+   * Path to a server-only module (resolved relative to the Vite root) that
+   * runs to completion before anything else in the server graph loads — the
+   * app, the middleware, `@solidjs/web`, every dependency. The seam for
+   * instrumentation that must patch the runtime before the modules it
+   * patches are loaded: an APM's OpenTelemetry setup (`Sentry.init()`,
+   * `NodeSDK.start()`), a profiler, a custom `module.register` hook.
+   * Replaces the per-host `node --import instrument.mjs` dance with one
+   * option the plugin honors on every surface: `vite dev`, `vite build`,
+   * `vite preview`, and a host consuming the handler entry directly.
+   *
+   * How: the generated handler entry becomes `await import(instrument);
+   * await import(handler)` — top-level await sequencing is the only thing
+   * in ESM that guarantees the order, since static imports are hoisted and
+   * evaluated in dependency order regardless of where they are written.
+   * The module may be async (top-level `await` is honored) and needs no
+   * exports. The server build must keep code splitting on (the default) —
+   * inlining dynamic imports would hoist the handler graph back above the
+   * instrument.
+   *
+   * @default undefined
+   */
+  instrument?: string;
+  /**
    * Path to a server-only module (resolved relative to the Vite root) whose
    * default export runs once per request in the generated server entry,
    * after the middleware chain has dispatched to the page render and
@@ -318,6 +341,13 @@ export interface StartOptions {
 // chain and one request event across both dispatch paths).
 export const SSR_HANDLER_ID = 'virtual:solid-ssr-handler';
 const HANDLER_ID = SSR_HANDLER_ID;
+// With `start.instrument`, the handler id becomes a thin wrapper that awaits
+// the instrument module and only THEN imports the real handler under this
+// id — the one way ESM can run something to completion before the rest of
+// the graph is even fetched (static imports are hoisted and evaluated in
+// dependency order, so `import './instrument'` first would still evaluate
+// AFTER `@solidjs/web` and every module it pulls in).
+const HANDLER_IMPL_ID = 'virtual:solid-ssr-handler-impl';
 // Dev-only response marker: the generated dev handler answers non-page
 // requests that fell through the whole middleware chain to the terminal
 // page dispatch with a marked 404 instead of rendering HTML at them, and
@@ -574,6 +604,8 @@ export function startServe(
   let entries: ResolvedEntries | undefined;
   /** Absolute path of the user's middleware module, when configured. */
   let middlewarePath: string | null = null;
+  /** Absolute path of the instrument module awaited before the handler graph, when configured. */
+  let instrumentPath: string | null = null;
   /** Absolute path of the per-request setup module, when configured (server mode). */
   let setupPath: string | null = null;
   /**
@@ -967,6 +999,24 @@ export function startServe(
   // `serverFunctions` is enabled the endpoint is dispatched here on every
   // surface (the runnable-dev middleware routes through this module), so
   // user middleware and the shared request event front it identically.
+  /**
+   * The handler entry with `start.instrument`: sequence the instrument
+   * module to completion, then load the real handler. The two awaits are
+   * the contract — see the option's docs. Exports are re-declared by name
+   * (the handler's surface is fixed: `handleRequest` and the `fetch`
+   * default) because a static `export * from` would be hoisted like any
+   * other static import and defeat the ordering.
+   */
+  function instrumentedHandlerCode(): string {
+    return [
+      `await import(${JSON.stringify(instrumentPath)});`,
+      `const handler = await import(${JSON.stringify(HANDLER_IMPL_ID)});`,
+      `export const handleRequest = handler.handleRequest;`,
+      `export default handler.default;`,
+      ``,
+    ].join('\n');
+  }
+
   function handlerModuleCode(externalDev: boolean): string {
     const { generated, entryClient } = requireEntries();
     const composeServerFunctions = internal.serverFunctions;
@@ -1303,6 +1353,9 @@ export function startServe(
         middlewarePath = options.middleware
           ? path.resolve(root, normalizeUserPath(root, options.middleware, 'middleware'))
           : null;
+        instrumentPath = options.instrument
+          ? path.resolve(root, normalizeUserPath(root, options.instrument, 'instrument'))
+          : null;
         // Server-mode only, like `entryServer`/`external` (a documented
         // no-op in client mode so configs survive the `ssr` boolean flip).
         setupPath =
@@ -1463,6 +1516,9 @@ export function startServe(
         if (source === HANDLER_ID) {
           return { id: HANDLER_ID, moduleSideEffects: true };
         }
+        if (source === HANDLER_IMPL_ID) {
+          return { id: HANDLER_IMPL_ID, moduleSideEffects: true };
+        }
         if (source === DEV_STYLES_ID) {
           return { id: RESOLVED_DEV_STYLES_ID, moduleSideEffects: true };
         }
@@ -1505,10 +1561,11 @@ export function startServe(
       },
       async load(id, opts) {
         const consumer = getEnvironmentConsumer(this.environment, opts);
-        if (id === HANDLER_ID) {
+        if (id === HANDLER_ID || id === HANDLER_IMPL_ID) {
           if (consumer !== 'server') {
             this.error(`${HANDLER_ID} is server-only; import it from server code (SSR build).`);
           }
+          if (id === HANDLER_ID && instrumentPath) return instrumentedHandlerCode();
           const externalDev =
             !isBuild &&
             this.environment.mode === 'dev' &&

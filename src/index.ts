@@ -553,9 +553,11 @@ function getSolidOptions(
   // Component labels: the dev and observe runtimes name each component's
   // owner (`<Home>`) for diagnostics and attribution paths. Without the
   // compiler carrying the source tag name, a minified build labels owners by
-  // whatever the minifier left of `Comp.name`. DOM-only by construction (the
-  // ssr generate ignores the flag), and the production runtime ignores the
-  // argument, so it is only emitted for the postures whose runtime reads it.
+  // whatever the minifier left of `Comp.name`. Both generates emit it — the
+  // ssr generate from the compilers that carry solidjs/solid#3441
+  // (2.0.0-rc.9), so server findings and boundary records locate by
+  // component too — and the production runtime ignores the argument, so it
+  // is only emitted for the postures whose runtime reads it.
   return {
     ...solidOptions,
     ...(serverComponents && solidOptions.generate === 'ssr' ? { serverComponents: true } : {}),
