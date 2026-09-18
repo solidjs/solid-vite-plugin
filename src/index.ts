@@ -106,6 +106,19 @@ export interface Options {
     omitQuotes?: boolean;
 
     /**
+     * Only applies when `hydratable` is `true`. When `true`, an element marked
+     * `$ServerOnly` registers no client template, so it can only be obtained by
+     * hydrating server-rendered DOM and throws if it is ever re-created on the client.
+     *
+     * The plugin sets this to `false` for client transforms in dev while HMR is
+     * enabled, since Solid Refresh re-runs components outside of hydration. Pass
+     * an explicit value to override that.
+     *
+     * @default true
+     */
+    omitServerOnlyTemplates?: boolean;
+
+    /**
      * The name of the runtime module to import the methods from.
      *
      * @default "solid-js/web"
@@ -397,11 +410,22 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin {
         plugins.push('typescript');
       }
 
+      // babel-plugin-jsx-dom-expressions >= 0.40.10 omits the client template of
+      // `$ServerOnly` elements by default, so re-creating such an element outside
+      // of hydration throws "template is not a function". Solid Refresh does
+      // exactly that on every hot update, so keep the templates in client HMR
+      // transforms. An explicit user setting still wins.
+      const presetOptions = {
+        ...solidOptions,
+        ...(needHmr && !isSsr ? { omitServerOnlyTemplates: false } : {}),
+        ...(options.solid || {}),
+      };
+
       const opts: babel.TransformOptions = {
         root: projectRoot,
         filename: id,
         sourceFileName: id,
-        presets: [[solid, { ...solidOptions, ...(options.solid || {}) }]],
+        presets: [[solid, presetOptions]],
         plugins: needHmr && !isSsr && !inNodeModules ? [[solidRefresh, { bundler: 'vite' }]] : [],
         ast: false,
         sourceMaps: true,

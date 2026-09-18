@@ -145,6 +145,8 @@ Pass any additional [babel transform options](https://babeljs.io/docs/en/options
 Pass any additional [babel-plugin-jsx-dom-expressions](https://github.com/ryansolid/dom-expressions/tree/main/packages/babel-plugin-jsx-dom-expressions#plugin-options).
 They will be merged with the defaults sets by [babel-preset-solid](https://github.com/solidjs/solid/blob/main/packages/babel-preset-solid/index.js#L8-L25).
 
+In dev with HMR enabled, the plugin sets `omitServerOnlyTemplates: false` for client transforms so that components containing `$ServerOnly` elements can be re-created by Solid Refresh. Pass `omitServerOnlyTemplates` explicitly to override this.
+
 #### options.typescript
 
 - Type: [@babel/preset-typescript](https://babeljs.io/docs/en/babel-preset-typescript)
