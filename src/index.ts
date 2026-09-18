@@ -312,6 +312,12 @@ export interface Options {
    *   handler in the Fetchable shape used by deployment integrations.
    *   The normal `ssr` environment exposes it as the `index` service entry
    *   so provider Vite plugins can supply the runtime and build orchestration.
+   * - `start.node: true` additionally emits a ready-to-run Node server,
+   *   `dist/server/node.js` (`node dist/server/node.js`; PORT/HOST), that
+   *   serves the client build statically and dispatches the rest through
+   *   `handleRequest` — see {@link StartOptions.node}. Node is the one
+   *   mainstream runtime without a fetch-shaped server API; every other
+   *   host consumes the `{ fetch }` export directly.
    * - With `serverFunctions` also enabled, the prod handler serves the
    *   server-function endpoint too (in dev the server-function middleware
    *   already runs first).
@@ -326,7 +332,9 @@ export interface Options {
    *   `dist/client/index.html` with the hashed entry script and CSS links —
    *   deployable to any static host. No server bundle remains unless
    *   `serverFunctions` is enabled, in which case `dist/server` is kept and
-   *   its `handleRequest` serves the endpoint (pages stay static).
+   *   its `handleRequest` serves the endpoint (pages stay static) — and
+   *   `start.node` then emits `dist/server/node.js` serving the static
+   *   client with an `index.html` history fallback plus the endpoint.
    * - Client code stays non-hydratable (`generate: 'dom'`), exactly like a
    *   plain SPA; server-only options (`entryServer`, `external`) are inert.
    * - `vite preview` serves the static build with history fallback (and

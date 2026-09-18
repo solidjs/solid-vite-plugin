@@ -21,13 +21,20 @@
 // Requires the plugin built (pnpm build at the repo root) and Google Chrome.
 //   - flip: the identical app with `ssr: true` (SOLID_FLIP_SSR=1) SSRs and
 //     hydrates with zero source changes — the one-boolean flip, proven.
+//   - node: `start.node` with `serverFunctions` (SOLID_START_NODE=1) emits
+//     dist/server/node.js, which serves the static build with an index.html
+//     history fallback and dispatches /_server through the kept handler;
+//     `createListener({ static: false })` disables both the file lookup
+//     and that fallback (a framework owns them); without `serverFunctions`
+//     the option warns and emits nothing.
 //
-// Usage: node test/run.mjs [dev|prod|flip] (default: all)
+// Usage: node test/run.mjs [dev|prod|flip|node] (default: all)
 
 import { spawn } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import path from 'node:path';
-import { existsSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import os from 'node:os';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 
 const exampleDir = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const CHROME =
@@ -451,9 +458,301 @@ async function flipMode() {
   } catch {}
 }
 
+// `start.node` in client start mode (SOLID_START_NODE=1: `serverFunctions`
+// keeps dist/server for the endpoint, and `start.node` emits the Node entry
+// beside it). `node dist/server/node.js` must serve the static client build
+// — `/` and a deep route with an HTML accept get index.html (history
+// fallback), hashed assets are immutable, HEAD works — and dispatch the
+// /_server endpoint through the kept handler (an unknown id 404s instead of
+// getting index.html; the browser round-trips a real server function).
+// Without the option the client-mode build stays purely static (prod mode
+// asserts no dist/server), and with `start.node` but no `serverFunctions`
+// the build warns and emits nothing (no server bundle to wrap).
+async function nodeMode() {
+  console.log('\n== node ==');
+  const distDir = path.join(exampleDir, 'dist');
+  const nodeJs = path.join(distDir, 'server/node.js');
+  const env = { ...process.env, SOLID_START_NODE: '1' };
+
+  // Gating: start.node without serverFunctions has no server bundle to wrap.
+  rmSync(distDir, { recursive: true, force: true });
+  let warnOutput = '';
+  await new Promise((resolve, reject) => {
+    const child = spawn('pnpm', ['exec', 'vite', 'build'], {
+      cwd: exampleDir,
+      env: {
+        ...process.env,
+        // The config bypasses the knob: `start: { node: true }` alone.
+        SOLID_START_NODE_ONLY: '1',
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    children.add(child);
+    child.stdout.on('data', (d) => (warnOutput += d));
+    child.stderr.on('data', (d) => (warnOutput += d));
+    child.on('exit', (code) => {
+      children.delete(child);
+      code === 0 ? resolve() : reject(new Error(`vite build exited ${code}\n${warnOutput}`));
+    });
+  });
+  record(
+    'node',
+    'gate',
+    'start.node without serverFunctions warns (nothing to emit)',
+    warnOutput.includes('start.node has nothing to emit in client start mode'),
+    warnOutput.slice(-400),
+  );
+  record(
+    'node',
+    'gate',
+    'start.node without serverFunctions emits no dist/server',
+    !existsSync(path.join(distDir, 'server')),
+  );
+
+  rmSync(distDir, { recursive: true, force: true });
+  await runCommand('pnpm', ['exec', 'vite', 'build'], { cwd: exampleDir, env });
+  record(
+    'node',
+    'build',
+    'dist/client/index.html emitted (prerendered shell)',
+    existsSync(path.join(distDir, 'client/index.html')),
+  );
+  record(
+    'node',
+    'build',
+    'dist/server/server.js kept (serverFunctions)',
+    existsSync(path.join(distDir, 'server/server.js')),
+  );
+  record('node', 'build', 'dist/server/node.js emitted', existsSync(nodeJs));
+  const nodeSource = existsSync(nodeJs) ? readFileSync(nodeJs, 'utf-8') : '';
+  record(
+    'node',
+    'build',
+    'entry baked in client mode (spa: true, client dir relative to server dir)',
+    nodeSource.includes('"clientDir":"../client"') && nodeSource.includes('"spa":true'),
+    nodeSource.match(/^const SOLID_NODE_CONFIG = .*$/m)?.[0] ?? 'no node.js',
+  );
+  const indexHtml = readFileSync(path.join(distDir, 'client/index.html'), 'utf-8');
+  const entryAsset = indexHtml.match(/<script type="module" src="\/(assets\/[^"]+\.js)">/)?.[1];
+
+  const server = startProcess('node', ['dist/server/node.js'], {
+    cwd: exampleDir,
+    env: { ...env, PORT: '0', NODE_ENV: 'production' },
+  });
+  let serverLog = '';
+  server.stdout.on('data', (d) => (serverLog += d));
+  server.stderr.on('data', (d) => (serverLog += d));
+  let origin = null;
+  for (let i = 0; i < 300 && !origin; i++) {
+    origin = serverLog.match(/Listening on (http:\/\/localhost:\d+)/)?.[1] ?? null;
+    if (!origin) await new Promise((r) => setTimeout(r, 100));
+  }
+  record('node', 'run', 'listens on PORT and logs the URL', !!origin, serverLog.slice(-300));
+  if (!origin) throw new Error('node entry did not start');
+  await waitForHttp(origin + '/', 30000, { headers: { accept: 'text/html' } });
+
+  try {
+    const root = await fetchHtml(origin + '/');
+    record(
+      'node',
+      'spa',
+      '/ serves index.html (HTML-accepting GET)',
+      root.status === 200 && root.html === indexHtml,
+      `status ${root.status}`,
+    );
+    const deep = await fetchHtml(origin + '/some/deep/route');
+    record(
+      'node',
+      'spa',
+      'deep route serves index.html (history fallback)',
+      deep.status === 200 && deep.html === indexHtml,
+      `status ${deep.status}`,
+    );
+    const deepRes = await fetch(origin + '/some/deep/route', { headers: { accept: 'text/html' } });
+    record(
+      'node',
+      'spa',
+      'fallback shell is must-revalidate (never cached as immutable)',
+      deepRes.headers.get('cache-control') === 'public, max-age=0, must-revalidate' &&
+        (deepRes.headers.get('content-type') || '').startsWith('text/html'),
+      `cache-control ${deepRes.headers.get('cache-control')}`,
+    );
+    const asset = await fetch(`${origin}/${entryAsset}`);
+    record(
+      'node',
+      'static',
+      'hashed asset serves immutable with a JavaScript MIME type',
+      asset.status === 200 &&
+        asset.headers.get('cache-control') === 'public, max-age=31536000, immutable' &&
+        (asset.headers.get('content-type') || '').startsWith('text/javascript'),
+      `status ${asset.status}, ${asset.headers.get('cache-control')}, ${asset.headers.get('content-type')}`,
+    );
+    const head = await fetch(`${origin}/${entryAsset}`, { method: 'HEAD' });
+    record(
+      'node',
+      'static',
+      'HEAD returns the asset headers with no body',
+      head.status === 200 &&
+        (await head.text()) === '' &&
+        Number(head.headers.get('content-length')) > 0,
+      `status ${head.status}`,
+    );
+    // The endpoint dispatches through the kept handler rather than falling
+    // back to the shell: an unknown function id is the runtime's 404.
+    const bogus = await fetch(origin + '/_server/bogus-0', {
+      method: 'POST',
+      headers: { 'Sec-Fetch-Site': 'same-origin' },
+    });
+    const bogusBody = await bogus.text();
+    record(
+      'node',
+      'sf',
+      '/_server dispatches through the kept handler (unknown id 404, not the shell)',
+      bogus.status === 404 && !bogusBody.includes('<html'),
+      `status ${bogus.status}, body ${JSON.stringify(bogusBody.slice(0, 40))}`,
+    );
+
+    // Browser: the static shell boots the app, and the server function
+    // round-trips over /_server through the entry.
+    const chrome = startProcess(CHROME, [
+      '--headless=new',
+      `--remote-debugging-port=${CDP_PORT}`,
+      `--user-data-dir=/tmp/start-client-chrome-node`,
+      '--no-first-run',
+      '--disable-extensions',
+      'about:blank',
+    ]);
+    const cdp = await connectChrome();
+    try {
+      cdp.exceptions.length = 0;
+      await cdp.send('Page.navigate', { url: origin + '/some/deep/route' });
+      await cdp.waitFor('document.readyState === "complete"');
+      record(
+        'node',
+        'browser',
+        'app boots from the fallback shell on a deep route',
+        await cdp.waitFor(
+          'document.querySelector("#marker")?.textContent === "CLIENT-RENDERED-APP"',
+        ),
+      );
+      await cdp.evalJs('document.querySelector("#ping").click()');
+      record(
+        'node',
+        'browser',
+        'server function round-trips over /_server through the entry',
+        await cdp.waitFor('document.querySelector("#pong")?.textContent === "pong:node"'),
+        await cdp.evalJs('document.querySelector("#pong")?.textContent'),
+      );
+      const errs = cdp.exceptions.filter((e) => !/favicon/i.test(e));
+      record(
+        'node',
+        'browser',
+        'no page exceptions/console errors',
+        errs.length === 0,
+        errs.join(' | '),
+      );
+    } finally {
+      cdp.close();
+      try {
+        process.kill(-chrome.pid, 'SIGTERM');
+      } catch {}
+    }
+
+    // createListener({ static: false }): the framework owns files AND the
+    // history fallback, so a deep HTML GET reaches the handler instead of
+    // getting index.html from the entry.
+    const tmpDir = mkdtempSync(path.join(os.tmpdir(), 'solid-node-entry-client-'));
+    const factoryScript = path.join(tmpDir, 'factory.mjs');
+    writeFileSync(
+      factoryScript,
+      [
+        `import http from 'node:http';`,
+        `import { createListener } from ${JSON.stringify(pathToFileURL(nodeJs).href)};`,
+        `const server = http.createServer(createListener({ static: false }));`,
+        `server.listen(0, () => console.log('MOUNTED=' + server.address().port));`,
+        ``,
+      ].join('\n'),
+    );
+    const factory = startProcess('node', [factoryScript], {
+      cwd: tmpDir,
+      env: { ...env, NODE_ENV: 'production' },
+    });
+    let factoryLog = '';
+    factory.stdout.on('data', (d) => (factoryLog += d));
+    factory.stderr.on('data', (d) => (factoryLog += d));
+    try {
+      let factoryOrigin = null;
+      for (let i = 0; i < 300 && !factoryOrigin; i++) {
+        const port = factoryLog.match(/MOUNTED=(\d+)/)?.[1];
+        factoryOrigin = port ? `http://localhost:${port}` : null;
+        if (!factoryOrigin) await new Promise((r) => setTimeout(r, 100));
+      }
+      record(
+        'node',
+        'factory',
+        'createListener({ static: false }) mounts into http.createServer',
+        !!factoryOrigin,
+        factoryLog.slice(-300),
+      );
+      if (factoryOrigin) {
+        // In client mode the handler renders the same shell index.html was
+        // prerendered from, so tell the two apart by the file-serving
+        // headers: a served file carries Last-Modified + must-revalidate.
+        const deepBehind = await fetch(factoryOrigin + '/some/deep/route', {
+          headers: { accept: 'text/html' },
+        });
+        const deepBehindHtml = await deepBehind.text();
+        record(
+          'node',
+          'factory',
+          'static: false disables the index.html fallback (deep HTML GET is rendered by the handler, not served from the file)',
+          deepBehind.status === 200 &&
+            deepBehind.headers.get('last-modified') === null &&
+            deepBehind.headers.get('cache-control') !== 'public, max-age=0, must-revalidate' &&
+            deepBehindHtml.includes(entryAsset),
+          `status ${deepBehind.status}, last-modified ${deepBehind.headers.get('last-modified')}, cache-control ${deepBehind.headers.get('cache-control')}`,
+        );
+        const assetBehind = await fetch(`${factoryOrigin}/${entryAsset}`);
+        const assetBehindBody = await assetBehind.text();
+        record(
+          'node',
+          'factory',
+          'static: false does not serve the client build (asset request reaches the handler)',
+          assetBehind.headers.get('cache-control') !== 'public, max-age=31536000, immutable' &&
+            assetBehindBody !== readFileSync(path.join(distDir, 'client', entryAsset), 'utf-8'),
+          `status ${assetBehind.status}, cache-control ${assetBehind.headers.get('cache-control')}`,
+        );
+        const bogusBehind = await fetch(factoryOrigin + '/_server/bogus-0', {
+          method: 'POST',
+          headers: { 'Sec-Fetch-Site': 'same-origin' },
+        });
+        record(
+          'node',
+          'factory',
+          'static: false still dispatches /_server (unknown id 404)',
+          bogusBehind.status === 404,
+          `status ${bogusBehind.status}`,
+        );
+      }
+    } finally {
+      try {
+        process.kill(-factory.pid, 'SIGTERM');
+      } catch {}
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  } finally {
+    try {
+      process.kill(-server.pid, 'SIGTERM');
+    } catch {}
+    // Leave dist in the standard (purely static) state.
+    rmSync(distDir, { recursive: true, force: true });
+    await runCommand('pnpm', ['exec', 'vite', 'build'], { cwd: exampleDir });
+  }
+}
+
 // ---------------------------------------------------------------------------
 const requested = process.argv[2];
-const modes = requested ? [requested] : ['dev', 'prod', 'flip'];
+const modes = requested ? [requested] : ['dev', 'prod', 'flip', 'node'];
 // `start: true` is pure sugar for `start: {}` (this suite's vite.config runs
 // on the boolean form): both spellings must construct the identical plugin
 // set, and `start: false` must mean off exactly like omission.
@@ -474,6 +773,7 @@ try {
     if (mode === 'dev') await devMode();
     else if (mode === 'prod') await prodMode();
     else if (mode === 'flip') await flipMode();
+    else if (mode === 'node') await nodeMode();
     else throw new Error(`Unknown mode: ${mode}`);
   }
 } catch (error) {
