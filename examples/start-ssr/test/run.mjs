@@ -4244,7 +4244,10 @@ async function runBabelHmrMode() {
 async function runObserveMode() {
   const mode = 'observe';
   console.log(`\n=== ${mode.toUpperCase()} ===`);
-  const env = { ...process.env, SOLID_OBSERVE: '1' };
+  // Pin NODE_ENV like every other build in this runner: the in-process dev
+  // server of a preceding mode leaves 'development' behind, which would make
+  // this build resolve the dev tier instead of the observe one.
+  const env = { ...process.env, NODE_ENV: 'production', SOLID_OBSERVE: '1' };
   console.log('  building…');
   execSync('pnpm run build', { cwd: exampleDir, stdio: 'pipe', env });
 
