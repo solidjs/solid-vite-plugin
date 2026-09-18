@@ -4380,7 +4380,11 @@ async function runNodeMode() {
 
     rmSync(distDir, { recursive: true, force: true });
     console.log('  building (with start.node)…');
-    execSync('pnpm run build', { cwd: exampleDir, stdio: 'pipe', env: { ...env, START_NODE: '1' } });
+    execSync('pnpm run build', {
+      cwd: exampleDir,
+      stdio: 'pipe',
+      env: { ...env, START_NODE: '1' },
+    });
     record(mode, 'build', 'dist/server/node.js emitted beside server.js', existsSync(nodeJs));
     // The one thing that legitimately differs between two builds is the
     // per-build random deployment secret the server-function handler bakes
@@ -4404,12 +4408,15 @@ async function runNodeMode() {
       'entry imports the sibling server bundle relatively',
       nodeSource.includes("from './server.js'"),
     );
-    const specifiers = [...nodeSource.matchAll(/^import\b[^'"]*['"]([^'"]+)['"]/gm)].map((m) => m[1]);
+    const specifiers = [...nodeSource.matchAll(/^import\b[^'"]*['"]([^'"]+)['"]/gm)].map(
+      (m) => m[1],
+    );
     record(
       mode,
       'build',
       'entry depends on nothing but node:* and ./server.js',
-      specifiers.length > 0 && specifiers.every((s) => s.startsWith('node:') || s === './server.js'),
+      specifiers.length > 0 &&
+        specifiers.every((s) => s.startsWith('node:') || s === './server.js'),
       specifiers.join(', '),
     );
     const configMatch = nodeSource.match(/^const SOLID_NODE_CONFIG = (\{.*\});$/m);
@@ -4432,16 +4439,21 @@ async function runNodeMode() {
       mode,
       'build',
       'entry exports listener and serve',
-      /export \{[^}]*\blistener\b[^}]*\}/.test(nodeSource) && /export \{[^}]*\bserve\b[^}]*\}/.test(nodeSource),
+      /export \{[^}]*\blistener\b[^}]*\}/.test(nodeSource) &&
+        /export \{[^}]*\bserve\b[^}]*\}/.test(nodeSource),
     );
     const serverBundle = readFileSync(serverJs, 'utf-8');
     const registeredId = serverBundle.match(/registerServerReference\w*\("([^"]+)"/)?.[1] ?? null;
-    const whoAmIId = serverBundle.match(/registerServerReference\w*\("(whoAmI-[^"]*)"/)?.[1] ?? null;
+    const whoAmIId =
+      serverBundle.match(/registerServerReference\w*\("(whoAmI-[^"]*)"/)?.[1] ?? null;
     // A non-asset static file for the must-revalidate branch (the example
     // has no public dir; Vite would copy one into dist/server as well).
     writeFileSync(path.join(distDir, 'client/robots.txt'), 'User-agent: *\nAllow: /\n');
-    const manifest = JSON.parse(readFileSync(path.join(distDir, 'client/.vite/manifest.json'), 'utf-8'));
-    const entryRecord = manifest[manifest._entry] ?? Object.values(manifest).find((r) => r?.isEntry);
+    const manifest = JSON.parse(
+      readFileSync(path.join(distDir, 'client/.vite/manifest.json'), 'utf-8'),
+    );
+    const entryRecord =
+      manifest[manifest._entry] ?? Object.values(manifest).find((r) => r?.isEntry);
     const entryAsset = entryRecord?.file ?? null;
     const cssAsset = Object.values(manifest).find((r) => r?.css?.length)?.css?.[0] ?? null;
 
@@ -4476,7 +4488,8 @@ async function runNodeMode() {
       mode,
       'static',
       'hashed asset serves 200 with a JavaScript MIME type',
-      asset.status === 200 && (asset.headers.get('content-type') || '').startsWith('text/javascript'),
+      asset.status === 200 &&
+        (asset.headers.get('content-type') || '').startsWith('text/javascript'),
       `status ${asset.status}, type ${asset.headers.get('content-type')}`,
     );
     record(
@@ -4599,7 +4612,12 @@ async function runNodeMode() {
       `status ${echo.status}, body ${JSON.stringify(echoBody)}`,
     );
     const bogus = await fetch(origin + '/_server/bogus-0', { method: 'POST' });
-    record(mode, 'sf', 'endpoint dispatches through the entry (unknown id 404)', bogus.status === 404);
+    record(
+      mode,
+      'sf',
+      'endpoint dispatches through the entry (unknown id 404)',
+      bogus.status === 404,
+    );
     await runCsrfChecks(mode, origin, registeredId);
     if (whoAmIId) {
       const fn = await fetch(
@@ -4615,7 +4633,13 @@ async function runNodeMode() {
         `status ${fn.status}, body ${JSON.stringify(fnBody.slice(0, 60))}`,
       );
     } else {
-      record(mode, 'sf', 'server function call through the entry', false, 'whoAmI id not found in server bundle');
+      record(
+        mode,
+        'sf',
+        'server function call through the entry',
+        false,
+        'whoAmI id not found in server bundle',
+      );
     }
     // HEAD on a streamed page: the bridge ends the response with the head
     // only and cancels the body.
@@ -4687,7 +4711,13 @@ async function runNodeMode() {
     server.stdout.on('data', (d) => (mountLog += d));
     server.stderr.on('data', (d) => (mountLog += d));
     const mounted = await waitForLog(() => mountLog, /MOUNTED=(\d+)/);
-    record(mode, 'mount', 'listener mounts into http.createServer', !!mounted, mountLog.slice(-300));
+    record(
+      mode,
+      'mount',
+      'listener mounts into http.createServer',
+      !!mounted,
+      mountLog.slice(-300),
+    );
     if (mounted) {
       const mountOrigin = `http://localhost:${mounted[1]}`;
       record(
@@ -4753,7 +4783,12 @@ async function runNodeMode() {
     };
     console.log('  building (cloudflare-shaped, without start.node)…');
     await cloudflareShaped({});
-    record(mode, 'cf', 'cloudflare-shaped build without start.node emits no node.js', !existsSync(nodeJs));
+    record(
+      mode,
+      'cf',
+      'cloudflare-shaped build without start.node emits no node.js',
+      !existsSync(nodeJs),
+    );
     const cfHandler = await import(pathToFileURL(serverJs).href + `?cf=${Date.now()}`);
     const cfResponse = await cfHandler.handleRequest(new Request('http://localhost/'));
     record(
@@ -4770,7 +4805,8 @@ async function runNodeMode() {
       mode,
       'cf',
       'cloudflare-shaped build with start.node emits node.js pointing at the client dir',
-      cfNodeSource.includes('"clientDir":"../client"') && cfNodeSource.includes("from './server.js'"),
+      cfNodeSource.includes('"clientDir":"../client"') &&
+        cfNodeSource.includes("from './server.js'"),
       cfNodeSource.match(/^const SOLID_NODE_CONFIG = .*$/m)?.[0] ?? 'no node.js',
     );
   } catch (e) {

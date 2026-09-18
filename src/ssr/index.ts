@@ -649,7 +649,8 @@ export function startServe(
   // `start.external` hands the server build to a host; both warn at build
   // time and emit nothing.
   const nodeEntry = !!options.node;
-  const nodeEntryApplies = nodeEntry && !externalServer && (!clientMode || !!internal.serverFunctions);
+  const nodeEntryApplies =
+    nodeEntry && !externalServer && (!clientMode || !!internal.serverFunctions);
   // Resolved build outDirs (absolute) of the client and ssr environments,
   // for the entry's client-directory constant. The client's generateBundle
   // overrides with the directory it actually wrote to (a host orchestrator

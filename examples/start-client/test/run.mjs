@@ -508,8 +508,18 @@ async function nodeMode() {
 
   rmSync(distDir, { recursive: true, force: true });
   await runCommand('pnpm', ['exec', 'vite', 'build'], { cwd: exampleDir, env });
-  record('node', 'build', 'dist/client/index.html emitted (prerendered shell)', existsSync(path.join(distDir, 'client/index.html')));
-  record('node', 'build', 'dist/server/server.js kept (serverFunctions)', existsSync(path.join(distDir, 'server/server.js')));
+  record(
+    'node',
+    'build',
+    'dist/client/index.html emitted (prerendered shell)',
+    existsSync(path.join(distDir, 'client/index.html')),
+  );
+  record(
+    'node',
+    'build',
+    'dist/server/server.js kept (serverFunctions)',
+    existsSync(path.join(distDir, 'server/server.js')),
+  );
   record('node', 'build', 'dist/server/node.js emitted', existsSync(nodeJs));
   const nodeSource = existsSync(nodeJs) ? readFileSync(nodeJs, 'utf-8') : '';
   record(
@@ -618,7 +628,9 @@ async function nodeMode() {
         'node',
         'browser',
         'app boots from the fallback shell on a deep route',
-        await cdp.waitFor('document.querySelector("#marker")?.textContent === "CLIENT-RENDERED-APP"'),
+        await cdp.waitFor(
+          'document.querySelector("#marker")?.textContent === "CLIENT-RENDERED-APP"',
+        ),
       );
       await cdp.evalJs('document.querySelector("#ping").click()');
       record(
@@ -629,7 +641,13 @@ async function nodeMode() {
         await cdp.evalJs('document.querySelector("#pong")?.textContent'),
       );
       const errs = cdp.exceptions.filter((e) => !/favicon/i.test(e));
-      record('node', 'browser', 'no page exceptions/console errors', errs.length === 0, errs.join(' | '));
+      record(
+        'node',
+        'browser',
+        'no page exceptions/console errors',
+        errs.length === 0,
+        errs.join(' | '),
+      );
     } finally {
       cdp.close();
       try {

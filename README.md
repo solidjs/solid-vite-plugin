@@ -275,23 +275,23 @@ Solid options accepted by `handleRequest`'s second parameter.
 node dist/server/node.js   # PORT (default 3000), HOST
 ```
 
-  The entry serves `dist/client` statically — files under
-  `build.assetsDir` as `Cache-Control: public, max-age=31536000, immutable`
-  (their names are content hashes), everything else `public, max-age=0,
-  must-revalidate` with `Last-Modified`; `HEAD` supported, dot-segment
-  paths and `..` traversal refused — and hands every other request to
-  `handleRequest` with the raw Node request as `nativeEvent`, so
-  `getRequestEvent().nativeEvent` is the `IncomingMessage` (client IP:
-  `event.nativeEvent.socket.remoteAddress`; behind a proxy read the
-  forwarding headers off `event.request` instead, only when you trust the
-  proxy). The node<->web bridge is the plugin's own — the same code the dev
-  and preview middlewares run: HTTP/2 pseudo-headers, `https:` on TLS
-  sockets, client disconnects as the request's `AbortSignal`, HEAD
-  short-circuit, `set-cookie` split, backpressure that also settles when
-  the client goes away. Errors log to `console.error` and answer 500. The
-  file is ESM, depends on nothing but `node:*` and `./server.js`, and
-  exports `listener` — the `(req, res)` function — and `serve(options?)`,
-  so it composes with an existing server:
+The entry serves `dist/client` statically — files under
+`build.assetsDir` as `Cache-Control: public, max-age=31536000, immutable`
+(their names are content hashes), everything else `public, max-age=0,
+must-revalidate` with `Last-Modified`; `HEAD` supported, dot-segment
+paths and `..` traversal refused — and hands every other request to
+`handleRequest` with the raw Node request as `nativeEvent`, so
+`getRequestEvent().nativeEvent` is the `IncomingMessage` (client IP:
+`event.nativeEvent.socket.remoteAddress`; behind a proxy read the
+forwarding headers off `event.request` instead, only when you trust the
+proxy). The node<->web bridge is the plugin's own — the same code the dev
+and preview middlewares run: HTTP/2 pseudo-headers, `https:` on TLS
+sockets, client disconnects as the request's `AbortSignal`, HEAD
+short-circuit, `set-cookie` split, backpressure that also settles when
+the client goes away. Errors log to `console.error` and answer 500. The
+file is ESM, depends on nothing but `node:*` and `./server.js`, and
+exports `listener` — the `(req, res)` function — and `serve(options?)`,
+so it composes with an existing server:
 
 ```js
 import express from 'express';
@@ -303,15 +303,15 @@ app.use(listener); // pages, assets, /_server
 app.listen(3000);
 ```
 
-  `node.js` is an emitted asset, not a second build input: `server.js` and
-  its `handleRequest` / `{ fetch }` contracts are unchanged. It applies to
-  both start modes — in client mode with `serverFunctions` (which keeps
-  `dist/server`) the entry serves the static client with an `index.html`
-  history fallback for HTML navigations plus the endpoint. Nothing is
-  emitted where no server bundle exists (client mode without
-  `serverFunctions`, or `start.external`); the build warns. The
-  compression/proxy stance is unchanged: the entry speaks plain HTTP —
-  terminate TLS and compress at the reverse proxy or CDN in front of it.
+`node.js` is an emitted asset, not a second build input: `server.js` and
+its `handleRequest` / `{ fetch }` contracts are unchanged. It applies to
+both start modes — in client mode with `serverFunctions` (which keeps
+`dist/server`) the entry serves the static client with an `index.html`
+history fallback for HTML navigations plus the endpoint. Nothing is
+emitted where no server bundle exists (client mode without
+`serverFunctions`, or `start.external`); the build warns. The
+compression/proxy stance is unchanged: the entry speaks plain HTTP —
+terminate TLS and compress at the reverse proxy or CDN in front of it.
 
 Among the `handleRequest` options, **`event`** is the supported public seam
 for extending the request event: its fields spread into the event at
