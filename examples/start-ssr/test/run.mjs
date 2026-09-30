@@ -97,7 +97,14 @@
 //     middleware catching a render throw, and the post-next()
 //     header-mutation window on a streamed response — in dev and prod,
 //     plus codegen string assertions that the generated handler resolves
-//     commitEventResponse from @solidjs/web and folds after the unwind,
+//     commitEventResponse from @solidjs/web and folds after the unwind;
+//     a thrown redirect() or respond() envelope escaping the chain is the
+//     response (dev included), and any other escaping failure (middleware,
+//     start.setup, an in-process server-function call) is contained in
+//     production (preview and node too): a generic 500 with the stub
+//     cookie, the configureServerErrors hook hearing each error once (or
+//     console.error without one), while dev still hands it to the Vite
+//     overlay and its handler reports nothing itself,
 //   - `vite preview` serves the production artifact with no server file:
 //     dist/client statically, everything else (pages, /_server, middleware,
 //     the lifecycle) through the built handler,
@@ -3246,6 +3253,197 @@ async function runMiddlewareChecksOverHttp(mode, origin, functionId) {
   }
 }
 
+// Failures escaping the whole middleware chain (src/middleware.ts throws
+// from `first`, the outermost, outside its error middleware). A thrown
+// Response, or the Response a thrown respond() envelope carries, is the
+// response in dev and production alike. Production builds contain
+// everything else in the generated handler: the configureServerErrors hook
+// (or console.error without one) hears it once and the client gets a
+// bodyless 500, carrying the stub's cookies while the response head is still
+// open, so no host sees a rejection. Dev rethrows it to Vite's error
+// middleware (the overlay). `hooked`: the server runs with
+// SSR_SERVER_ERRORS=1, so middleware.ts registered a recording hook.
+// `setup`: start.setup is wired (SSR_SETUP=1), so /setup-throw fails there.
+async function runContainmentChecks(
+  mode,
+  origin,
+  { dev = false, hooked = false, setup = false, getLog } = {},
+) {
+  const marker = 'mw-throw-secret';
+  const markers = ['mw-throw-secret', 'late-throw-secret', 'direct-throw-secret'];
+  if (setup) markers.push('setup-throw-secret');
+  // Only what the server logs from here on (the log may span servers).
+  const logStart = getLog ? getLog().length : 0;
+  const logSince = () => getLog().slice(logStart);
+  const heardErrors = async () => {
+    const res = await fetch(origin + '/api/server-errors', {
+      headers: { accept: 'application/json' },
+    });
+    return res.ok ? await res.json() : null;
+  };
+  const get = (pathname) =>
+    fetch(origin + pathname, { redirect: 'manual', headers: { accept: 'text/html' } });
+
+  // Thrown control responses: the response itself, on every surface.
+  const redirected = await get('/mw-redirect');
+  await redirected.arrayBuffer();
+  record(
+    mode,
+    'contain',
+    'thrown redirect() becomes the response (302 + Location)',
+    redirected.status === 302 && redirected.headers.get('location') === '/redirected-target',
+    `status ${redirected.status}, location ${JSON.stringify(redirected.headers.get('location'))}`,
+  );
+  const enveloped = await get('/mw-envelope');
+  const envelopeBody = await enveloped.text();
+  record(
+    mode,
+    'contain',
+    'thrown respond() envelope answers its Response (status, header, JSON body)',
+    enveloped.status === 409 &&
+      enveloped.headers.get('x-envelope') === '1' &&
+      envelopeBody === JSON.stringify({ contained: 'envelope' }),
+    `status ${enveloped.status}, x-envelope ${enveloped.headers.get('x-envelope')}, body ${JSON.stringify(envelopeBody.slice(0, 80))}`,
+  );
+
+  const thrown = await get('/mw-throw');
+  const thrownBody = await thrown.text();
+  if (dev) {
+    record(
+      mode,
+      'contain',
+      'dev: an escaping middleware throw still reaches the Vite overlay (500 with the error)',
+      thrown.status === 500 && thrownBody.includes(marker),
+      `status ${thrown.status}, body ${JSON.stringify(thrownBody.slice(0, 80))}`,
+    );
+    if (hooked) {
+      const heard = await heardErrors();
+      record(
+        mode,
+        'contain',
+        'dev: the handler reports nothing itself (the hook never hears the throw)',
+        Array.isArray(heard) && !heard.some((e) => e.message.includes(marker)),
+        JSON.stringify(heard),
+      );
+    }
+    return;
+  }
+  record(
+    mode,
+    'contain',
+    'escaping middleware throw answers a generic 500 (no body, no error details)',
+    thrown.status === 500 && thrownBody === '',
+    `status ${thrown.status}, body ${JSON.stringify(thrownBody.slice(0, 80))}`,
+  );
+  const thrownCookies = (thrown.headers.getSetCookie ? thrown.headers.getSetCookie() : []).filter(
+    (cookie) => cookie.startsWith('mw-throw='),
+  );
+  record(
+    mode,
+    'contain',
+    'stub cookie written before the throw arrives exactly once',
+    thrownCookies.length === 1 && thrownCookies[0].startsWith('mw-throw=1'),
+    `set-cookie: ${JSON.stringify(thrownCookies)}`,
+  );
+  // The other escaping shapes all answer the same generic 500: a throw
+  // after next() returned the page, Response.error() (not a response to
+  // send), an uncaught in-process server-function failure, and a
+  // start.setup failure.
+  const generic = [
+    ['/mw-throw-late', 'a throw after next() returned the page'],
+    ['/mw-response-error', 'thrown Response.error()'],
+    ['/mw-direct-throw', 'an uncaught in-process server-function failure'],
+    ...(setup ? [['/setup-throw', 'a start.setup failure']] : []),
+  ];
+  for (const [pathname, label] of generic) {
+    const res = await get(pathname);
+    const body = await res.text();
+    record(
+      mode,
+      'contain',
+      `${label} answers the generic 500`,
+      res.status === 500 && body === '',
+      `status ${res.status}, body ${JSON.stringify(body.slice(0, 80))}`,
+    );
+  }
+  if (hooked) {
+    const heard = await heardErrors();
+    const heardFor = (secret) =>
+      Array.isArray(heard) ? heard.filter((e) => e.message.includes(secret)) : [];
+    const failedOnce = (secret) => {
+      const failures = heardFor(secret);
+      return (
+        failures.length === 1 &&
+        failures[0].kind === 'render' &&
+        failures[0].handling === 'failed' &&
+        failures[0].event === true
+      );
+    };
+    record(
+      mode,
+      'contain',
+      'configureServerErrors hook hears the failure once (render/failed, with the event)',
+      failedOnce('mw-throw-secret') && failedOnce('late-throw-secret'),
+      JSON.stringify(heard),
+    );
+    if (setup) {
+      record(
+        mode,
+        'contain',
+        'a start.setup failure reaches the hook once (render/failed, with the event)',
+        failedOnce('setup-throw-secret'),
+        JSON.stringify(heard),
+      );
+    }
+    // The runtime reported the direct call first (server-function/thrown);
+    // the handler's report of the same error object must not repeat it.
+    const direct = heardFor('direct-throw-secret');
+    record(
+      mode,
+      'contain',
+      'an in-process server-function failure is heard once, as the runtime first reported it',
+      direct.length === 1 &&
+        direct[0].kind === 'server-function' &&
+        direct[0].handling === 'thrown',
+      JSON.stringify(direct),
+    );
+    record(
+      mode,
+      'contain',
+      'thrown Responses and envelopes are not reported; Response.error() is',
+      Array.isArray(heard) &&
+        !heard.some(
+          (e) => e.message === 'Response 302' || e.message.startsWith('ResponseEnvelope'),
+        ) &&
+        heard.filter((e) => e.message === 'Response 0').length === 1,
+      JSON.stringify(heard),
+    );
+    // The hook replaced the log: give stderr a moment, then no original
+    // may be in it.
+    await new Promise((r) => setTimeout(r, 250));
+    record(
+      mode,
+      'contain',
+      'with a hook, the original errors stay out of the server log',
+      !markers.some((secret) => logSince().includes(secret)),
+      logSince().slice(-300),
+    );
+  } else {
+    let logged = false;
+    for (let i = 0; i < 20 && !logged; i++) {
+      logged = markers.every((secret) => logSince().includes(secret));
+      if (!logged) await new Promise((r) => setTimeout(r, 100));
+    }
+    record(
+      mode,
+      'contain',
+      'without a hook, the original errors go to console.error',
+      logged,
+      logSince().slice(-300),
+    );
+  }
+}
+
 async function runMiddlewareMode() {
   console.log(`\n=== MIDDLEWARE ===`);
   const devPort = 3172;
@@ -3255,11 +3453,14 @@ async function runMiddlewareMode() {
   // in front anyway.
   // SSR_INSTRUMENT rides along too: the instrument module's evidence is a
   // header the middleware sets, so it needs the chain in front as well.
+  // SSR_SERVER_ERRORS: the recording configureServerErrors hook the
+  // containment checks read back.
   const env = {
     ...process.env,
     SSR_MIDDLEWARE: '1',
     SSR_SETUP: '1',
     SSR_INSTRUMENT: '1',
+    SSR_SERVER_ERRORS: '1',
     SSR_DEVTOOLS: '0',
   };
 
@@ -3326,6 +3527,19 @@ async function runMiddlewareMode() {
         'edge fold runs after the middleware chain unwinds',
         unwind !== -1 && fold !== -1 && fold > unwind,
         `runMiddleware @ ${unwind}, fold @ ${fold}`,
+      );
+      // Dev containment is the thrown-Response half only: the catch answers
+      // a thrown Response or envelope and rethrows everything else to
+      // Vite's error middleware. Reporting (reportServerError from
+      // solid-js/internal) and the bodyless 500 are build-only.
+      record(
+        'mw-codegen',
+        'gen',
+        'dev handler catch rethrows failures (no reportServerError, no synthesized 500)',
+        code.includes('function containFailure') &&
+          code.includes('throw error') &&
+          !code.includes('reportServerError') &&
+          !code.includes('solid-js/internal'),
       );
       // The generated entry-server threads start.setup: awaited with the
       // request event before renderToStream, its result (or App) rendered.
@@ -3399,6 +3613,7 @@ async function runMiddlewareMode() {
     const clientModule = await (await fetch(devOrigin + '/src/api.ts')).text();
     functionId = extractFunctionId(clientModule, 'whoAmI');
     await runMiddlewareChecksOverHttp('mw-dev', devOrigin, functionId);
+    await runContainmentChecks('mw-dev', devOrigin, { dev: true, hooked: true });
     // Dev-only: a non-page request the chain does NOT handle falls back to
     // Vite's pipeline (its 404) instead of getting the page rendered at it.
     const unhandledPost = await fetch(devOrigin + '/no-such-route', { method: 'POST' });
@@ -3444,6 +3659,11 @@ async function runMiddlewareMode() {
     // Identity-keyed ids are the same in dev and prod (solidjs/solid#3109).
     const prodId = functionId;
     await runMiddlewareChecksOverHttp('mw-prod', prodOrigin, prodId);
+    await runContainmentChecks('mw-prod', prodOrigin, {
+      hooked: true,
+      setup: true,
+      getLog: () => serverLog,
+    });
     await runHttpChecks('mw-prod', prodOrigin);
   } catch (e) {
     record(
@@ -3480,7 +3700,15 @@ async function runPreviewMode() {
   // entry that threads it exactly like dev and prod.
   // SSR_INSTRUMENT too: `vite preview` serves the built handler, so the
   // instrument sequencing is asserted on the third surface here.
-  const env = { ...process.env, SSR_MIDDLEWARE: '1', SSR_SETUP: '1', SSR_INSTRUMENT: '1' };
+  // SSR_SERVER_ERRORS: the containment checks' recording hook, as in
+  // middleware mode.
+  const env = {
+    ...process.env,
+    SSR_MIDDLEWARE: '1',
+    SSR_SETUP: '1',
+    SSR_INSTRUMENT: '1',
+    SSR_SERVER_ERRORS: '1',
+  };
 
   let server;
   let serverLog = '';
@@ -3638,6 +3866,11 @@ async function runPreviewMode() {
     // The full chain contract — API GETs/POSTs and no-JS form POSTs
     // included — holds under preview like dev and prod.
     await runMiddlewareChecksOverHttp(mode, origin, null);
+    await runContainmentChecks(mode, origin, {
+      hooked: true,
+      setup: true,
+      getLog: () => serverLog,
+    });
 
     await runHttpChecks(mode, origin);
   } catch (e) {
@@ -4108,6 +4341,24 @@ async function runRenderModeMode() {
       'override',
       'handleRequest({ renderMode: "stream" }) beats the static async config',
       forcedStream.status === 200 && isStreamedMarkup(forcedStream.html),
+    );
+    // A bad per-call option is the host's own error: the built handler
+    // rejects it up front instead of containing it as a request failure.
+    let prodRejection = '';
+    try {
+      await built.handleRequest(
+        new Request(prodAsyncOrigin + '/', { headers: { accept: 'text/html' } }),
+        { renderMode: 'bogus' },
+      );
+    } catch (e) {
+      prodRejection = String(e && e.message ? e.message : e);
+    }
+    record(
+      'rm-prod-async',
+      'override',
+      'invalid runtime renderMode still rejects from the built handler (not contained)',
+      prodRejection.includes('renderMode') && prodRejection.includes('bogus'),
+      prodRejection.slice(0, 200) || 'resolved without error',
     );
 
     server = spawnProd(prodAsyncPort, { SSR_RENDER_MODE: 'async' });
@@ -5297,6 +5548,9 @@ async function runNodeMode() {
       echo.status === 200 && echoBody?.echoed?.via === 'node-entry',
       `status ${echo.status}, body ${JSON.stringify(echoBody)}`,
     );
+    // The handler contains a middleware failure before the entry's own
+    // catch could; no hook registered here, so the fallback log is asserted.
+    await runContainmentChecks(mode, origin, { getLog: () => serverLog });
     const bogus = await fetch(origin + '/_server/bogus-0', { method: 'POST' });
     record(
       mode,

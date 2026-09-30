@@ -1149,7 +1149,8 @@ export function startServe(
     const composeServerFunctions = internal.serverFunctions;
 
     const lines = [
-      `import { createRequestEvent, createSSRResponse, commitEventResponse${middlewarePath ? ', composeMiddleware' : ''} } from '@solidjs/web';`,
+      `import { createRequestEvent, createSSRResponse, commitEventResponse${middlewarePath ? ', composeMiddleware' : ''}, isResponseEnvelope } from '@solidjs/web';`,
+      ...(isBuild ? [`import { reportServerError } from 'solid-js/internal';`] : []),
       `import { provideRequestEvent } from ${JSON.stringify(STORAGE_SOURCE)};`,
       `import * as entry from ${JSON.stringify(entryServerSpec())};`,
       ...(middlewarePath
@@ -1430,7 +1431,71 @@ export function startServe(
       `  });`,
       `}`,
       ``,
+    );
+
+    // Failure containment for whatever escapes the chain. A thrown Response
+    // is the response, like the server-function endpoint's plain-HTTP answer
+    // (`throw redirect()` included), and so is the Response a thrown
+    // envelope carries (its plain-HTTP form); `Response.error()` (status 0)
+    // is not a response to send. The classification is guarded, so a
+    // hostile thrown value (a revoked Proxy) reads as an ordinary failure
+    // instead of escaping the catch.
+    //
+    // In dev that is all: any other failure rethrows, so the dev server sees
+    // the original error (with the built-in dev middleware, Vite's error
+    // middleware and its overlay).
+    //
+    // In a build any other failure (a middleware throw, a start.setup or
+    // start.renderMode module failure, a render that throws before
+    // renderToStream returns) must not leave handleRequest: each host would
+    // answer it its own way and the configured error policy would never see
+    // it. It is reported the way `failRender` reports a failed render,
+    // through the runtime's `reportServerError` (from solid-js/internal, as
+    // @solidjs/web does; there is no public entry point for request
+    // failures) with the site `{ kind: 'render', handling: 'failed' }` and
+    // the event, and to console.error when no `configureServerErrors` hook
+    // is registered. The runtime's ledger calls the hook once per error
+    // object, so a failure it already reported (an uncaught in-process
+    // server-function call, heard as `server-function`/`thrown`) is not
+    // heard twice. The answer is a bodyless 500 like the endpoint's. The
+    // edge fold below adds the stub's headers and cookies while the
+    // response head is still open; once next() returned a rendered page,
+    // the stub was committed with that page and the 500 goes out without
+    // them.
+    lines.push(
+      ...(isBuild
+        ? [
+            `const SERVER_ERRORS = Symbol.for('solid-js/server/errors');`,
+            ``,
+            `function containFailure(error, event) {`,
+            `  try {`,
+            `    const thrown = isResponseEnvelope(error) ? error.response : error;`,
+            `    if (thrown instanceof Response && thrown.status !== 0) return thrown;`,
+            `  } catch {}`,
+            `  reportServerError(error, { kind: 'render', handling: 'failed', event });`,
+            `  const slot = globalThis[SERVER_ERRORS];`,
+            `  if (!(slot && slot.hook)) console.error(error);`,
+            `  return new Response(null, { status: 500 });`,
+            `}`,
+          ]
+        : [
+            `function containFailure(error) {`,
+            `  try {`,
+            `    const thrown = isResponseEnvelope(error) ? error.response : error;`,
+            `    if (thrown instanceof Response && thrown.status !== 0) return thrown;`,
+            `  } catch {}`,
+            `  throw error;`,
+            `}`,
+          ]),
+      ``,
+    );
+
+    lines.push(
       `export async function handleRequest(request, options = {}) {`,
+      // A bad per-call option is the host's own error, not the app's: it
+      // rejects up front, before the chain runs, instead of being contained
+      // as a request failure.
+      `  if (options.renderMode !== undefined) assertRenderMode(options.renderMode, 'handleRequest options.renderMode');`,
       // `options.event` is the public wrapper->event extension seam: extra
       // fields (conventionally `nativeEvent`, the platform's raw request
       // object) spread over the event's defaults at creation, so hosts and
@@ -1441,9 +1506,13 @@ export function startServe(
       // Middleware runs inside the request scope, after event creation —
       // getRequestEvent() answers in middleware exactly as in app code, and
       // nothing reaches the wire until the outermost middleware returns.
-      `  const response = await provideRequestEvent(event, () =>`,
-      `    runMiddleware(request, (req) => dispatchRequest(req || request, event, options)),`,
-      `  );`,
+      `  const response = await provideRequestEvent(event, async () => {`,
+      `    try {`,
+      `      return await runMiddleware(request, (req) => dispatchRequest(req || request, event, options));`,
+      `    } catch (error) {`,
+      `      return containFailure(error, event);`,
+      `    }`,
+      `  });`,
       // The fold runs strictly AFTER the outermost middleware returned:
       // headers stay mutable through the whole unwind, and a middleware
       // early return (an API handler that never called next()) gets its
@@ -2030,6 +2099,14 @@ export function startServe(
                 const response: Response = await handler.handleRequest(
                   new Request(new URL(base || '/', 'http://localhost')),
                 );
+                // The built handler answers failures with a 500 instead of
+                // rejecting; a shell that did not render must fail the
+                // build, not become index.html.
+                if (!response.ok) {
+                  throw new Error(
+                    `[@solidjs/vite-plugin] prerendering the client-mode shell failed: the handler answered ${response.status}`,
+                  );
+                }
                 writeFileSync(path.resolve(root, 'dist/client/index.html'), await response.text());
                 if (!internal.serverFunctions) {
                   rmSync(serverDir, { recursive: true, force: true });

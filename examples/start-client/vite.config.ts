@@ -23,11 +23,21 @@ import solidPlugin from '@solidjs/vite-plugin';
 // kept handler. SOLID_START_NODE_ONLY=1 sets `start.node` alone (no server
 // functions): the purely static build has no server bundle to wrap, so the
 // build warns and emits nothing.
+//
+// SOLID_SHELL_FAIL=1 (prod mode's failing build) wires src/shell-failure.ts
+// through `start.middleware`: the chain throws while the build prerenders the
+// shell, and the build must fail rather than write the handler's contained
+// 500 to dist/client/index.html.
 const startNode = !!process.env.SOLID_START_NODE || !!process.env.SOLID_START_NODE_ONLY;
+const shellFail = !!process.env.SOLID_SHELL_FAIL;
 export default defineConfig({
   plugins: [
     solidPlugin({
-      start: startNode ? { node: true } : true,
+      start: startNode
+        ? { node: true }
+        : shellFail
+          ? { middleware: './src/shell-failure.ts' }
+          : true,
       ssr: !!process.env.SOLID_FLIP_SSR,
       ...(process.env.SOLID_START_NODE ? { serverFunctions: true } : {}),
     }),

@@ -1,0 +1,5 @@
+---
+'@solidjs/vite-plugin': patch
+---
+
+The Start handler now settles failures that escape the middleware chain instead of letting them reject to the host. A thrown `Response`, or the `Response` a thrown `respond()` envelope carries, becomes the response in dev and production, so `throw redirect()` works from middleware. In a production build any other failure (a middleware throw, a `start.setup` or `start.renderMode` module failure) is reported once to the `configureServerErrors` hook as `{ kind: 'render', handling: 'failed' }` with the request event, or logged with `console.error` without a hook, and answered with a bodyless 500. That 500 keeps the headers and cookies written to the request event while the response head is still open, that is, unless `next()` already returned a rendered page. In dev those failures still reject, so the dev server sees the original error. An invalid `renderMode` passed to `handleRequest` still rejects the call. A client-mode build now fails when prerendering the shell answers a non-2xx status, instead of writing that response to `index.html`.

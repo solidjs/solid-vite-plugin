@@ -26,8 +26,12 @@ export default async function setup(event: RequestEvent, App: Component) {
   // Simulates the router's pre-render load; must complete before the shell
   // streams, so the marker below always lands in the first chunk.
   await new Promise((resolve) => setTimeout(resolve, 10));
-  const seq = ++invocations;
   const pathname = new URL(event.request.url).pathname;
+  // Containment probe: a setup failure escapes the chain (src/middleware.ts
+  // lets this path past its error middleware), so the handler contains it.
+  // Thrown before the count, which stays one per rendered request.
+  if (pathname === '/setup-throw') throw new Error('token=setup-throw-secret');
+  const seq = ++invocations;
   const user = String((event.locals as Record<string, unknown>).user ?? 'anonymous');
   const cookieHeader = event.request.headers.get('cookie');
   // One-shot: cleared whether or not it decodes (a tampered or stale cookie

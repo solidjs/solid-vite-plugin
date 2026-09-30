@@ -17,7 +17,25 @@
 //   with bodies, and no-JS form POSTs must all reach the chain — in dev
 //   exactly as in production — while non-page requests the chain does NOT
 //   handle fall back to Vite's own pipeline in dev.
-import { getRequestEvent } from '@solidjs/web';
+// - failures escaping the whole chain (the handler's containment), all from
+//   the outermost middleware and outside its try/catch, so nothing in the
+//   chain catches them: /mw-throw writes a stub cookie and throws an Error
+//   with a secret-looking message, /mw-throw-late throws after next()
+//   returned the page, /mw-redirect throws redirect(), /mw-envelope throws a
+//   respond() envelope, /mw-response-error throws Response.error(),
+//   /mw-direct-throw lets an in-process server-function failure escape, and
+//   /setup-throw skips the error middleware so the start.setup failure
+//   (src/setup.tsx) reaches the handler. SSR_SERVER_ERRORS=1 registers a
+//   configureServerErrors hook that records what it hears (read back from
+//   /api/server-errors) instead of logging.
+import {
+  configureServerErrors,
+  getRequestEvent,
+  isResponseEnvelope,
+  redirect,
+  respond,
+} from '@solidjs/web';
+import { failDirect } from './api';
 
 // `start.instrument` evidence (SSR_INSTRUMENT=1): this module evaluates as
 // part of the handler graph — after `@solidjs/web` above — so what the
@@ -29,6 +47,25 @@ const instrumentAtLoad = globalThis.__solidInstrument
   : null;
 globalThis.__solidInstrument?.order.push('middleware');
 
+const serverErrors: { message: string; kind: string; handling: string; event: boolean }[] = [];
+if (process.env.SSR_SERVER_ERRORS) {
+  configureServerErrors({
+    onError(error, { kind, handling, event }) {
+      // Non-Error values are named by shape so the checks can tell a thrown
+      // Response (never reported) from Response.error() (a failure).
+      const message =
+        error instanceof Error
+          ? error.message
+          : error instanceof Response
+            ? `Response ${error.status}`
+            : isResponseEnvelope(error)
+              ? `ResponseEnvelope ${error.response.status}`
+              : String(error);
+      serverErrors.push({ message, kind, handling, event: !!event });
+    },
+  });
+}
+
 type Next = (request?: Request) => Promise<Response>;
 
 // A minimal filesystem-routing/createAPIHandler stand-in: owns /api/* and
@@ -38,6 +75,9 @@ async function api(request: Request, next: Next): Promise<Response> {
   if (request.method === 'GET' && pathname === '/api/info') {
     const event = getRequestEvent()!;
     return Response.json({ user: event.locals.user, order: event.locals.order });
+  }
+  if (request.method === 'GET' && pathname === '/api/server-errors') {
+    return Response.json(serverErrors);
   }
   if (request.method === 'GET' && pathname === '/api/native') {
     // The `options.event` seam: the plugin's dev/preview middlewares (and a
@@ -120,7 +160,31 @@ async function first(request: Request, next: Next): Promise<Response> {
   const event = getRequestEvent()!;
   event.locals.order = ['first'];
   event.locals.user = 'mw-user';
-  if (new URL(request.url).pathname === '/blocked') {
+  const { pathname } = new URL(request.url);
+  if (pathname === '/mw-throw') {
+    // Uncaught: only the handler's containment can still carry this stub
+    // cookie onto the wire, and must keep the message off it.
+    event.response.headers.append('set-cookie', 'mw-throw=1; Path=/');
+    throw new Error('token=mw-throw-secret');
+  }
+  if (pathname === '/mw-throw-late') {
+    // The page came back (its render committed the stub), then the chain
+    // fails anyway: contained all the same, with that page dropped.
+    await next();
+    throw new Error('token=late-throw-secret');
+  }
+  if (pathname === '/mw-redirect') throw redirect('/redirected-target');
+  if (pathname === '/mw-envelope') {
+    throw respond({ contained: 'envelope' }, { status: 409, headers: { 'x-envelope': '1' } });
+  }
+  if (pathname === '/mw-response-error') throw Response.error();
+  // The runtime reports a failed in-process server-function call itself
+  // before rethrowing; the handler must not report it a second time.
+  if (pathname === '/mw-direct-throw') await failDirect();
+  // Past the error middleware below on purpose: the start.setup failure
+  // must escape the chain.
+  if (pathname === '/setup-throw') return next();
+  if (pathname === '/blocked') {
     // Early return: this Response never goes through createSSRResponse, so
     // the stub write below only reaches the wire through the handler
     // edge's commitEventResponse fold after the chain unwinds — the e2e

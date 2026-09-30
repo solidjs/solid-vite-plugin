@@ -14,7 +14,9 @@
 //     script from client-mode shells),
 //   - build: `vite build` emits a purely static dist/client — index.html is
 //     the shell prerendered through the built handler, referencing the
-//     hashed entry script and CSS links — and NO dist/server,
+//     hashed entry script and CSS links — and NO dist/server; a shell the
+//     handler answers with a non-2xx status (SOLID_SHELL_FAIL=1: a
+//     middleware throw it contains as a 500) fails the build instead,
 //   - preview: `vite preview` serves the static build with history fallback
 //     and the app boots from it.
 //
@@ -334,6 +336,49 @@ async function devMode() {
 
 async function prodMode() {
   console.log('\n== prod ==');
+  // A shell that fails to prerender fails the build. The fixture middleware
+  // (SOLID_SHELL_FAIL=1) throws while the build prerenders the shell; the
+  // built handler contains that as a bodyless 500 instead of rejecting, so
+  // without the check an empty index.html would ship.
+  rmSync(path.join(exampleDir, 'dist'), { recursive: true, force: true });
+  const failedBuild = await new Promise((resolve) => {
+    let output = '';
+    const child = spawn('pnpm', ['exec', 'vite', 'build'], {
+      cwd: exampleDir,
+      env: { ...process.env, SOLID_SHELL_FAIL: '1' },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    children.add(child);
+    child.stdout.on('data', (d) => (output += d));
+    child.stderr.on('data', (d) => (output += d));
+    child.on('exit', (code) => {
+      children.delete(child);
+      resolve({ code, output });
+    });
+  });
+  record(
+    'prod',
+    'prerender',
+    'a shell prerender that answers non-2xx fails the build',
+    failedBuild.code !== 0 &&
+      failedBuild.output.includes(
+        'prerendering the client-mode shell failed: the handler answered 500',
+      ),
+    `exit ${failedBuild.code}: ${failedBuild.output.slice(-400)}`,
+  );
+  record(
+    'prod',
+    'prerender',
+    'the contained failure reaches console.error (no hook registered)',
+    failedBuild.output.includes('shell-failure-secret'),
+  );
+  record(
+    'prod',
+    'prerender',
+    'no dist/client/index.html written for the failed shell',
+    !existsSync(path.join(exampleDir, 'dist/client/index.html')),
+  );
+
   rmSync(path.join(exampleDir, 'dist'), { recursive: true, force: true });
   await runCommand('pnpm', ['exec', 'vite', 'build'], { cwd: exampleDir });
 

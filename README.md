@@ -452,6 +452,25 @@ decoration is visible to server functions too). Nothing reaches the wire
 until the outermost middleware returns: headers stay mutable after
 `next()` even for streamed responses.
 
+Whatever escapes the chain is settled at the handler edge. A thrown
+`Response` is the response, so `throw redirect('/login')` answers the 302
+(as the server-function endpoint does), and so is the `Response` a thrown
+`respond()` envelope carries; `Response.error()` is not a response and
+counts as a failure. In a production build any other failure (a middleware
+throw, a `setup` or `renderMode` module failure) is contained by the
+handler instead of rejecting to the host. It is reported once to the hook
+registered with `configureServerErrors` from `@solidjs/web`, with the site
+a failed render reports (`{ kind: 'render', handling: 'failed' }` and the
+request `event`), or logged with `console.error` when no hook is
+registered, and the client gets a bodyless 500. That 500 carries the
+headers and cookies written to the request event only while the response
+head is still open: once `next()` has returned a rendered page, the head
+was committed with that page, and a later throw drops them. An error
+middleware still sees a throw first, and with `errorBoundary` on, render
+errors are handled by the boundary before they get this far. In dev those
+failures still reject, so the dev server sees the original error (with the
+built-in dev middleware, Vite's error middleware and its overlay).
+
 **`setup`** points at a server-only module default-exporting a per-request
 app-setup hook: `(event, App) => Component | void | Promise<Component |
 void>`. The generated server entry awaits it after the middleware chain has
@@ -574,7 +593,9 @@ export default function renderMode(event: RequestEvent) {
 Hosts driving the handler directly can decide per call instead:
 `handleRequest(request, { renderMode: 'async' })`. Precedence is that
 runtime option, then the module function's result, then the static config;
-an unknown value from any of the three is an error naming its source. The
+an unknown value from any of the three is an error naming its source (a
+bad runtime option rejects the `handleRequest` call; a bad module result is
+a request failure, contained in production like any other). The
 mode applies to generated and authored entries alike — an authored
 `render()` returning a `renderToStream` result is awaited the same way (and
 in production its client-entry reference is still rewritten). `httpStatus()` /
