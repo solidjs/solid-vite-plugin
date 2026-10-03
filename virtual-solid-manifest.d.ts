@@ -40,6 +40,8 @@ declare module "virtual:solid-server-function-handler" {
 // manifest, and — when `serverFunctions` is enabled — serves the
 // server-function endpoint ahead of SSR.
 declare module "virtual:solid-ssr-handler" {
+  import type { CSPNonce } from "@solidjs/web";
+
   export function handleRequest(
     request: Request,
     options?: {
@@ -49,6 +51,13 @@ declare module "virtual:solid-ssr-handler" {
       context?: Record<string, unknown>;
       /** Status/headers for the HTML response. */
       responseInit?: ResponseInit;
+      /**
+       * CSP nonce for the scripts the handler writes into the document: the
+       * injected client-entry tag and the fallback of a redirect decided
+       * after the shell flushed. A `{ script, style }` pair contributes its
+       * `script` value.
+       */
+      nonce?: CSPNonce;
       /**
        * Per-call render mode, overriding `start.renderMode` (static value or
        * per-request module alike). `'stream'` flushes the document shell

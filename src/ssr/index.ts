@@ -1149,7 +1149,7 @@ export function startServe(
     const composeServerFunctions = internal.serverFunctions;
 
     const lines = [
-      `import { createRequestEvent, createSSRResponse, commitEventResponse${middlewarePath ? ', composeMiddleware' : ''} } from '@solidjs/web';`,
+      `import { createRequestEvent, createSSRResponse, commitEventResponse, scriptNonce${middlewarePath ? ', composeMiddleware' : ''} } from '@solidjs/web';`,
       `import { provideRequestEvent } from ${JSON.stringify(STORAGE_SOURCE)};`,
       `import * as entry from ${JSON.stringify(entryServerSpec())};`,
       ...(middlewarePath
@@ -1423,10 +1423,14 @@ export function startServe(
       // The runtime's response-head lifecycle: commit at shell flush,
       // pre-flush Location as a real redirect, post-flush Location as the
       // script fallback; the transform injects the doctype/head pieces.
+      // Both write a single script, so a `{ script, style }` nonce
+      // contributes its script value, as with @solidjs/web's other
+      // single-script surfaces.
+      `  const nonce = scriptNonce(options.nonce);`,
       `  return createSSRResponse(result, event, {`,
       `    responseInit: options.responseInit,`,
-      `    nonce: options.nonce,`,
-      `    transformChunk: createHtmlChunkTransform(clientEntry, options.devHead, options.nonce),`,
+      `    nonce,`,
+      `    transformChunk: createHtmlChunkTransform(clientEntry, options.devHead, nonce),`,
       `  });`,
       `}`,
       ``,
