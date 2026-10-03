@@ -1,0 +1,7 @@
+---
+'@solidjs/vite-plugin': minor
+---
+
+New `start.nonce` option: a server-only module default-exporting `(event) => CSPNonce | undefined | Promise<...>`, called inside the request scope after the middleware chain, so a middleware can generate the nonce, set the `Content-Security-Policy` header and hand the value over through `event.locals`. The resolved nonce reaches the generated entry's `renderToStream` (the hydration bootstrap, the streamed data and swap scripts and the `modulepreload` links), the injected client-entry tag, the post-flush redirect fallback and, in dev, the head tags the handler injects (the style patch and Vite client scripts, the collected styles, and a `csp-nonce` meta for the styles the Vite client injects). Generated entries used to render without a nonce, so a strict `script-src 'nonce-…'` policy needed hand-written `entry-server` / `entry-client` files. `handleRequest(request, { nonce })` stays as the per-call override and now reaches the render too; authored entries receive the value as `context.nonce`.
+
+An empty `handleRequest` nonce (`undefined`, `null` or `''`) leaves the nonce to the module, and a `nonce` the host passes in `options.context` still reaches authored entries when no nonce resolves. An invalid nonce from either source (a primitive other than a string, an array, or an object other than `{ script, style }` with each a non-empty string or `false`) is rejected with an error naming its source.

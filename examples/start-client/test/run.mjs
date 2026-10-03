@@ -35,6 +35,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import path from 'node:path';
 import os from 'node:os';
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createServer } from 'vite';
 
 const exampleDir = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const CHROME =
@@ -324,6 +325,39 @@ async function devMode() {
     res.text(),
   );
   record('dev', 'entry', 'toolbar wraps the generated app', entry.includes('DevToolbar'));
+
+  // `start.nonce` is server-mode only (the built shell is prerendered, with
+  // no request to take a nonce from), but the dev server renders the shell
+  // per request, so a host's `handleRequest(request, { nonce })` reaches
+  // it: the injected client entry, the style patch and the Vite client.
+  {
+    const nodeEnv = process.env.NODE_ENV;
+    const probe = await createServer({ root: exampleDir, server: { middlewareMode: true } });
+    try {
+      const handler = await probe.environments.ssr.runner.import('virtual:solid-ssr-handler');
+      const shell = await (
+        await handler.handleRequest(
+          new Request('http://localhost/', { headers: { accept: 'text/html' } }),
+          { nonce: 'client-nonce' },
+        )
+      ).text();
+      const scripts = shell.match(/<script\b[^>]*>/g) || [];
+      record(
+        'dev',
+        'shell',
+        'handleRequest({ nonce }) reaches every script of the dev shell',
+        scripts.length >= 3 &&
+          scripts.every((tag) => tag.includes(' nonce="client-nonce"')) &&
+          !shell.includes('_$HY'),
+        scripts.join(' '),
+      );
+    } finally {
+      await probe.close();
+      // createServer sets NODE_ENV; the builds later in this run inherit it.
+      if (nodeEnv === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = nodeEnv;
+    }
+  }
 
   await runBrowserChecks('dev', origin);
 

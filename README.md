@@ -230,7 +230,7 @@ same server functions.
 The object form carries the options (`start: true` is pure sugar for
 `start: {}` — both mean the identical start mode with defaults, and
 `false`/absent means off): `app`, `document`, `entryServer`, `entryClient`,
-`middleware`, `setup`, `renderMode`, `env`, `devtools`, `errorBoundary`,
+`middleware`, `setup`, `renderMode`, `nonce`, `env`, `devtools`, `errorBoundary`,
 `css`, `external`, `node`, all documented below.
 
 Install `@solidjs/start-devtools` as a development dependency to add the
@@ -582,6 +582,62 @@ in production its client-entry reference is still rewritten). `httpStatus()` /
 response head when the awaited render completes (`@solidjs/web` 2.0.0-rc.7+),
 just as streaming freezes it at shell flush. Server mode only — in client mode the served shell has no boundaries to
 settle, so the option is a documented no-op there.
+
+**`nonce`** — the per-request CSP nonce, for a `Content-Security-Policy`
+with `script-src 'nonce-…'` and no `'unsafe-inline'`. A module path
+(relative to the Vite root, following the `middleware`/`setup`/`renderMode`
+convention) default-exporting `(event) => CSPNonce | undefined |
+Promise<...>`, where `CSPNonce` is `@solidjs/web`'s `string | { script,
+style }` (each a string, or `false` to leave that destination un-nonced).
+It runs inside the request scope after the middleware chain, so the
+middleware that generates the nonce and sets the header can hand it over
+through `event.locals`:
+
+```ts
+// vite.config.ts
+solid({
+  start: { middleware: './src/middleware.ts', nonce: './src/nonce.ts' },
+  ssr: true,
+});
+
+// src/middleware.ts
+import { getRequestEvent } from '@solidjs/web';
+
+export default async function csp(
+  request: Request,
+  next: (request?: Request) => Promise<Response>,
+) {
+  const nonce = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(16))));
+  getRequestEvent()!.locals.nonce = nonce;
+  const response = await next();
+  response.headers.set('Content-Security-Policy', `script-src 'nonce-${nonce}' 'strict-dynamic'`);
+  return response;
+}
+
+// src/nonce.ts
+import type { RequestEvent } from '@solidjs/web';
+
+export default function nonce(event: RequestEvent) {
+  return event.locals.nonce as string | undefined;
+}
+```
+
+The handler passes the resolved nonce to the generated entry's
+`renderToStream`, so the hydration bootstrap, the streamed data and swap
+scripts and the `modulepreload` links all carry it. The injected client-entry
+tag and the post-flush redirect fallback get it too, in dev as well, where the
+head tags the handler injects also carry it: the style patch and Vite client
+scripts (with `'strict-dynamic'`, the modules they load are trusted in turn),
+the collected styles, and a `csp-nonce` meta the Vite client reads for the
+styles it injects. Inline scripts your own `Document` renders still need it
+spelled out (`nonce={getRequestEvent()?.locals.nonce}`). Authored entries
+receive the value as `context.nonce` in `render()` (a `nonce` passed in
+`handleRequest`'s `context` is left alone when none resolves). Hosts driving
+the handler directly can pass `handleRequest(request, { nonce })`, which wins
+over the module unless it's empty (`undefined`, `null` or `''`). Server mode
+only: the client-mode shell is prerendered once at build time, so there is no
+request to take a nonce from (the per-call option still reaches the shell the
+dev server renders).
 
 **`env`** — first-party typed environment variables. A schema file at the
 project root — `env.ts` (or `env.js`), probed automatically; point

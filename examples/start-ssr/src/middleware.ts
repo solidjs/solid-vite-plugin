@@ -120,6 +120,13 @@ async function first(request: Request, next: Next): Promise<Response> {
   const event = getRequestEvent()!;
   event.locals.order = ['first'];
   event.locals.user = 'mw-user';
+  // `start.nonce` evidence (nonce mode): the nonce module reads what the
+  // chain stored, proving it runs after the middleware. `x-csp-nonce-json`
+  // stores any shape (a `{ script, style }` pair, an invalid value).
+  const cspNonce = request.headers.get('x-csp-nonce');
+  if (cspNonce) event.locals.nonce = cspNonce;
+  const cspNonceJson = request.headers.get('x-csp-nonce-json');
+  if (cspNonceJson) event.locals.nonce = JSON.parse(cspNonceJson);
   if (new URL(request.url).pathname === '/blocked') {
     // Early return: this Response never goes through createSSRResponse, so
     // the stub write below only reaches the wire through the handler

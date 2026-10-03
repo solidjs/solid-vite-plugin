@@ -39,6 +39,9 @@ import solidPlugin from '@solidjs/vite-plugin';
 //   `?nojs`); any other value passes through verbatim — `async` for the
 //   static complete-document mode, and bogus literals or missing paths for
 //   the config-validation assertions.
+// - SSR_NONCE sets `start.nonce` (nonce mode): `module` wires src/nonce.ts
+//   (reads the nonce the middleware stored on `event.locals`); any other
+//   value passes through verbatim for the config-validation assertions.
 // - SERVER_FN_DEV_MIDDLEWARE=0 disables the built-in dev middleware via
 //   `serverFunctions.devMiddleware` (no-middleware mode) — endpoint dispatch
 //   becomes the host's job, like a Cloudflare-style environment plugin.
@@ -215,6 +218,15 @@ export default defineConfig({
                       process.env.SSR_RENDER_MODE === 'module'
                         ? './src/render-mode.ts'
                         : process.env.SSR_RENDER_MODE,
+                  }
+                : {}),
+              // SSR_NONCE (nonce mode): `module` → the per-request CSP
+              // nonce module; anything else verbatim (a missing path for the
+              // validation check).
+              ...(process.env.SSR_NONCE
+                ? {
+                    nonce:
+                      process.env.SSR_NONCE === 'module' ? './src/nonce.ts' : process.env.SSR_NONCE,
                   }
                 : {}),
             },

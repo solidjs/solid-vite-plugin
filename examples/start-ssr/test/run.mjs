@@ -141,7 +141,7 @@
 //
 // Requires the plugin built (pnpm build at the repo root) and Google Chrome.
 // Usage: node test/run.mjs
-// [dev|prod|document|css-filter|entries|endpoint|configure|no-middleware|middleware|preview|render-mode|base|builder-order|builder-prepare|extra-input|babel-hmr|frames|external|observe|perf-tracks|detect|vitest|node]
+// [dev|prod|document|css-filter|entries|endpoint|configure|no-middleware|middleware|preview|render-mode|nonce|base|builder-order|builder-prepare|extra-input|babel-hmr|frames|external|observe|perf-tracks|detect|vitest|node]
 // (default: all)
 
 import { spawn, execSync, execFileSync } from 'node:child_process';
@@ -386,6 +386,17 @@ function record(mode, phase, name, ok, detail = '') {
   results.push({ mode, phase, name, ok, detail });
   const status = ok ? 'PASS' : 'FAIL';
   console.log(`  [${mode}/${phase}] ${status} ${name}${detail && !ok ? ` — ${detail}` : ''}`);
+}
+
+// Reads a handler call's whole body; a rejection becomes the assertion's
+// detail instead of aborting the whole run.
+async function settledText(call) {
+  try {
+    const response = await call();
+    return { text: await response.text(), error: '' };
+  } catch (error) {
+    return { text: '', error: String(error) };
+  }
 }
 
 // Pull the function id for `name` out of the client-transformed module so
@@ -1445,6 +1456,51 @@ async function runProdMode() {
     'build',
     'client entry carries the escaped CSP nonce',
     nonceHtml.includes('<script type="module" nonce="test&quot;&lt;&amp;" src="'),
+  );
+  // @solidjs/web's CSPNonce also takes a `{ script, style }` pair. The tags
+  // the handler writes are scripts, so they take the `script` value.
+  const pairNonce = { script: 'pair-script', style: 'pair-style' };
+  const pairPage = await settledText(() =>
+    builtHandler.handleRequest(new Request(origin + '/'), { nonce: pairNonce }),
+  );
+  record(
+    mode,
+    'build',
+    'client entry takes the script nonce of a { script, style } pair',
+    pairPage.text.includes('<script type="module" nonce="pair-script" src="') &&
+      !/<script\b[^>]*nonce="pair-style"/.test(pairPage.text),
+    pairPage.error,
+  );
+  const pairRedirect = await settledText(() =>
+    builtHandler.handleRequest(new Request(origin + '/redirect-post'), { nonce: pairNonce }),
+  );
+  record(
+    mode,
+    'build',
+    'post-flush redirect fallback takes the script nonce of a { script, style } pair',
+    pairRedirect.text.includes('<script nonce="pair-script">window.location='),
+    pairRedirect.error,
+  );
+  const styleOnlyNonce = { script: false, style: 'pair-style' };
+  const styleOnlyPage = await settledText(() =>
+    builtHandler.handleRequest(new Request(origin + '/'), { nonce: styleOnlyNonce }),
+  );
+  record(
+    mode,
+    'build',
+    'a pair without a script nonce leaves the client entry un-nonced',
+    styleOnlyPage.text.includes('<script type="module" src="'),
+    styleOnlyPage.error,
+  );
+  const styleOnlyRedirect = await settledText(() =>
+    builtHandler.handleRequest(new Request(origin + '/redirect-post'), { nonce: styleOnlyNonce }),
+  );
+  record(
+    mode,
+    'build',
+    'a pair without a script nonce leaves the redirect fallback un-nonced',
+    styleOnlyRedirect.text.includes('<script>window.location='),
+    styleOnlyRedirect.error,
   );
   record(
     mode,
@@ -5892,6 +5948,561 @@ async function runVitestMode() {
   );
 }
 
+// `start.nonce` (SSR_NONCE in vite.config.ts): the per-request CSP nonce.
+// Asserted on direct handler dispatch in dev and against the built handler:
+// - `handleRequest(request, { nonce })` reaches the render, not just the
+//   client-entry tag: every <script> (hydration bootstrap, streamed data and
+//   swap scripts, the client entry, the dev head) and every modulepreload
+//   link carries it, escaped, and so does the post-flush redirect fallback;
+//   the `{ script, style }` form works (it used to throw building the entry
+//   tag) and an invalid value (a primitive, an array, a typo'd key, a pair
+//   missing a destination) is rejected; a resolved nonce wins over a
+//   `nonce` in `options.context`,
+// - dev head: the collected styles carry the style nonce and a `csp-nonce`
+//   meta hands it to the Vite client; a pair keeps the two destinations
+//   apart,
+// - `start.setup` renders with the nonce too (its own render path),
+// - the module form (src/nonce.ts) resolves the nonce after the middleware
+//   chain (it reads what src/middleware.ts stored on `event.locals`), sync
+//   or async, string or pair; the runtime option still wins over it unless
+//   it's empty, an invalid result names the module, and a module without a
+//   default-exported function is rejected,
+// - the dev server, end to end: on a page with a lazy component's CSS,
+//   every <style> carries the style nonce and every <script> the script
+//   nonce,
+// - authored entries receive the resolved nonce as `context.nonce`, and a
+//   host's own `context.nonce` when nothing resolves,
+// - the built handler does the same through both `handleRequest` and the
+//   default Fetchable (the path hosts like Nitro dispatch through, which
+//   passes no options),
+// - codegen: the nonce module is imported only when configured, and a
+//   missing module path is rejected at config time.
+async function runNonceMode() {
+  const mode = 'nonce';
+  console.log(`\n=== ${mode.toUpperCase()} ===`);
+
+  const withNodeEnvRestored = async (fn) => {
+    const before = process.env.NODE_ENV;
+    try {
+      return await fn();
+    } finally {
+      if (before === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = before;
+    }
+  };
+  const build = (env) =>
+    execSync('pnpm run build', {
+      cwd: exampleDir,
+      stdio: 'pipe',
+      env: { ...process.env, NODE_ENV: 'production', ...env },
+    });
+  const page = (headers) =>
+    new Request('http://localhost/', { headers: { accept: 'text/html', ...(headers || {}) } });
+  // Every script and modulepreload tag in the document, opening tags only.
+  const nonceTargets = (html) => [
+    ...(html.match(/<script\b[^>]*>/g) || []),
+    ...(html.match(/<link\b[^>]*>/g) || []).filter((tag) => tag.includes('modulepreload')),
+  ];
+  const everyTagCarries = (html, value) => {
+    const tags = nonceTargets(html);
+    const attr = ` nonce="${value.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;')}"`;
+    const missing = tags.filter((tag) => !tag.includes(attr));
+    return {
+      ok: tags.length >= 3 && missing.length === 0,
+      detail: `${tags.length} tags, missing: ${missing.join(' ').slice(0, 200)}`,
+    };
+  };
+  const carriesNone = (html) => !/\snonce="/.test(html);
+
+  // ---- Config validation --------------------------------------------------
+  process.env.SSR_NONCE = './src/no-such-nonce.ts';
+  let configError = '';
+  try {
+    await withNodeEnvRestored(() => resolveConfig({ root: exampleDir }, 'serve'));
+  } catch (e) {
+    configError = String(e && e.message ? e.message : e);
+  } finally {
+    delete process.env.SSR_NONCE;
+  }
+  record(
+    mode,
+    'config',
+    'missing module path rejected at config time',
+    configError.includes('start.nonce') && configError.includes('no-such-nonce'),
+    configError.slice(0, 300) || 'config resolved without error',
+  );
+
+  // ---- Direct dispatch: the runtime option, no module configured ----------
+  let probe;
+  try {
+    probe = await withNodeEnvRestored(() =>
+      createServer({ root: exampleDir, server: { middlewareMode: true } }),
+    );
+    const handler = await probe.environments.ssr.runner.import('virtual:solid-ssr-handler');
+    const stringForm = await (await handler.handleRequest(page(), { nonce: 'dev"<&' })).text();
+    const stringCheck = everyTagCarries(stringForm, 'dev"<&');
+    record(
+      mode,
+      'override',
+      'handleRequest({ nonce }) reaches every script and modulepreload, escaped',
+      stringCheck.ok,
+      stringCheck.detail,
+    );
+    const objectResponse = await handler.handleRequest(page(), {
+      nonce: { script: 'script-only', style: false },
+    });
+    const objectForm = await objectResponse.text();
+    const objectCheck = everyTagCarries(objectForm, 'script-only');
+    record(
+      mode,
+      'override',
+      'the { script, style } form renders with the script nonce',
+      objectResponse.status === 200 && objectCheck.ok,
+      `status ${objectResponse.status}, ${objectCheck.detail}`,
+    );
+    // A host's `context` must not hand the render a different nonce from the
+    // one the client-entry tag and the redirect fallback get.
+    const contextForm = await (
+      await handler.handleRequest(page(), {
+        nonce: 'option-nonce',
+        context: { nonce: 'context-nonce' },
+      })
+    ).text();
+    const contextCheck = everyTagCarries(contextForm, 'option-nonce');
+    record(
+      mode,
+      'override',
+      'options.context.nonce does not override the resolved nonce',
+      contextCheck.ok && !contextForm.includes('context-nonce'),
+      contextCheck.detail,
+    );
+    record(
+      mode,
+      'override',
+      'without a nonce the document carries none',
+      carriesNone(await (await handler.handleRequest(page())).text()),
+    );
+    const redirect = await (
+      await handler.handleRequest(
+        new Request('http://localhost/redirect-post', { headers: { accept: 'text/html' } }),
+        { nonce: 'redirect"<&' },
+      )
+    ).text();
+    record(
+      mode,
+      'override',
+      'post-flush redirect fallback carries the nonce, escaped',
+      /<script nonce="redirect&quot;&lt;&amp;">[^<]*window\.location/.test(redirect),
+    );
+    const devStyle = '<style data-asset="probe.css">.probe{}</style>';
+    const styled = await (
+      await handler.handleRequest(page(), { nonce: 'style-nonce', devHead: devStyle })
+    ).text();
+    record(
+      mode,
+      'override',
+      'dev styles carry the style nonce and a csp-nonce meta is emitted',
+      styled.includes('<style nonce="style-nonce" data-asset="probe.css">') &&
+        styled.includes('<meta property="csp-nonce" nonce="style-nonce">'),
+    );
+    const scriptOnly = await (
+      await handler.handleRequest(page(), {
+        nonce: { script: 'script-only', style: false },
+        devHead: devStyle,
+      })
+    ).text();
+    record(
+      mode,
+      'override',
+      'style: false leaves the dev styles and the meta un-nonced',
+      scriptOnly.includes('<style data-asset="probe.css">') && !scriptOnly.includes('csp-nonce'),
+    );
+    // Distinct values, so a script/style swap anywhere in the dev head shows.
+    const pairHead = await (
+      await handler.handleRequest(page(), {
+        nonce: { script: 'pair-script', style: 'pair-style' },
+        devHead: devStyle,
+      })
+    ).text();
+    const pairCheck = everyTagCarries(pairHead, 'pair-script');
+    record(
+      mode,
+      'override',
+      'a { script, style } pair: scripts and preloads take script, dev styles and the meta take style',
+      pairCheck.ok &&
+        pairHead.includes('<style nonce="pair-style" data-asset="probe.css">') &&
+        pairHead.includes('<meta property="csp-nonce" nonce="pair-style">') &&
+        !/<script\b[^>]*nonce="pair-style"/.test(pairHead),
+      pairCheck.detail,
+    );
+    for (const [value, label, expected] of [
+      [42, 'a number', 'number'],
+      [['a'], 'an array', 'an array'],
+      [{ nonce: 'a' }, 'an object with a misspelled key', '["nonce"]'],
+      [{}, 'an empty object', 'keys []'],
+      [{ script: 'a' }, 'a pair without style', '["script"]'],
+      [{ script: 'a', style: 1 }, 'a pair with a number', '["script","style"]'],
+      [{ script: '', style: 'a' }, 'a pair with an empty script', '["script","style"]'],
+    ]) {
+      let rejection = '';
+      try {
+        await handler.handleRequest(page(), { nonce: value });
+      } catch (e) {
+        rejection = String(e && e.message ? e.message : e);
+      }
+      record(
+        mode,
+        'override',
+        `invalid runtime nonce (${label}) rejected with an actionable error`,
+        rejection.includes('handleRequest options.nonce') && rejection.includes(expected),
+        rejection.slice(0, 200) || 'resolved without error',
+      );
+    }
+    const transformed = await probe.environments.ssr.transformRequest('virtual:solid-ssr-handler');
+    record(
+      mode,
+      'codegen',
+      'no nonce module import without the option',
+      !!transformed && !transformed.code.includes('nonce.ts'),
+    );
+  } catch (e) {
+    record(mode, 'override', 'direct dispatch completed', false, String(e));
+  } finally {
+    await probe?.close();
+  }
+
+  // ---- Direct dispatch: the module, after the middleware chain -------------
+  const moduleEnv = { SSR_NONCE: 'module', SSR_MIDDLEWARE: '1' };
+  Object.assign(process.env, moduleEnv);
+  try {
+    probe = await withNodeEnvRestored(() =>
+      createServer({ root: exampleDir, server: { middlewareMode: true } }),
+    );
+    const handler = await probe.environments.ssr.runner.import('virtual:solid-ssr-handler');
+    const viaModule = await (
+      await handler.handleRequest(page({ 'x-csp-nonce': 'from-locals' }))
+    ).text();
+    const moduleCheck = everyTagCarries(viaModule, 'from-locals');
+    record(
+      mode,
+      'module',
+      'module reads the nonce the middleware stored on event.locals',
+      moduleCheck.ok,
+      moduleCheck.detail,
+    );
+    const overridden = await (
+      await handler.handleRequest(page({ 'x-csp-nonce': 'from-locals' }), { nonce: 'from-option' })
+    ).text();
+    record(
+      mode,
+      'module',
+      'handleRequest({ nonce }) beats the module (precedence)',
+      everyTagCarries(overridden, 'from-option').ok && !overridden.includes('from-locals'),
+    );
+    record(
+      mode,
+      'module',
+      'module returning undefined leaves the document without a nonce',
+      carriesNone(await (await handler.handleRequest(page())).text()),
+    );
+    // An empty option (as the runtime reads it) leaves the nonce to the
+    // module; `{ script: false, style: false }` is the per-call way out.
+    for (const [value, label] of [
+      [null, 'null'],
+      ['', "''"],
+    ]) {
+      const deferred = await (
+        await handler.handleRequest(page({ 'x-csp-nonce': 'from-locals' }), { nonce: value })
+      ).text();
+      record(
+        mode,
+        'module',
+        `handleRequest({ nonce: ${label} }) leaves the nonce to the module`,
+        everyTagCarries(deferred, 'from-locals').ok,
+      );
+    }
+    record(
+      mode,
+      'module',
+      'handleRequest({ nonce: { script: false, style: false } }) sends the page without one',
+      carriesNone(
+        await (
+          await handler.handleRequest(page({ 'x-csp-nonce': 'from-locals' }), {
+            nonce: { script: false, style: false },
+          })
+        ).text(),
+      ),
+    );
+    record(
+      mode,
+      'module',
+      'a module returning { script: false, style: false } sends the page without one',
+      carriesNone(
+        await (
+          await handler.handleRequest(
+            page({ 'x-csp-nonce-json': '{"script":false,"style":false}' }),
+          )
+        ).text(),
+      ),
+    );
+    const viaAsync = await (
+      await handler.handleRequest(page({ 'x-csp-nonce': 'async-nonce', 'x-csp-nonce-async': '1' }))
+    ).text();
+    const asyncCheck = everyTagCarries(viaAsync, 'async-nonce');
+    record(mode, 'module', 'an async module result is awaited', asyncCheck.ok, asyncCheck.detail);
+    const modulePair = await (
+      await handler.handleRequest(
+        page({ 'x-csp-nonce-json': '{"script":"mod-script","style":"mod-style"}' }),
+        { devHead: '<style data-asset="probe.css">.probe{}</style>' },
+      )
+    ).text();
+    const modulePairCheck = everyTagCarries(modulePair, 'mod-script');
+    record(
+      mode,
+      'module',
+      'a { script, style } pair from the module routes each destination',
+      modulePairCheck.ok &&
+        modulePair.includes('<style nonce="mod-style" data-asset="probe.css">') &&
+        modulePair.includes('<meta property="csp-nonce" nonce="mod-style">') &&
+        !/<script\b[^>]*nonce="mod-style"/.test(modulePair),
+      modulePairCheck.detail,
+    );
+    // The nonce resolves inside the dispatch, so the throw unwinds through
+    // the chain and src/middleware.ts's error middleware turns it into its
+    // 500, with the message in the body.
+    const invalidResponse = await handler.handleRequest(
+      page({ 'x-csp-nonce-json': '{"script":"a"}' }),
+    );
+    const moduleRejection = await invalidResponse.text();
+    record(
+      mode,
+      'module',
+      'an invalid module result is rejected naming the module',
+      invalidResponse.status === 500 &&
+        moduleRejection.includes('the start.nonce module (') &&
+        moduleRejection.includes('src/nonce.ts') &&
+        moduleRejection.includes('["script"]'),
+      `status ${invalidResponse.status}: ${moduleRejection.slice(0, 200)}`,
+    );
+    const transformed = await probe.environments.ssr.transformRequest('virtual:solid-ssr-handler');
+    record(
+      mode,
+      'codegen',
+      'handler imports the configured nonce module',
+      !!transformed && transformed.code.includes('nonce.ts'),
+    );
+  } catch (e) {
+    record(mode, 'module', 'module-config direct dispatch completed', false, String(e));
+  } finally {
+    await probe?.close();
+    for (const key of Object.keys(moduleEnv)) delete process.env[key];
+  }
+
+  // ---- Direct dispatch: start.setup renders through its own path ------------
+  process.env.SSR_SETUP = '1';
+  try {
+    probe = await withNodeEnvRestored(() =>
+      createServer({ root: exampleDir, server: { middlewareMode: true } }),
+    );
+    const handler = await probe.environments.ssr.runner.import('virtual:solid-ssr-handler');
+    const withSetup = await (await handler.handleRequest(page(), { nonce: 'setup-nonce' })).text();
+    const setupCheck = everyTagCarries(withSetup, 'setup-nonce');
+    record(mode, 'setup', 'start.setup render carries the nonce', setupCheck.ok, setupCheck.detail);
+  } catch (e) {
+    record(mode, 'setup', 'setup direct dispatch completed', false, String(e));
+  } finally {
+    await probe?.close();
+    delete process.env.SSR_SETUP;
+  }
+
+  // ---- A module without a default-exported function -----------------------
+  const invalidModule = 'src/nonce-invalid.ts';
+  writeFileSync(path.join(exampleDir, invalidModule), `export default 'not-a-function';\n`);
+  process.env.SSR_NONCE = './' + invalidModule;
+  try {
+    probe = await withNodeEnvRestored(() =>
+      createServer({ root: exampleDir, server: { middlewareMode: true } }),
+    );
+    let importError = '';
+    try {
+      await probe.environments.ssr.runner.import('virtual:solid-ssr-handler');
+    } catch (e) {
+      importError = String(e && e.message ? e.message : e);
+    }
+    record(
+      mode,
+      'module',
+      'a module without a default-exported function is rejected naming it',
+      importError.includes('start.nonce must default-export a function') &&
+        importError.includes('nonce-invalid.ts'),
+      importError.slice(0, 200) || 'imported without error',
+    );
+  } catch (e) {
+    record(mode, 'module', 'invalid-module probe completed', false, String(e));
+  } finally {
+    await probe?.close();
+    delete process.env.SSR_NONCE;
+    rmSync(path.join(exampleDir, invalidModule), { force: true });
+  }
+
+  // ---- Dev server: the real dev middleware, styles collected per page -------
+  // A pair with distinct values through the module, on the home page and on
+  // one that loads a lazy component with its own CSS (src/ExtraInput.css,
+  // which the dev server collects into the head with the rest). Anything
+  // else that renders a <style> or <script> would show up here too.
+  const devPort = 3184;
+  const devOrigin = `http://localhost:${devPort}`;
+  let server;
+  try {
+    server = startProcess('pnpm', ['exec', 'vite', '--port', String(devPort), '--strictPort'], {
+      cwd: exampleDir,
+      env: { ...process.env, SSR_DEVTOOLS: '0', ...moduleEnv },
+    });
+    await waitForHttp(devOrigin + '/src/api.ts', 30000);
+    // The lazy page must render its content and its own stylesheet, or the
+    // check would pass on App.css alone.
+    const pageChecks = {
+      '/': () => true,
+      '/extra-input': (html, styles) =>
+        html.includes('EXTRA-INPUT-PAGE') && styles.some((tag) => tag.includes('ExtraInput.css')),
+    };
+    for (const [route, pageCheck] of Object.entries(pageChecks)) {
+      const res = await fetch(devOrigin + route, {
+        headers: {
+          accept: 'text/html',
+          'x-csp-nonce-json': '{"script":"dev-script","style":"dev-style"}',
+        },
+      });
+      const html = await res.text();
+      const styles = [
+        ...(html.match(/<style\b[^>]*>/g) || []),
+        ...(html.match(/<link\b[^>]*>/g) || []).filter((tag) =>
+          /\srel="stylesheet"|\sas="style"/.test(tag),
+        ),
+      ];
+      const scripts = html.match(/<script\b[^>]*>/g) || [];
+      const off = [
+        ...styles.filter((tag) => !tag.includes(' nonce="dev-style"')),
+        ...scripts.filter((tag) => !tag.includes(' nonce="dev-script"')),
+      ];
+      record(
+        mode,
+        'dev-server',
+        `${route}: every <style> takes the style nonce, every <script> the script nonce`,
+        res.status === 200 &&
+          pageCheck(html, styles) &&
+          styles.length >= 1 &&
+          scripts.length >= 3 &&
+          off.length === 0,
+        `status ${res.status}, ${styles.length} styles, ${scripts.length} scripts, off: ${off.join(' ').slice(0, 300)}`,
+      );
+    }
+  } catch (e) {
+    record(mode, 'dev-server', 'dev server dispatch completed', false, String(e));
+  } finally {
+    if (server) {
+      try {
+        process.kill(-server.pid, 'SIGTERM');
+      } catch {}
+    }
+  }
+
+  // ---- Authored entries: the nonce arrives as context.nonce -----------------
+  const authoredFixtures = {
+    ...ENTRY_FIXTURES,
+    'src/entry-server.tsx': `import { renderToStream } from '@solidjs/web';
+import manifest from 'virtual:solid-manifest';
+import TestShell from './TestShell';
+
+export function render(request, context) {
+  return renderToStream(() => <TestShell />, { manifest, nonce: context.nonce });
+}
+`,
+  };
+  for (const [file, source] of Object.entries(authoredFixtures)) {
+    writeFileSync(path.join(exampleDir, file), source);
+  }
+  try {
+    probe = await withNodeEnvRestored(() =>
+      createServer({ root: exampleDir, server: { middlewareMode: true } }),
+    );
+    const handler = await probe.environments.ssr.runner.import('virtual:solid-ssr-handler');
+    // The bootstrap <HydrationScript /> renders comes from the runtime, so
+    // its nonce is the one the authored render passed to renderToStream.
+    const bootstrapNonce = (html) =>
+      html.match(/<script\b[^>]*\snonce="([^"]*)"[^>]*>window\._\$HY/)?.[1];
+    const resolved = await (
+      await handler.handleRequest(page(), {
+        nonce: 'authored-nonce',
+        context: { nonce: 'context-nonce' },
+      })
+    ).text();
+    record(
+      mode,
+      'authored',
+      'authored render receives the resolved nonce as context.nonce',
+      resolved.includes('<title>Authored Entries</title>') &&
+        bootstrapNonce(resolved) === 'authored-nonce',
+      `bootstrap nonce ${JSON.stringify(bootstrapNonce(resolved))}`,
+    );
+    const hostOnly = await (
+      await handler.handleRequest(page(), { context: { nonce: 'host-nonce' } })
+    ).text();
+    record(
+      mode,
+      'authored',
+      "a host's context.nonce reaches the authored render when no nonce resolves",
+      bootstrapNonce(hostOnly) === 'host-nonce',
+      `bootstrap nonce ${JSON.stringify(bootstrapNonce(hostOnly))}`,
+    );
+  } catch (e) {
+    record(mode, 'authored', 'authored-entry direct dispatch completed', false, String(e));
+  } finally {
+    await probe?.close();
+    for (const file of Object.keys(authoredFixtures)) {
+      rmSync(path.join(exampleDir, file), { force: true });
+    }
+  }
+
+  // ---- Built handler --------------------------------------------------------
+  try {
+    console.log('  building (nonce module)…');
+    build(moduleEnv);
+    const built = await import(
+      pathToFileURL(path.join(exampleDir, 'dist/server/server.js')).href + `?nonce=${Date.now()}`
+    );
+    const prodHtml = await (
+      await built.handleRequest(page({ 'x-csp-nonce': 'prod-nonce' }))
+    ).text();
+    const prodCheck = everyTagCarries(prodHtml, 'prod-nonce');
+    record(
+      mode,
+      'prod',
+      'built handler stamps every script and modulepreload',
+      prodCheck.ok && prodHtml.includes('rel="modulepreload"'),
+      prodCheck.detail,
+    );
+    const fetchHtml = await (
+      await built.default.fetch(page({ 'x-csp-nonce': 'fetch-nonce' }))
+    ).text();
+    const fetchCheck = everyTagCarries(fetchHtml, 'fetch-nonce');
+    record(
+      mode,
+      'prod',
+      'default Fetchable (no options) resolves the nonce through the module',
+      fetchCheck.ok,
+      fetchCheck.detail,
+    );
+  } catch (e) {
+    record(mode, 'prod', 'built handler dispatch completed', false, String(e));
+  } finally {
+    // Leave dist in the standard state for anyone poking at it.
+    try {
+      build();
+    } catch {}
+  }
+}
+
 const ALL_MODES = [
   'dev',
   'prod',
@@ -5904,6 +6515,7 @@ const ALL_MODES = [
   'middleware',
   'preview',
   'render-mode',
+  'nonce',
   'base',
   'builder-order',
   'builder-prepare',
@@ -5931,6 +6543,7 @@ for (const mode of modes) {
   else if (mode === 'middleware') await runMiddlewareMode();
   else if (mode === 'preview') await runPreviewMode();
   else if (mode === 'render-mode') await runRenderModeMode();
+  else if (mode === 'nonce') await runNonceMode();
   else if (mode === 'base') await runBaseMode();
   else if (mode === 'builder-order') await runBuilderOrderMode();
   else if (mode === 'builder-prepare') await runBuilderPrepareMode();
