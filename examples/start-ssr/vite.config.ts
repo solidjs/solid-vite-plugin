@@ -65,6 +65,13 @@ import solidPlugin from '@solidjs/vite-plugin';
 //   module App.tsx also lazily imports — as a further client build input,
 //   the shape filesystem-routing's `buildInputs` produces for every route
 //   module (#353). Vite merges the plugin's injected entry into this array.
+// - SANITIZE_FILE_NAME (file-names mode) sets the build's
+//   `output.sanitizeFileName`: `custom` is a user function that turns every
+//   character outside `[\w-]` into a dot, so its own output has dot runs
+//   and only a collapse that runs after it leaves none; `plugin` sets the
+//   same function from a later, normal-order plugin's `outputOptions` hook,
+//   which the solid plugin's post-order hook must still wrap; `off` is
+//   `false`, the opt-out the plugin leaves alone (#391).
 // - START_NODE=1 (node mode) sets `start.node`: the build emits the
 //   ready-to-run Node server entry dist/server/node.js beside server.js.
 // - SOLID_PERF_TRACKS (perf-tracks mode) sets `performanceTracks`: `0` opts
@@ -76,6 +83,7 @@ import solidPlugin from '@solidjs/vite-plugin';
 const jsxCompiler =
   process.env.SOLID_JSX_COMPILER === 'babel' ? ('babel' as const) : ('native' as const);
 const serverComponents = !!process.env.SOLID_SERVER_COMPONENTS;
+const dotSanitizeFileName = (name: string) => name.replace(/[^\w-]/g, '.');
 
 export default defineConfig({
   future: {
@@ -131,6 +139,18 @@ export default defineConfig({
     ? {
         environments: {
           client: { build: { rollupOptions: { input: ['src/ExtraInput.tsx'] } } },
+        },
+      }
+    : {}),
+  ...(process.env.SANITIZE_FILE_NAME === 'custom' || process.env.SANITIZE_FILE_NAME === 'off'
+    ? {
+        build: {
+          rollupOptions: {
+            output: {
+              sanitizeFileName:
+                process.env.SANITIZE_FILE_NAME === 'off' ? false : dotSanitizeFileName,
+            },
+          },
         },
       }
     : {}),
@@ -268,6 +288,21 @@ export default defineConfig({
                   built.join(','),
                 );
               },
+            },
+          },
+        ] satisfies Plugin[])
+      : []),
+    // SANITIZE_FILE_NAME=plugin (file-names mode): a normal-order plugin
+    // after the solid plugin sets the sanitizer from its own `outputOptions`
+    // hook, the spelling that replaced the solid plugin's wrapper while that
+    // hook ran in plugin order (#391).
+    ...(process.env.SANITIZE_FILE_NAME === 'plugin'
+      ? ([
+          {
+            name: 'test:sanitize-file-name',
+            apply: 'build',
+            outputOptions(outputOptions) {
+              return { ...outputOptions, sanitizeFileName: dotSanitizeFileName };
             },
           },
         ] satisfies Plugin[])

@@ -124,6 +124,16 @@
 //     entry: the built handler boots the real entry chunk and links the entry
 //     graph's stylesheet even though the extra input is an `isEntry` record
 //     sorting ahead of it (#353),
+//   - built file names carry no `..` (file-names mode): the catch-all route
+//     module src/routes/[...rest].tsx builds to a chunk and a CSS asset whose
+//     names collapse the dot run, and server.js (which refuses any URL
+//     containing `..`) serves both; the server build collapses too, so the
+//     URL it writes for an asset named with a dot run (mark..svg) is the
+//     file the client build wrote; a user `sanitizeFileName` that produces
+//     dots still runs, with the collapse after it, whether set in the config
+//     (SANITIZE_FILE_NAME=custom) or from a later plugin's `outputOptions`
+//     hook (SANITIZE_FILE_NAME=plugin), and `sanitizeFileName: false`
+//     (SANITIZE_FILE_NAME=off) is left alone (#391),
 //   - `start.node` (node mode, START_NODE=1): the build emits a ready-to-run
 //     Node server entry, dist/server/node.js, beside server.js — statics
 //     (immutable assets, must-revalidate otherwise, HEAD, no traversal),
@@ -141,7 +151,7 @@
 //
 // Requires the plugin built (pnpm build at the repo root) and Google Chrome.
 // Usage: node test/run.mjs
-// [dev|prod|document|css-filter|entries|endpoint|configure|no-middleware|middleware|preview|render-mode|base|builder-order|builder-prepare|extra-input|babel-hmr|frames|external|observe|perf-tracks|detect|vitest|node]
+// [dev|prod|document|css-filter|entries|endpoint|configure|no-middleware|middleware|preview|render-mode|base|builder-order|builder-prepare|extra-input|file-names|babel-hmr|frames|external|observe|perf-tracks|detect|vitest|node]
 // (default: all)
 
 import { spawn, execSync, execFileSync } from 'node:child_process';
@@ -160,6 +170,7 @@ import {
 import http from 'node:http';
 import os from 'node:os';
 import {
+  build as viteBuild,
   createServer,
   createServerHotChannel,
   createServerModuleRunner,
@@ -2457,6 +2468,264 @@ async function runExtraInputMode() {
   } catch (e) {
     record(mode, 'run', 'mode completed', false, String(e));
   } finally {
+    // Leave dist in the standard state for anyone poking at it.
+    try {
+      execSync('pnpm run build', { cwd: exampleDir, stdio: 'pipe' });
+    } catch {}
+  }
+}
+
+// Built file names (#391): a filesystem router's catch-all route module,
+// src/routes/[...rest].tsx, builds to a chunk named after its file, and the
+// bundler's default sanitizer only swaps the brackets: the chunk came out as
+// `_...rest_-<hash>.js` and the CSS asset Vite names after it as
+// `_..-<hash>.css`. server.js, like many hosts and middleware, refuses every
+// URL containing `..`, so the lazy route's preload fell through to SSR and
+// came back as HTML. The plugin now collapses dot runs in built file names,
+// after the default or the user's sanitizer. The default build must carry no
+// `..` anywhere under dist/client or dist/server, keep the catch-all's chunk
+// and CSS under the collapsed names (the CSS keeps its extension) and have
+// server.js serve both. The route also renders mark..svg, whose URL the
+// server bundle writes itself: it must name a file under dist/client, which
+// only holds while both builds collapse. SANITIZE_FILE_NAME=custom rebuilds
+// with a user `sanitizeFileName` that turns the brackets into dots, so only
+// a collapse that runs after it leaves the name free of `..`;
+// SANITIZE_FILE_NAME=plugin sets that function from a later plugin's
+// `outputOptions` hook instead of the config; SANITIZE_FILE_NAME=off rebuilds
+// with `sanitizeFileName: false`, the opt-out the plugin leaves alone (raw
+// names).
+async function runFileNamesMode() {
+  const mode = 'file-names';
+  console.log(`\n=== ${mode.toUpperCase()} ===`);
+  const port = 3185;
+  const origin = `http://localhost:${port}`;
+  const routeKey = 'src/routes/[...rest].tsx';
+  const clientDir = path.join(exampleDir, 'dist/client');
+  const serverDir = path.join(exampleDir, 'dist/server');
+  const build = (env) => {
+    rmSync(path.join(exampleDir, 'dist'), { recursive: true, force: true });
+    execSync('pnpm run build', { cwd: exampleDir, stdio: 'pipe', env });
+    return JSON.parse(readFileSync(path.join(clientDir, '.vite/manifest.json'), 'utf-8'));
+  };
+  // Every path under a dist directory (files and directories),
+  // slash-separated.
+  const distPaths = (dir) =>
+    readdirSync(dir, { recursive: true }).map((p) => p.split(path.sep).join('/'));
+  const dottedClientPaths = () => distPaths(clientDir).filter((p) => p.includes('..'));
+
+  let server;
+  let serverLog = '';
+  try {
+    console.log('  building…');
+    let manifest = build(process.env);
+    let dotted = dottedClientPaths();
+    record(mode, 'build', 'no dist/client path contains ".."', !dotted.length, dotted.join(', '));
+    const chunk = manifest[routeKey]?.file;
+    const css = manifest[routeKey]?.css?.[0];
+    record(
+      mode,
+      'build',
+      'catch-all chunk emitted under the collapsed name (_.rest_-<hash>.js)',
+      !!chunk &&
+        /^assets\/_\.rest_-[\w-]+\.js$/.test(chunk) &&
+        existsSync(path.join(clientDir, chunk)),
+      `file: ${chunk}`,
+    );
+    record(
+      mode,
+      'build',
+      'catch-all CSS asset emitted without ".." and keeps its .css extension',
+      !!css && !css.includes('..') && css.endsWith('.css') && existsSync(path.join(clientDir, css)),
+      `css: ${css}`,
+    );
+    const dottedServer = distPaths(serverDir).filter((p) => p.includes('..'));
+    record(
+      mode,
+      'build',
+      'no dist/server path contains ".."',
+      !dottedServer.length,
+      dottedServer.join(', '),
+    );
+    const serverChunks = distPaths(serverDir).filter((p) => /(^|\/)_.*rest_-[\w-]+\.js$/.test(p));
+    record(
+      mode,
+      'build',
+      'server build names the catch-all chunk the same way (_.rest_-<hash>.js)',
+      serverChunks.length > 0 && serverChunks.every((p) => /(^|\/)_\.rest_-[\w-]+\.js$/.test(p)),
+      `server: ${serverChunks.join(', ')}`,
+    );
+
+    server = startProcess('node', ['server.js'], {
+      cwd: exampleDir,
+      env: { ...process.env, PORT: String(port), NODE_ENV: 'production' },
+    });
+    server.stdout.on('data', (d) => (serverLog += d));
+    server.stderr.on('data', (d) => (serverLog += d));
+    await waitForHttp(origin + '/', 30000, { headers: { accept: 'text/html' } });
+    const page = await fetchStreamed(origin + '/catch-all');
+    record(
+      mode,
+      'prod',
+      'catch-all route SSRs and links its chunk and CSS',
+      page.status === 200 &&
+        page.html.includes('CATCH-ALL-PAGE') &&
+        !!chunk &&
+        page.html.includes(`/${chunk}`) &&
+        !!css &&
+        page.html.includes(`/${css}`),
+      `status ${page.status}`,
+    );
+    // The server bundle computes this URL with its own sanitizer: it names
+    // a file under dist/client only while both builds collapse dot runs.
+    const markTag = page.html.match(/<img\b[^>]*\bid="catch-all-mark"[^>]*>/)?.[0];
+    const markSrc = markTag?.match(/\bsrc="([^"]*)"/)?.[1];
+    record(
+      mode,
+      'prod',
+      'SSR src of mark..svg names a file the client build wrote',
+      !!markSrc &&
+        markSrc.startsWith('/assets/') &&
+        !markSrc.includes('..') &&
+        existsSync(path.join(clientDir, markSrc)),
+      `src: ${markSrc}; client assets: ${(manifest[routeKey]?.assets ?? []).join(', ')}`,
+    );
+    // server.js skips its static lookup for any URL containing `..`, so an
+    // undotted name is what lets the asset through instead of the SSR page.
+    for (const [name, file, type, marker] of [
+      ['chunk', chunk, 'application/javascript', 'CATCH-ALL-PAGE'],
+      ['CSS', css, 'text/css', 'catch-all'],
+      ['mark..svg', markSrc?.slice(1), 'image/svg+xml', '<svg'],
+    ]) {
+      if (!file) {
+        record(mode, 'prod', `server.js serves the catch-all ${name}`, false, 'no URL to fetch');
+        continue;
+      }
+      const res = await fetch(`${origin}/${file}`);
+      const body = await res.text();
+      record(
+        mode,
+        'prod',
+        `server.js serves the catch-all ${name}`,
+        res.status === 200 && res.headers.get('content-type') === type && body.includes(marker),
+        `GET /${file} → ${res.status} ${res.headers.get('content-type')}`,
+      );
+    }
+    try {
+      process.kill(-server.pid, 'SIGTERM');
+    } catch {}
+    server = null;
+
+    // The user function turns `[...rest]` into `....rest.`: collapsing after
+    // it gives `.rest.`, collapsing before it would leave `..rest.`, and the
+    // default sanitizer alone would give `_.rest_`. Rolldown refuses a
+    // `[name]` that starts with `..` (it reads as a relative path), so an
+    // uncollapsed run fails the build outright: record that and move on to
+    // the next variant.
+    for (const [variant, label] of [
+      ['custom', 'set in the config'],
+      ['plugin', "set from a later plugin's outputOptions hook"],
+    ]) {
+      console.log(`  building with a user sanitizeFileName ${label}…`);
+      let userChunk;
+      let buildError = '';
+      try {
+        manifest = build({ ...process.env, SANITIZE_FILE_NAME: variant });
+        userChunk = manifest[routeKey]?.file;
+      } catch (e) {
+        const lines = String(e.stderr || e.message)
+          .replace(/\x1b\[[0-9;]*m/g, '')
+          .split('\n');
+        buildError =
+          'build failed: ' + (lines.find((l) => /\[[A-Z_]+\]/.test(l)) ?? lines[0]).trim();
+      }
+      record(
+        mode,
+        variant,
+        'user sanitizeFileName runs and the collapse follows it (.rest.-<hash>.js)',
+        !!userChunk && /^assets\/\.rest\.-[\w-]+\.js$/.test(userChunk),
+        buildError || `file: ${userChunk}`,
+      );
+      dotted = buildError ? [buildError] : dottedClientPaths();
+      record(mode, variant, 'no dist/client path contains ".."', !dotted.length, dotted.join(', '));
+    }
+
+    console.log('  building with sanitizeFileName: false…');
+    manifest = build({ ...process.env, SANITIZE_FILE_NAME: 'off' });
+    const rawChunk = manifest[routeKey]?.file;
+    record(
+      mode,
+      'off',
+      'sanitizeFileName: false is left alone (raw [...rest]-<hash>.js)',
+      !!rawChunk && /^assets\/\[\.\.\.rest\]-[\w-]+\.js$/.test(rawChunk),
+      `file: ${rawChunk}`,
+    );
+
+    // preserveModules keeps each module's path in its name, `../` segments
+    // included, so the collapse only touches the last segment: a library
+    // built from a directory whose path has a dot run is rejected by the
+    // bundler if the directories change.
+    const dotLib = path.join(exampleDir, 'test-dot..lib');
+    rmSync(dotLib, { recursive: true, force: true });
+    mkdirSync(path.join(dotLib, 'src/card'), { recursive: true });
+    writeFileSync(
+      path.join(dotLib, 'src/index.tsx'),
+      "export { Button } from './Button';\nexport { Card } from './card/Card';\n",
+    );
+    writeFileSync(
+      path.join(dotLib, 'src/Button.tsx'),
+      'export function Button(props) {\n  return <button>{props.label}</button>;\n}\n',
+    );
+    writeFileSync(
+      path.join(dotLib, 'src/card/Card.tsx'),
+      'export function Card(props) {\n  return <section>{props.title}</section>;\n}\n',
+    );
+    let libFiles = [];
+    let libError = '';
+    try {
+      const { default: solid } = await import('@solidjs/vite-plugin');
+      await viteBuild({
+        configFile: false,
+        logLevel: 'silent',
+        root: dotLib,
+        plugins: [solid()],
+        build: {
+          outDir: 'out',
+          minify: false,
+          lib: { entry: 'src/index.tsx', formats: ['es'] },
+          rolldownOptions: {
+            external: [/^solid-js/, /^@solidjs\/web/],
+            output: { preserveModules: true },
+          },
+        },
+      });
+      libFiles = distPaths(path.join(dotLib, 'out')).sort();
+    } catch (e) {
+      libError = String(e && e.message ? e.message : e).replace(/\x1b\[[0-9;]*m/g, '');
+    } finally {
+      rmSync(dotLib, { recursive: true, force: true });
+    }
+    record(
+      mode,
+      'preserve-modules',
+      'a preserveModules build from a directory with a dot run keeps module paths',
+      // Lib mode names the files after the package; one per module.
+      !libError && libFiles.filter((f) => f.endsWith('.js')).length === 3,
+      libError.slice(0, 300) || libFiles.join(', '),
+    );
+  } catch (e) {
+    record(
+      mode,
+      'run',
+      'mode completed',
+      false,
+      String(e) + (serverLog ? `\nserver: ${serverLog.slice(-2000)}` : ''),
+    );
+  } finally {
+    if (server) {
+      try {
+        process.kill(-server.pid, 'SIGTERM');
+      } catch {}
+    }
     // Leave dist in the standard state for anyone poking at it.
     try {
       execSync('pnpm run build', { cwd: exampleDir, stdio: 'pipe' });
@@ -5908,6 +6177,7 @@ const ALL_MODES = [
   'builder-order',
   'builder-prepare',
   'extra-input',
+  'file-names',
   'frames',
   'babel-hmr',
   'external',
@@ -5935,6 +6205,7 @@ for (const mode of modes) {
   else if (mode === 'builder-order') await runBuilderOrderMode();
   else if (mode === 'builder-prepare') await runBuilderPrepareMode();
   else if (mode === 'extra-input') await runExtraInputMode();
+  else if (mode === 'file-names') await runFileNamesMode();
   else if (mode === 'frames') await runFramesMode();
   else if (mode === 'babel-hmr') await runBabelHmrMode();
   else if (mode === 'external') await runExternalMode();

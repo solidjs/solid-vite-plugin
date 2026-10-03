@@ -36,6 +36,9 @@ const LazyOutside = lazy(() => import('../../start-ssr-external/LazyOutside'));
 // imported module that is a genuine entry too, like a filesystem router's
 // `buildInputs` route modules.
 const LazyExtraInput = lazy(() => import('./ExtraInput'));
+// A catch-all route module (`[...rest]`): its chunk and CSS asset names must
+// not carry the `..` that traversal guards reject (#391).
+const LazyCatchAll = lazy(() => import('./routes/[...rest]'));
 
 function LazyAssetsSection() {
   return (
@@ -117,6 +120,14 @@ export default function App() {
     return (
       <Loading fallback={<p>extra…</p>}>
         <LazyExtraInput />
+      </Loading>
+    );
+  }
+  // The catch-all route module, reached as a lazy route (#391).
+  if (pathname === '/catch-all') {
+    return (
+      <Loading fallback={<p>catch-all…</p>}>
+        <LazyCatchAll />
       </Loading>
     );
   }
