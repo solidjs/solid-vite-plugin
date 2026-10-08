@@ -61,8 +61,8 @@
   "dependencies": {
     "@ampproject/remapping": "^2.3.0",
     "@babel/core": "^7.23.3",
-    "@solidjs/babel-plugin": "^2.0.0-rc.13",
-    "@solidjs/compiler": "^2.0.0-rc.13",
+    "@solidjs/babel-plugin": "^2.0.0-rc.14",
+    "@solidjs/compiler": "^2.0.0-rc.14",
     "@types/babel__core": "^7.20.4",
     "merge-anything": "^5.1.7",
     "vitefu": "^1.0.4"
@@ -75,9 +75,9 @@
     "@rollup/plugin-commonjs": "^25.0.7",
     "@rollup/plugin-node-resolve": "^15.2.3",
     "@skypack/package-check": "^0.2.2",
-    "@solidjs/diagnostics": "2.0.0-rc.13",
+    "@solidjs/diagnostics": "2.0.0-rc.14",
     "@solidjs/start-devtools": "^1.0.0-next.3",
-    "@solidjs/web": "^2.0.0-rc.13",
+    "@solidjs/web": "^2.0.0-rc.14",
     "@types/node": "^24.0.0",
     "cypress": "^14.0.0",
     "cypress-visual-regression": "^5.2.2",
@@ -86,15 +86,15 @@
     "prettier": "^3.1.0",
     "rollup": "^4.5.0",
     "rollup-plugin-cleaner": "^1.0.0",
-    "solid-js": "^2.0.0-rc.13",
+    "solid-js": "^2.0.0-rc.14",
     "typescript": "^5.2.2",
     "vite": "^8.2.1"
   },
   "peerDependencies": {
     "@solidjs/start-devtools": "^1.0.0-next.2",
-    "@solidjs/web": "^2.0.0-rc.13",
+    "@solidjs/web": "^2.0.0-rc.14",
     "@testing-library/jest-dom": "^5.16.6 || ^5.17.0 || ^6.0.0 || ^7.0.0",
-    "solid-js": "^2.0.0-rc.13",
+    "solid-js": "^2.0.0-rc.14",
     "vite": "^8.0.0 || ^9.0.0"
   },
   "peerDependenciesMeta": {
