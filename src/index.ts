@@ -1179,6 +1179,28 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
   let projectRoot = process.cwd();
   let isTestMode = false;
   let serverTestPosture = false;
+
+  // Lets the dependency scanner crawl `.tsrx` imports. Registered on every
+  // environment's `optimizeDeps` (top-level for client, configEnvironment
+  // for the rest).
+  const tsrxDepScanPlugin = {
+    name: 'solid:tsrx-dep-scan',
+    async transform(source: string, id: string) {
+      if (!isTsrxModule(id) || isTsrxCssModule(id)) return null;
+      const compiler = await loadNativeCompiler();
+      const result = await compiler.transformAsync(source, {
+        ...getSolidOptions(options, false, replaceDev, observe, isTestMode),
+        filename: cleanModuleId(id),
+        sourceMap: false,
+      });
+      const stripped = await transformWithOxc(result.code, cleanModuleId(id) + '.tsx', {
+        lang: 'tsx',
+        sourcemap: false,
+        target: 'esnext',
+      });
+      return { code: stripped.code, map: null };
+    },
+  };
   let isBuild = false;
   let isSsrBuild = false;
   let base = '/';
@@ -1580,26 +1602,7 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
           // Keep Solid TSX from injecting React's automatic runtime during scanning.
           rolldownOptions: {
             transform: { jsx: { runtime: 'classic' as const } },
-            plugins: [
-              {
-                name: 'solid:tsrx-dep-scan',
-                async transform(source: string, id: string) {
-                  if (!isTsrxModule(id) || isTsrxCssModule(id)) return null;
-                  const compiler = await loadNativeCompiler();
-                  const result = await compiler.transformAsync(source, {
-                    ...getSolidOptions(options, false, replaceDev, observe, isTestMode),
-                    filename: cleanModuleId(id),
-                    sourceMap: false,
-                  });
-                  const stripped = await transformWithOxc(result.code, cleanModuleId(id) + '.tsx', {
-                    lang: 'tsx',
-                    sourcemap: false,
-                    target: 'esnext',
-                  });
-                  return { code: stripped.code, map: null };
-                },
-              },
-            ],
+            plugins: [tsrxDepScanPlugin],
           },
         },
         ...(Object.keys(test).length ? { test } : {}),
@@ -1632,6 +1635,25 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
         ...(isTestMode && !serverTestPosture && !opts.isSsrTargetWebworker ? ['browser'] : []),
         ...config.resolve.conditions,
       ];
+
+      // Vite seeds only the `client` environment from the top-level
+      // `optimizeDeps` set in `config`, so every other environment would
+      // scan Solid TSX with Rolldown's default (React's automatic runtime)
+      // and fail on an unresolvable `react/jsx-dev-runtime`. Server
+      // environments default to `noDiscovery: true`, but hosts that run SSR
+      // outside Node turn discovery back on (@cloudflare/vite-plugin), #387.
+      if (name !== 'client') {
+        const optimizeDeps = (config.optimizeDeps ??= {});
+        if (!optimizeDeps.extensions?.includes('.tsrx')) {
+          optimizeDeps.extensions = [...(optimizeDeps.extensions ?? []), '.tsrx'];
+        }
+        const rolldownOptions = (optimizeDeps.rolldownOptions ??= {});
+        const transform = (rolldownOptions.transform ??= {});
+        transform.jsx ??= { runtime: 'classic' };
+        rolldownOptions.plugins = rolldownOptions.plugins
+          ? [rolldownOptions.plugins, tsrxDepScanPlugin]
+          : [tsrxDepScanPlugin];
+      }
 
       // `resolve.conditions` above only governs modules Vite inlines.
       // Externalized server deps are resolved by `fetchModule` with
