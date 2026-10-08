@@ -28,8 +28,13 @@ import solidPlugin from '@solidjs/vite-plugin';
 // through `start.middleware`: the chain throws while the build prerenders the
 // shell, and the build must fail rather than write the handler's contained
 // 500 to dist/client/index.html.
+//
+// SOLID_SHELL_NONCE=1 (prod mode) wires src/shell-nonce.ts instead: the
+// chain sets `event.nonce` during the prerender, and the static shell must
+// not carry it.
 const startNode = !!process.env.SOLID_START_NODE || !!process.env.SOLID_START_NODE_ONLY;
 const shellFail = !!process.env.SOLID_SHELL_FAIL;
+const shellNonce = !!process.env.SOLID_SHELL_NONCE;
 export default defineConfig({
   plugins: [
     solidPlugin({
@@ -37,7 +42,9 @@ export default defineConfig({
         ? { node: true }
         : shellFail
           ? { middleware: './src/shell-failure.ts' }
-          : true,
+          : shellNonce
+            ? { middleware: './src/shell-nonce.ts' }
+            : true,
       ssr: !!process.env.SOLID_FLIP_SSR,
       ...(process.env.SOLID_START_NODE ? { serverFunctions: true } : {}),
     }),

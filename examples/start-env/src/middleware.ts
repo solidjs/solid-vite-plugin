@@ -5,10 +5,7 @@ import { env } from 'virtual:env/server';
 // server side sees every var — the secret itself never leaves the server
 // (only its length does), and ENV_CHECK_PORT arrives as the schema's
 // *validated output* (a defaulted number, not a raw env string).
-export default async function envCheck(
-  request: Request,
-  next: (request?: Request) => Promise<Response>,
-) {
+export default async function envCheck(_event, next: () => Promise<Response>) {
   const response = await next();
   response.headers.set('x-env-secret-len', String(env.SESSION_SECRET.length));
   response.headers.set('x-env-port', JSON.stringify(env.ENV_CHECK_PORT));
