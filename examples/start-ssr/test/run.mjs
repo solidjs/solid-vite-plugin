@@ -128,7 +128,9 @@
 //   - lazy asset keys survive module identities beyond plain root-relative
 //     paths (the /lazy-assets surface, dev and prod): a query-suffixed lazy
 //     import keeps its query through the manifest key / dev URL (#299), and
-//     a root-external module gets a /@fs/ dev URL (#298),
+//     a root-external module gets a /@fs/ dev URL (#298), and a
+//     hand-written slash-prefixed moduleUrl resolves like the
+//     project-relative key (#390),
 //   - a non-root Vite `base` (base mode, SOLID_BASE=/app/) holds end to end:
 //     dev pages/assets/endpoint and preview pages/statics/endpoint all serve
 //     base-prefixed, the built handler receives base-restored URLs from the
@@ -622,17 +624,20 @@ async function runHttpChecks(mode, origin) {
 // for #299 (the query is part of the module identity — manifest key, dev
 // URL — and must survive the SSR asset lookup) and #298 (dev URLs must be
 // base-prefixed, and root-external modules must resolve to /@fs/ URLs, not
-// "/../…"). `basePrefix` is the configured Vite base without its trailing
-// slash ('' for the default '/'), asserted on every emitted URL.
+// "/../…"), plus a hand-written slash-prefixed moduleUrl (#390: dev emitted
+// a protocol-relative "//src/…" URL, the manifest lookup missed in prod).
+// `basePrefix` is the configured Vite base without its trailing slash (''
+// for the default '/'), asserted on every emitted URL.
 async function runLazyAssetChecks(mode, origin, { dev, basePrefix = '' } = {}) {
   const page = await fetchStreamed(origin + basePrefix + '/lazy-assets');
   record(
     mode,
     'lazy',
-    'query-suffixed and root-external lazy components SSR',
+    'query-suffixed, root-external and slash-keyed lazy components SSR',
     page.status === 200 &&
       page.html.includes('QUERY-LAZY-CONTENT') &&
-      page.html.includes('EXTERNAL-LAZY-CONTENT'),
+      page.html.includes('EXTERNAL-LAZY-CONTENT') &&
+      page.html.includes('SLASH-LAZY-CONTENT'),
     `status ${page.status}`,
   );
   const preloads = [...page.html.matchAll(/<link rel="modulepreload" href="([^"]+)">/g)].map(
@@ -640,6 +645,7 @@ async function runLazyAssetChecks(mode, origin, { dev, basePrefix = '' } = {}) {
   );
   const queryHref = preloads.find((href) => href.includes('QueryLazy'));
   const externalHref = preloads.find((href) => href.includes('LazyOutside'));
+  const slashHref = preloads.find((href) => href.includes('SlashLazy'));
 
   if (dev) {
     record(
@@ -656,6 +662,13 @@ async function runLazyAssetChecks(mode, origin, { dev, basePrefix = '' } = {}) {
       !!externalHref &&
         externalHref.startsWith(`${basePrefix}/@fs/`) &&
         externalHref.endsWith('start-ssr-external/LazyOutside.tsx'),
+      `modulepreloads: ${preloads.join(', ') || '(none)'}`,
+    );
+    record(
+      mode,
+      'lazy',
+      'slash-keyed module preloaded by its root-relative dev URL (no "//")',
+      slashHref === `${basePrefix}/src/SlashLazy.tsx`,
       `modulepreloads: ${preloads.join(', ') || '(none)'}`,
     );
   } else {
@@ -685,6 +698,14 @@ async function runLazyAssetChecks(mode, origin, { dev, basePrefix = '' } = {}) {
       !!externalEntry?.file && externalHref === `${basePrefix}/${externalEntry.file}`,
       `modulepreloads: ${preloads.join(', ') || '(none)'}`,
     );
+    const slashEntry = clientManifest['src/SlashLazy.tsx'];
+    record(
+      mode,
+      'lazy',
+      'slash-keyed module preload resolved through the manifest',
+      !!slashEntry?.file && slashHref === `${basePrefix}/${slashEntry.file}`,
+      `modulepreloads: ${preloads.join(', ') || '(none)'}`,
+    );
   }
 
   // The emitted URLs must actually be servable — a wrong base or a mangled
@@ -692,6 +713,7 @@ async function runLazyAssetChecks(mode, origin, { dev, basePrefix = '' } = {}) {
   for (const [name, href] of [
     ['queried module', queryHref],
     ['root-external module', externalHref],
+    ['slash-keyed module', slashHref],
   ]) {
     if (!href) {
       record(mode, 'lazy', `${name} preload URL serves JS`, false, 'no modulepreload emitted');

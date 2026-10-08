@@ -343,6 +343,16 @@ export function renderDevStyleTag(desc: DevStyleDescriptor): string {
 }
 
 /**
+ * Module keys are project-root-relative (`src/Page.tsx`), but a hand-written
+ * `lazy()` moduleUrl often carries a leading slash (`/src/Page.tsx`) — the
+ * compiler only rewrites one- and two-argument calls, so the string reaches
+ * the resolvers as written. Both spellings name the same module (#390).
+ */
+export function normalizeModuleKey(key: string): string {
+  return key.replace(/^\/+/, '');
+}
+
+/**
  * Browser URL for a lazy module's dev asset key (a project-root-relative
  * path, query included when the module identity carries one). Vite only
  * serves module URLs under the configured `base`, so it is always applied;
@@ -352,6 +362,7 @@ export function renderDevStyleTag(desc: DevStyleDescriptor): string {
  * `devManifestCode` (src/index.ts) — keep the two in sync.
  */
 export function devModuleUrl(root: string, base: string, key: string): string {
+  key = normalizeModuleKey(key);
   const queryIndex = key.indexOf('?');
   const file = queryIndex === -1 ? key : key.slice(0, queryIndex);
   const query = queryIndex === -1 ? '' : key.slice(queryIndex);
@@ -390,6 +401,7 @@ export function createDevAssetResolver(
   const resolve = function resolveDevAssets(
     key: string,
   ): ResolvedAssets | Promise<ResolvedAssets | null> {
+    key = normalizeModuleKey(key);
     const cached = resolved.get(key);
     if (cached) return cached;
     let walk = pending.get(key);
@@ -420,6 +432,7 @@ export function createDevAssetResolver(
   };
   return {
     resolve,
-    resolveSync: (key: string) => resolved.get(key) ?? { js: [devModuleUrl(root, base, key)], css: [] },
+    resolveSync: (key: string) =>
+      resolved.get(normalizeModuleKey(key)) ?? { js: [devModuleUrl(root, base, key)], css: [] },
   };
 }
