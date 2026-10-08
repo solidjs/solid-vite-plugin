@@ -406,6 +406,17 @@ function record(mode, phase, name, ok, detail = '') {
   console.log(`  [${mode}/${phase}] ${status} ${name}${detail && !ok ? ` — ${detail}` : ''}`);
 }
 
+// Reads a handler call's whole body; a rejection becomes the assertion's
+// detail instead of aborting the whole run.
+async function settledText(call) {
+  try {
+    const response = await call();
+    return { text: await response.text(), error: '' };
+  } catch (error) {
+    return { text: '', error: String(error) };
+  }
+}
+
 // Pull the function id for `name` out of the client-transformed module so
 // the endpoint can be hit directly.
 function extractFunctionId(transformedCode, name) {
@@ -1464,6 +1475,88 @@ async function runProdMode() {
     'client entry carries the escaped CSP nonce',
     nonceHtml.includes('<script type="module" nonce="test&quot;&lt;&amp;" src="'),
   );
+  // @solidjs/web's CSPNonce also takes a `{ script, style }` pair. The tags
+  // the handler writes are scripts, so they take the `script` value.
+  const pairNonce = { script: 'pair-script', style: 'pair-style' };
+  const pairPage = await settledText(() =>
+    builtHandler.handleRequest(new Request(origin + '/'), { nonce: pairNonce }),
+  );
+  record(
+    mode,
+    'build',
+    'client entry takes the script nonce of a { script, style } pair',
+    pairPage.text.includes('<script type="module" nonce="pair-script" src="') &&
+      !/<script\b[^>]*nonce="pair-style"/.test(pairPage.text),
+    pairPage.error,
+  );
+  const pairRedirect = await settledText(() =>
+    builtHandler.handleRequest(new Request(origin + '/redirect-post'), { nonce: pairNonce }),
+  );
+  record(
+    mode,
+    'build',
+    'post-flush redirect fallback takes the script nonce of a { script, style } pair',
+    pairRedirect.text.includes('<script nonce="pair-script">window.location='),
+    pairRedirect.error,
+  );
+  const styleOnlyNonce = { script: false, style: 'pair-style' };
+  const styleOnlyPage = await settledText(() =>
+    builtHandler.handleRequest(new Request(origin + '/'), { nonce: styleOnlyNonce }),
+  );
+  record(
+    mode,
+    'build',
+    'a pair without a script nonce leaves the client entry un-nonced',
+    styleOnlyPage.text.includes('<script type="module" src="'),
+    styleOnlyPage.error,
+  );
+  const styleOnlyRedirect = await settledText(() =>
+    builtHandler.handleRequest(new Request(origin + '/redirect-post'), { nonce: styleOnlyNonce }),
+  );
+  record(
+    mode,
+    'build',
+    'a pair without a script nonce leaves the redirect fallback un-nonced',
+    styleOnlyRedirect.text.includes('<script>window.location='),
+    styleOnlyRedirect.error,
+  );
+  // An empty nonce means none, as in the runtime.
+  for (const empty of [null, '']) {
+    const emptyPage = await settledText(() =>
+      builtHandler.handleRequest(new Request(origin + '/'), { nonce: empty }),
+    );
+    record(
+      mode,
+      'build',
+      `an empty nonce (${JSON.stringify(empty)}) leaves the client entry un-nonced`,
+      emptyPage.text.includes('<script type="module" src="'),
+      emptyPage.error,
+    );
+  }
+  // Anything outside CSPNonce rejects the call itself, before the chain
+  // runs: the host's own error, not a contained request failure.
+  for (const [label, invalid] of [
+    ['a number', 42],
+    ['an array', ['x']],
+    ['a pair without style', { script: 'x' }],
+    ['a misspelled key', { scirpt: 'x', style: 'y' }],
+    ['an empty script', { script: '', style: 'y' }],
+    ['a number as style', { script: 'x', style: 1 }],
+  ]) {
+    const outcome = await builtHandler
+      .handleRequest(new Request(origin + '/'), { nonce: invalid })
+      .then(
+        (response) => `resolved ${response.status}`,
+        (error) => String(error),
+      );
+    record(
+      mode,
+      'build',
+      `an invalid nonce (${label}) rejects handleRequest`,
+      outcome.includes('handleRequest options.nonce must be'),
+      outcome,
+    );
+  }
   record(
     mode,
     'build',
