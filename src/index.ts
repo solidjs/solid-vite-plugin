@@ -1097,6 +1097,14 @@ function collapseDotRuns(
   };
 }
 
+/**
+ * Build-time flag libraries use to drop server-component-only client code
+ * (#396). Always defined (`"true"` or `"false"`): an absent identifier cannot
+ * be eliminated. `"true"` when `serverFunctions.components` is set, including
+ * `'external'`. A user-provided `define` value wins.
+ */
+const SERVER_COMPONENTS_DEFINE = '__SOLID_SERVER_COMPONENTS__';
+
 export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
   if (typeof options.ssr === 'object') {
     throw new Error(
@@ -1112,6 +1120,9 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
   const serverComponentsOption =
     typeof options.serverFunctions === 'object' ? options.serverFunctions.components : undefined;
   const serverComponents = !!serverComponentsOption;
+  // Replaced in `config` when the user already defined the flag. Read by
+  // `configEnvironment`, which runs after `config` resolves.
+  let serverComponentsDefine = JSON.stringify(serverComponents);
   // The client runtime compiled server-function references import (the
   // server-functions plugin's own default unless `runtime` is set), kept only
   // when it names a package. A relative path or an alias is app source: the
@@ -1545,6 +1556,9 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
         }
       }
 
+      const userDefine = userConfig.define?.[SERVER_COMPONENTS_DEFINE];
+      if (typeof userDefine === 'string') serverComponentsDefine = userDefine;
+
       return {
         /**
          * We only need esbuild on .ts or .js files.
@@ -1552,6 +1566,11 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
          */
         // esbuild: { include: /\.ts$/ },
         // resolve.conditions is handled per-environment in configEnvironment.
+        // Build and dev source (via /@vite/env). The optimizer ignores this
+        // and gets the same flag in configEnvironment.
+        define: {
+          [SERVER_COMPONENTS_DEFINE]: serverComponentsDefine,
+        },
         resolve: {
           dedupe,
         },
@@ -1611,6 +1630,16 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
     },
 
     configEnvironment(name, config, opts) {
+      // The optimizer does not apply the top-level `define`, and Vite only
+      // seeds the `client` environment from the top-level `optimizeDeps`.
+      // Every environment's pre-bundle therefore gets the flag here, unless
+      // that environment already set its own value. #396
+      const optimizeDeps = (config.optimizeDeps ??= {});
+      const rolldownOptions = (optimizeDeps.rolldownOptions ??= {});
+      const transform = (rolldownOptions.transform ??= {});
+      const define = (transform.define ??= {});
+      define[SERVER_COMPONENTS_DEFINE] ??= serverComponentsDefine;
+
       config.resolve ??= {};
       // Emulate Vite default fallback for `resolve.conditions` if not set
       if (config.resolve.conditions == null) {
