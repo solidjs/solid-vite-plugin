@@ -29,9 +29,12 @@ const OnlyClient = clientOnly(() => import('./ClientOnlyWidget'));
 //   (facade chunk, manifest key, dev URL) and must survive the SSR asset
 //   lookup (#299),
 // - a module outside the Vite root — its dev URL must be a base-prefixed
-//   /@fs/ URL, not "/../…" (#298).
+//   /@fs/ URL, not "/../…" (#298),
+// - a hand-written moduleUrl with a leading slash — the same module as the
+//   project-relative key in dev and prod (#390).
 const LazyQuery = lazy(() => import('./QueryLazy.tsx?variant=a'));
 const LazyOutside = lazy(() => import('../../start-ssr-external/LazyOutside'));
+const LazySlash = lazy(() => import('./SlashLazy'), undefined, '/src/SlashLazy.tsx');
 // Also a configured client build input in extra-input mode (#353): a lazily
 // imported module that is a genuine entry too, like a filesystem router's
 // `buildInputs` route modules.
@@ -46,6 +49,7 @@ function LazyAssetsSection() {
       <Loading fallback={<p>lazy…</p>}>
         <LazyQuery />
         <LazyOutside />
+        <LazySlash />
       </Loading>
     </section>
   );

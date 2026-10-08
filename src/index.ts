@@ -113,6 +113,7 @@ const devManifestCode = (root: string, base: string, bridgeUrl: string | null) =
 const projectRoot = ${JSON.stringify(root.split(path.sep).join('/'))};
 const base = ${JSON.stringify(base.startsWith('/') ? base.replace(/\/$/, '') : '')};
 function moduleUrl(key) {
+  key = key.replace(/^\\/+/, "");
   const queryIndex = key.indexOf("?");
   const file = queryIndex === -1 ? key : key.slice(0, queryIndex);
   const query = queryIndex === -1 ? "" : key.slice(queryIndex);
@@ -1976,13 +1977,22 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
             warn: (message) => this.warn(message),
             repairDynamicEntries: true,
           });
-          return `export default ${JSON.stringify(
-            stampClientEntry(
-              manifest,
-              resolveClientEntryKey(manifest, startClientEntryId, clientBuildConfig, projectRoot),
-              base,
-            ),
-          )};`;
+          const stamped = stampClientEntry(
+            manifest,
+            resolveClientEntryKey(manifest, startClientEntryId, clientBuildConfig, projectRoot),
+            base,
+          );
+          // The runtime looks records up as `manifest[moduleUrl]`, so a
+          // hand-written slash-prefixed key (`/src/Page.tsx`, #390) needs
+          // its own property. The aliases are non-enumerable: `for…in`,
+          // `Object.keys` and JSON consumers see the manifest unchanged.
+          return `const manifest = ${JSON.stringify(stamped)};
+for (const key of Object.keys(manifest)) {
+  if (key[0] !== "/" && typeof manifest[key] === "object") {
+    Object.defineProperty(manifest, "/" + key, { value: manifest[key] });
+  }
+}
+export default manifest;`;
         }
         // SSR build before the client build produced a manifest: bake in the
         // dev-shaped fallback (registry miss degrades to js-only resolution).
