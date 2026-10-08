@@ -808,12 +808,13 @@ export default defineConfig({
   graph's CSS inlined; deep links get the same shell (history-fallback
   semantics). The generated client entry `render()`s (not hydrates) the app
   into `document.body`.
-- **Build**: `vite build` emits a purely static `dist/client` — the shell is
-  prerendered once through the built handler into `dist/client/index.html`,
-  with the hashed entry script and the entry graph's CSS links — deployable
-  to any static host. No server bundle remains unless `serverFunctions` is
-  enabled, in which case `dist/server` is kept and its `handleRequest`
-  serves the endpoint (pages stay static).
+- **Build**: standalone `vite build` emits a static `dist/client`. The shell
+  is prerendered once through the built handler into `dist/client/index.html`,
+  with hashed scripts and CSS links, ready for a static host. The server bundle
+  is removed unless `serverFunctions` is enabled, in which case `dist/server`
+  is kept and its `handleRequest` serves the endpoint (pages stay static).
+  Hosts such as Nitro can relocate the client and server outputs; prerender
+  uses those directories and retains the server service for the host's build.
 - **Transforms**: client code compiles exactly like a plain SPA today
   (`generate: 'dom'`, non-hydratable); only the document shell goes through
   the SSR transforms.

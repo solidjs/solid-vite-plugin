@@ -45,10 +45,11 @@
 // Client mode (`start` without `ssr: true`) rides the same machinery with
 // three deltas: the generated server entry renders the document shell
 // WITHOUT the app (dev serving doubles as history fallback, and a
-// post-build hook prerenders it once into dist/client/index.html), the
-// generated client entry render()s instead of hydrating, and dist/server is
-// dropped from the output unless `serverFunctions` needs it for the
-// endpoint. Client code compiles non-hydratable, exactly like a plain SPA.
+// post-build hook prerenders it once into the client emit directory), the
+// generated client entry render()s instead of hydrating, and the server
+// bundle is dropped unless `serverFunctions` needs it or another plugin
+// owns the app build. Client code compiles non-hydratable, exactly like a
+// plain SPA.
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import path from 'path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -486,6 +487,17 @@ function normalizeUserPath(root: string, spec: string, option: string): string {
   return relative;
 }
 
+/** True when `directory` is nested inside `parent` and is not `parent` itself. */
+function isStrictSubdirectory(parent: string, directory: string): boolean {
+  const relative = path.relative(parent, directory);
+  return (
+    relative !== '' &&
+    relative !== '..' &&
+    !relative.startsWith(`..${path.sep}`) &&
+    !path.isAbsolute(relative)
+  );
+}
+
 type RenderMode = 'stream' | 'async';
 
 /**
@@ -700,6 +712,10 @@ export function startServe(
   let root = process.cwd();
   let base = '/';
   let isBuild = false;
+  // Set from the config hook, before Vite installs the default no-op
+  // `builder.buildApp`. A user or host callback here means the SSR service
+  // must survive client-mode prerender even with server functions off.
+  let configBuildApp = false;
   let entries: ResolvedEntries | undefined;
   /** Absolute path of the user's middleware module, when configured. */
   let middlewarePath: string | null = null;
@@ -1681,22 +1697,36 @@ export function startServe(
         renderMode = resolveRenderMode(options.renderMode);
         if (clientMode) renderMode = 'stream';
         if (env.isPreview) {
+          // Defaults only. A host that relocates an environment in
+          // `configEnvironment` still wins — that hook runs after this
+          // merge. `start.external` leaves both directories to the host.
+          const previewBuild = externalServer
+            ? {}
+            : {
+                build: { outDir: 'dist/client' },
+                environments: {
+                  ssr: {
+                    build: {
+                      outDir: 'dist/server',
+                    },
+                  },
+                },
+              };
           if (clientMode) {
-            // Client-mode builds emit a real dist/client/index.html (the
-            // prerendered shell), so preview is Vite's stock static +
-            // history-fallback story. When server functions are on, the
-            // endpoint dispatches through the kept dist/server handler
-            // (configurePreviewServer).
-            return { appType: 'spa', build: { outDir: 'dist/client' } };
+            // Client-mode builds emit a real index.html (the prerendered
+            // shell), so preview is Vite's stock static + history-fallback
+            // story. When server functions are on, the endpoint dispatches
+            // through the kept server handler (configurePreviewServer).
+            return { appType: 'spa', ...previewBuild };
           }
-          // `vite preview` serves `build.outDir` statically; point it at the
-          // client bundle so hashed assets resolve, while HTML (and
-          // everything else unhandled) falls through to the
+          // `vite preview` serves the client outDir statically; point the
+          // default at the client bundle so hashed assets resolve, while
+          // HTML (and everything else unhandled) falls through to the
           // configurePreviewServer dispatch below. No index.html exists, so
           // `custom` keeps preview from attempting an SPA fallback.
           return {
             appType: 'custom',
-            ...(externalServer ? {} : { build: { outDir: 'dist/client' } }),
+            ...previewBuild,
           };
         }
         const build = env.command === 'build';
@@ -1820,13 +1850,19 @@ export function startServe(
         if (internal.performanceTracks && !isBuild && config.mode !== 'test') {
           performanceTracks = detectPerformanceTracksSubpath(root);
         }
-        if (isBuild && nodeEntry) {
+        {
+          // Resolved directories for prerender, preview, and the Node entry.
+          // `configEnvironment` has already run, so a host relocation wins
+          // over the dist/client and dist/server defaults. generateBundle
+          // below overrides these with the directories actually written.
           const environments = (config as any).environments ?? {};
           const clientBuild = environments.client?.build ?? config.build;
-          const serverBuild = environments.ssr?.build ?? config.build;
+          const serverBuild = environments.ssr?.build;
           clientOutDir = path.resolve(root, clientBuild.outDir);
-          serverOutDir = path.resolve(root, serverBuild.outDir);
+          serverOutDir = path.resolve(root, serverBuild?.outDir ?? 'dist/server');
           clientAssetsDir = clientBuild.assetsDir ?? 'assets';
+        }
+        if (isBuild && nodeEntry) {
           if (externalServer) {
             config.logger.warn(
               '[@solidjs/vite-plugin] start.node is ignored with start.external: the host owns the ' +
@@ -1852,7 +1888,7 @@ export function startServe(
         // is byte-identical with and without the option.
         order: 'post',
         handler(outputOptions, bundle) {
-          if (!isBuild || !nodeEntryApplies) return;
+          if (!isBuild) return;
           const consumer = getEnvironmentConsumer(this.environment);
           if (consumer === 'client') {
             // Where the client build actually landed (authoritative over
@@ -1861,6 +1897,8 @@ export function startServe(
             return;
           }
           if (this.environment?.name !== 'ssr') return;
+          if (outputOptions.dir) serverOutDir = path.resolve(root, outputOptions.dir);
+          if (!nodeEntryApplies) return;
           // The entry imports ./server.js; without that chunk (a provider
           // rewrote the ssr environment's output) it could not run.
           const serverChunk = bundle[SERVER_ENTRY_FILE];
@@ -2051,7 +2089,7 @@ export function startServe(
           server.middlewares.use((req, res, next) => {
             (async () => {
               handlerPromise ??= import(
-                pathToFileURL(path.resolve(root, 'dist/server/server.js')).href
+                pathToFileURL(path.join(serverOutDir!, SERVER_ENTRY_FILE)).href
               );
               const handler = await handlerPromise;
               // Preview's base middleware runs before this post hook and
@@ -2179,6 +2217,14 @@ export function startServe(
           {
             name: 'solid:start/prerender',
             apply: 'build',
+            config: {
+              order: 'post',
+              handler(config) {
+                // The resolved builder always has a default no-op buildApp.
+                // Read the user/plugin callback before Vite adds that default.
+                configBuildApp = !!config.builder?.buildApp;
+              },
+            },
             buildApp: {
               // Post order: this hook owns the whole client-mode app build (the
               // client-build-first orchestration pair is SSR-only). It
@@ -2186,13 +2232,13 @@ export function startServe(
               // hook suppresses Vite's build-all fallback, so the ordering
               // is guaranteed and the manifest is on disk before the shell
               // bundle bakes it in — then runs the built handler once to
-              // prerender the shell into dist/client/index.html and drops
-              // dist/server unless server functions still need its handler.
-              // The shell arrives complete from the handler: the runtime
-              // registers every manifest entry's CSS during the render
-              // (registerEntryAssets), so the entry graph's stylesheet
-              // links are already in its head — injecting them here again
-              // double-links every stylesheet.
+              // prerender the shell into the client emit directory and drops
+              // the server directory unless server functions or a host still
+              // need its handler. The shell arrives complete from the
+              // handler: the runtime registers every manifest entry's CSS
+              // during the render (registerEntryAssets), so the entry
+              // graph's stylesheet links are already in its head — injecting
+              // them here again double-links every stylesheet.
               order: 'post' as const,
               async handler(builder: any) {
                 const client = builder.environments.client;
@@ -2202,24 +2248,49 @@ export function startServe(
                   await builder.build(ssrEnvironment);
                 }
 
-                const serverDir = path.resolve(root, 'dist/server');
+                const serverDir = serverOutDir!;
                 const handler = await import(
-                  pathToFileURL(path.join(serverDir, 'server.js')).href
+                  pathToFileURL(path.join(serverDir, SERVER_ENTRY_FILE)).href
                 );
                 const response: Response = await handler.handleRequest(
                   new Request(new URL(base || '/', 'http://localhost')),
                 );
                 // The built handler answers failures with a 500 instead of
                 // rejecting; a shell that did not render must fail the
-                // build, not become index.html.
+                // build, not become index.html. Cleanup runs only after a
+                // shell was actually written.
                 if (!response.ok) {
                   throw new Error(
                     `[@solidjs/vite-plugin] prerendering the client-mode shell failed: the handler answered ${response.status}`,
                   );
                 }
-                writeFileSync(path.resolve(root, 'dist/client/index.html'), await response.text());
-                if (!internal.serverFunctions) {
-                  rmSync(serverDir, { recursive: true, force: true });
+                writeFileSync(path.join(clientOutDir!, 'index.html'), await response.text());
+                // A host may still need this service for its final server
+                // build, even when the application has no server functions.
+                // Pre-order buildApp hooks prepare (they clean output) and
+                // do not count; a function hook is normal order and does.
+                const hostBuild =
+                  configBuildApp ||
+                  builder.config.plugins.some(
+                    (plugin: Plugin) =>
+                      plugin.name !== 'solid:start/prerender' &&
+                      !!plugin.buildApp &&
+                      (typeof plugin.buildApp !== 'object' || plugin.buildApp.order !== 'pre'),
+                  );
+                const safeCleanup =
+                  isStrictSubdirectory(root, serverDir) &&
+                  serverDir !== clientOutDir &&
+                  !isStrictSubdirectory(serverDir, clientOutDir!);
+                if (!internal.serverFunctions && !hostBuild) {
+                  if (safeCleanup) {
+                    rmSync(serverDir, { recursive: true, force: true });
+                  } else {
+                    builder.config.logger.warn(
+                      '[@solidjs/vite-plugin] Preserving SSR output at ' +
+                        serverDir +
+                        ': automatic cleanup requires a directory inside the project root that does not contain client output.',
+                    );
+                  }
                 }
               },
             },
