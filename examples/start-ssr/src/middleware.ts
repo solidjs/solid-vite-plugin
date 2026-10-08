@@ -1,9 +1,16 @@
-// Fetch-style middleware chain for the middleware/preview e2e modes
-// (SSR_MIDDLEWARE=1 wires it through `start.middleware` in vite.config.ts).
-// Server-only: only the generated handler imports it. Exercises the whole
-// contract:
-// - runs inside the request-event scope: getRequestEvent() answers, locals
-//   decoration is visible to the page render and to server functions,
+// Event-first middleware chain — `(event, next)`, the request at
+// `event.request` — for the middleware/preview e2e modes (SSR_MIDDLEWARE=1
+// wires it through `start.middleware` in vite.config.ts) and the
+// render-mode/nonce modes. Server-only: only the generated handler imports
+// it. Exercises the whole contract:
+// - runs inside the request-event scope: getRequestEvent() answers with the
+//   same event, locals decoration is visible to the page render and to
+//   server functions,
+// - per-request render inputs on the event, set before next() (the render
+//   runs inside it): `renderPolicy` picks `event.renderMode` (a header, a
+//   crawler user agent, `?nojs` → 'async') and `event.nonce` (test headers),
+//   and sets the CSP header on HTML responses only; `x-late-nonce` writes
+//   the nonce after `await next()` — too late, which dev warns about,
 // - composition order (first → second → dispatch, unwinding in reverse),
 // - short-circuiting (/blocked never reaches the render), with a stub
 //   cookie set inside the request scope that only the handler edge's
@@ -34,7 +41,9 @@ import {
   isResponseEnvelope,
   redirect,
   respond,
+  type RequestEvent,
 } from '@solidjs/web';
+import type { StartMiddleware } from '@solidjs/vite-plugin';
 import { failDirect } from './api';
 
 // `start.instrument` evidence (SSR_INSTRUMENT=1): this module evaluates as
@@ -66,14 +75,51 @@ if (process.env.SSR_SERVER_ERRORS) {
   });
 }
 
-type Next = (request?: Request) => Promise<Response>;
+type Next = () => Promise<Response>;
+
+const CRAWLER_UA = /Googlebot|bingbot|DuckDuckBot|Slurp|Baiduspider|YandexBot/i;
+
+// The README recipe: one complete, settled document for clients that will
+// never run the streaming swap scripts — crawlers and an explicit `?nojs`
+// opt-in — and streaming for everyone else (`x-render-mode` is the test's
+// deterministic switch). Plus the CSP nonce: `x-csp-nonce` (a string) or
+// `x-csp-nonce-json` (any shape, for the `{ script, style }` pair and the
+// validation checks) put it on the event, and the policy header goes on
+// HTML responses only.
+const renderPolicy: StartMiddleware = async (event, next) => {
+  const { request } = event;
+  const header = request.headers.get('x-render-mode');
+  if (header) event.renderMode = header as RequestEvent['renderMode'];
+  else if (new URL(request.url).searchParams.has('nojs')) event.renderMode = 'async';
+  else if (CRAWLER_UA.test(request.headers.get('user-agent') || '')) event.renderMode = 'async';
+  // What a host's handleRequest nonce looks like from here (seeded onto the
+  // event before the chain): `event.nonce ??= ...` would adopt it.
+  if (request.headers.get('x-csp-host')) event.locals.seenNonce = event.nonce ?? null;
+  const nonce = request.headers.get('x-csp-nonce');
+  if (nonce) event.nonce = nonce;
+  const nonceJson = request.headers.get('x-csp-nonce-json');
+  if (nonceJson) event.nonce = JSON.parse(nonceJson);
+  const response = await next();
+  if (request.headers.get('x-late-nonce')) event.nonce = 'too-late';
+  const scriptNonce = typeof event.nonce === 'string' ? event.nonce : event.nonce?.script;
+  if (scriptNonce && response.headers.get('content-type')?.startsWith('text/html')) {
+    response.headers.set(
+      'content-security-policy',
+      `script-src 'nonce-${scriptNonce}' 'strict-dynamic'; object-src 'none'; base-uri 'none'`,
+    );
+  }
+  if (event.locals.seenNonce !== undefined) {
+    response.headers.set('x-seen-nonce', JSON.stringify(event.locals.seenNonce));
+  }
+  return response;
+};
 
 // A minimal filesystem-routing/createAPIHandler stand-in: owns /api/* and
 // the no-JS form endpoint, passes everything else down the chain.
-async function api(request: Request, next: Next): Promise<Response> {
+async function api(event: RequestEvent, next: Next): Promise<Response> {
+  const { request } = event;
   const { pathname } = new URL(request.url);
   if (request.method === 'GET' && pathname === '/api/info') {
-    const event = getRequestEvent()!;
     return Response.json({ user: event.locals.user, order: event.locals.order });
   }
   if (request.method === 'GET' && pathname === '/api/server-errors') {
@@ -156,8 +202,10 @@ async function api(request: Request, next: Next): Promise<Response> {
   return next();
 }
 
-async function first(request: Request, next: Next): Promise<Response> {
-  const event = getRequestEvent()!;
+async function first(event: RequestEvent, next: Next): Promise<Response> {
+  // The argument and the ambient lookup are the same event.
+  if (getRequestEvent() !== event) throw new Error('middleware event is not the request event');
+  const { request } = event;
   event.locals.order = ['first'];
   event.locals.user = 'mw-user';
   const { pathname } = new URL(request.url);
@@ -208,9 +256,18 @@ async function first(request: Request, next: Next): Promise<Response> {
   }
 }
 
-function second(request: Request, next: Next): Promise<Response> {
-  (getRequestEvent()!.locals.order as string[]).push('second');
+function second(event: RequestEvent, next: Next): Promise<Response> {
+  (event.locals.order as string[]).push('second');
+  if (new URL(event.request.url).pathname === '/rewrite-me') {
+    // Request substitution: assigned on the event before next(), so the
+    // middleware after this one and the render both see the new request.
+    event.request = new Request(new URL('/api/info', event.request.url), event.request);
+  }
+  if (new URL(event.request.url).pathname === '/next-arg') {
+    // The retired request-first shape: next() rejects with the migration.
+    return (next as unknown as (request: Request) => Promise<Response>)(event.request);
+  }
   return next();
 }
 
-export default [first, second, api];
+export default [renderPolicy, first, second, api];

@@ -379,6 +379,44 @@ async function prodMode() {
     !existsSync(path.join(exampleDir, 'dist/client/index.html')),
   );
 
+  // A middleware nonce never reaches the prerendered shell: a nonce baked
+  // into a static file would be replayed on every load. The build warns.
+  rmSync(path.join(exampleDir, 'dist'), { recursive: true, force: true });
+  const nonceBuild = await new Promise((resolve) => {
+    let output = '';
+    const child = spawn('pnpm', ['exec', 'vite', 'build'], {
+      cwd: exampleDir,
+      env: { ...process.env, SOLID_SHELL_NONCE: '1' },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    children.add(child);
+    child.stdout.on('data', (d) => (output += d));
+    child.stderr.on('data', (d) => (output += d));
+    child.on('exit', (code) => {
+      children.delete(child);
+      resolve({ code, output });
+    });
+  });
+  const noncedShellPath = path.join(exampleDir, 'dist/client/index.html');
+  const noncedShell = existsSync(noncedShellPath) ? readFileSync(noncedShellPath, 'utf-8') : '';
+  record(
+    'prod',
+    'prerender',
+    'a middleware nonce is not baked into the prerendered shell',
+    nonceBuild.code === 0 &&
+      noncedShell.includes('<script') &&
+      !noncedShell.includes('nonce') &&
+      !noncedShell.includes('baked-nonce'),
+    `exit ${nonceBuild.code}`,
+  );
+  record(
+    'prod',
+    'prerender',
+    'the build warns that event.nonce is ignored for the client-mode shell',
+    nonceBuild.output.includes('event.nonce is ignored for the client-mode shell'),
+    nonceBuild.output.slice(-400),
+  );
+
   rmSync(path.join(exampleDir, 'dist'), { recursive: true, force: true });
   await runCommand('pnpm', ['exec', 'vite', 'build'], { cwd: exampleDir });
 

@@ -31,11 +31,13 @@
 //   it, and page responses go through the runtime's `createSSRResponse`
 //   head lifecycle (commit at shell flush, real pre-flush redirects, the
 //   script fallback post-flush).
-// - `start.renderMode` decides how a page render becomes a body: `'stream'`
-//   (default) flushes the shell with fallbacks and streams boundaries in
-//   behind it; `'async'` awaits the settled document (no fallbacks or swap
-//   scripts — complete for no-JS clients); a module path decides per
-//   request, and `handleRequest(request, { renderMode })` overrides both.
+// - Per-request render inputs live on the request event: middleware sets
+//   `event.nonce` (the CSP nonce, read by @solidjs/web's renderer and by the
+//   tags the handler injects) and `event.renderMode` (`'stream'` flushes the
+//   shell with fallbacks and streams boundaries in behind it; `'async'`
+//   awaits the settled document — complete for no-JS clients) before
+//   calling `next()`. `start.renderMode` is the static default, and
+//   `handleRequest(request, { nonce, renderMode })` seeds and overrides both.
 // - `vite preview` serves dist/client statically and dispatches everything
 //   else through the built handler — the production path, middleware
 //   included, with no server file needed.
@@ -122,6 +124,7 @@ export interface StartOptions {
    * Server entry module. Must export `render(request?, context?)` returning
    * a `renderToStream` result, an HTML string, or a `Response`.
    * `context.clientEntry` carries the resolved client entry URL.
+   * `context.nonce` is this request's CSP nonce — forward it into `renderToStream`.
    *
    * Server mode only — ignored in client mode, where the server entry is
    * always generated (it renders the document shell without the app, for
@@ -154,17 +157,25 @@ export interface StartOptions {
   document?: string;
   /**
    * Path to a server-only module (resolved relative to the Vite root) whose
-   * default export is one fetch-style middleware function — `(request,
-   * next) => Response | Promise<Response>` — or an array of them, composed
-   * in order. The chain fronts every request the plugin dispatches — page
-   * SSR, the server-function endpoint, dev and production, `vite preview` —
-   * and runs inside the request-event scope, so `getRequestEvent()` works
-   * exactly as it does in application code (decorate `locals`, write the
-   * `response` stub). `next()` advances the chain (pass a `Request` to
-   * substitute it downstream); nothing reaches the wire until the outermost
-   * middleware returns, so headers on the returned `Response` stay mutable
-   * after `next()` — streamed bodies included — and error middleware is a
-   * plain `try { return await next(); } catch { ... }`.
+   * default export is one middleware function — `(event, next) => Response
+   * | Promise<Response>`, the request at `event.request` — or an array of
+   * them, composed in order. The chain fronts every request the plugin
+   * dispatches — page SSR, the server-function endpoint, dev and
+   * production, `vite preview` — and runs inside the request-event scope,
+   * so `getRequestEvent()` answers with the same event in application code
+   * (decorate `locals`, write the `response` stub). `next()` advances the
+   * chain and takes no arguments: assign `event.request` before calling it
+   * to substitute the request downstream. Nothing reaches the wire until
+   * the outermost middleware returns, so headers on the returned `Response`
+   * stay mutable after `next()` — streamed bodies included — and error
+   * middleware is a plain `try { return await next(); } catch { ... }`.
+   *
+   * The page render happens inside `next()`, so per-request render inputs
+   * go on the event before calling it: `event.nonce` (the CSP nonce — the
+   * runtime's scripts, preloads and styles, the injected client-entry tag,
+   * the redirect fallback and the dev head tags all carry it) and
+   * `event.renderMode` (`'stream'` or `'async'`, overriding
+   * `start.renderMode` for this request).
    *
    * All methods and accept types dispatch through the chain — API routes
    * and no-JS form POSTs included, in dev exactly as in production. A
@@ -238,25 +249,20 @@ export interface StartOptions {
    *   `deferStream` is moot here (everything defers), and a `Location`
    *   header written mid-render becomes a real 3xx instead of the
    *   post-flush script fallback.
-   * - A module path (resolved relative to the Vite root, following the
-   *   `middleware`/`setup` convention — a Vite config cannot serialize a
-   *   closure into the generated handler): the module default-exports
-   *   `(event) => 'stream' | 'async' | Promise<'stream' | 'async'>`, called
-   *   per request inside the request scope after the middleware chain (so
-   *   `event.locals` decoration is visible) — e.g. `'async'` for crawler
-   *   user agents or a `?nojs` flag, `'stream'` for everyone else.
    *
-   * Hosts driving the handler directly can override all of the above per
-   * call with `handleRequest(request, { renderMode })`; precedence is that
-   * runtime option, then the module function's result, then this static
-   * value. Applies to generated and authored entries alike (an authored
-   * `render()` returning a `renderToStream` result is awaited the same
-   * way). Server mode only — ignored in client mode, where the served
+   * This is the static default. To decide per request (e.g. `'async'` for
+   * crawler user agents or a `?nojs` flag), set `event.renderMode` in
+   * `start.middleware` before calling `next()`. Hosts driving the handler
+   * directly can override both per call with `handleRequest(request, {
+   * renderMode })`; precedence is that option, then `event.renderMode`,
+   * then this value. Applies to generated and authored entries alike (an
+   * authored `render()` returning a `renderToStream` result is awaited the
+   * same way). Server mode only — ignored in client mode, where the served
    * shell has no boundaries to settle.
    *
    * @default 'stream'
    */
-  renderMode?: 'stream' | 'async' | (string & {});
+  renderMode?: 'stream' | 'async';
   /**
    * Typed, validated environment variables. A schema file — conventionally
    * `env.ts` (or `env.js`) at the project root, probed automatically —
@@ -483,42 +489,21 @@ function normalizeUserPath(root: string, spec: string, option: string): string {
 type RenderMode = 'stream' | 'async';
 
 /**
- * Resolves `start.renderMode` at config time: a literal mode, or the
- * absolute path of a per-request module (`mode` stays the `'stream'`
- * default then; the module decides per request). Anything else is a
- * config error with the fix in the message — an unknown literal is far
- * more likely a typo than a file, so the message names both readings.
+ * Validates `start.renderMode` at config time: `'stream'` or `'async'`.
+ * The per-request module form shipped in 3.0.0-next prereleases is gone —
+ * per-request decisions are `event.renderMode` in middleware — so a path
+ * (or anything else) is a config error carrying the migration.
  */
-function resolveRenderMode(
-  root: string,
-  value: StartOptions['renderMode'],
-): { mode: RenderMode; path: string | null } {
-  if (value === undefined) return { mode: 'stream', path: null };
-  // (`string & {}` keeps editor completion for the literals; TS cannot
-  // narrow it away by equality, hence the assertion.)
-  if (value === 'stream' || value === 'async') return { mode: value as RenderMode, path: null };
-  const usage =
-    `start.renderMode must be 'stream' (the default), 'async', or the path of a module ` +
-    `(relative to the Vite root) default-exporting a per-request function ` +
-    `((event) => 'stream' | 'async' | Promise<...>)`;
-  if (typeof value !== 'string') {
-    throw new Error(
-      `[@solidjs/vite-plugin] ${usage}; got ${typeof value}. A Vite config cannot serialize a ` +
-        `closure into the generated handler — put the function in a module (e.g. ` +
-        `./src/render-mode.ts) and pass its path instead.`,
-    );
-  }
-  const absolute = path.isAbsolute(value) ? value : path.resolve(root, value);
-  if (!existsSync(absolute)) {
-    throw new Error(
-      `[@solidjs/vite-plugin] ${usage}; got ${JSON.stringify(value)}, which is neither a mode ` +
-        `nor an existing file.`,
-    );
-  }
-  return {
-    mode: 'stream',
-    path: path.resolve(root, normalizeUserPath(root, value, 'renderMode')),
-  };
+function resolveRenderMode(value: unknown): RenderMode {
+  if (value === undefined) return 'stream';
+  if (value === 'stream' || value === 'async') return value;
+  const got = typeof value === 'string' ? JSON.stringify(value) : typeof value;
+  throw new Error(
+    `[@solidjs/vite-plugin] start.renderMode must be 'stream' (the default) or 'async'; got ${got}. ` +
+      `The per-request module form was removed: decide per request in start.middleware instead, ` +
+      `by setting the mode on the request event before calling next() — ` +
+      `\`export default (event, next) => { if (isCrawler(event.request)) event.renderMode = 'async'; return next(); }\`.`,
+  );
 }
 
 interface ResolvedEntries {
@@ -724,12 +709,10 @@ export function startServe(
   let setupPath: string | null = null;
   /**
    * `start.renderMode`, resolved at config time: the static mode baked into
-   * the handler, or the absolute path of the per-request module deciding it
-   * (server mode only — a documented no-op in client mode, whose shell has
-   * no boundaries to settle).
+   * the handler (server mode only — a documented no-op in client mode,
+   * whose shell has no boundaries to settle).
    */
   let renderMode: RenderMode = 'stream';
-  let renderModePath: string | null = null;
 
   function requireEntries(): ResolvedEntries {
     // config() always runs before resolveId/load/configureServer.
@@ -910,7 +893,7 @@ export function startServe(
       // and once at build time into dist/client/index.html. The client
       // entry script is injected by the handler, exactly like SSR mode.
       return [
-        `import { renderToStream } from '@solidjs/web';`,
+        `import { renderToStream${isBuild ? '' : ', getRequestEvent'} } from '@solidjs/web';`,
         `import manifest from ${JSON.stringify(MANIFEST_ID)};`,
         `import Document from ${JSON.stringify(documentSpec())};`,
         ...errorBoundaryImport(),
@@ -924,14 +907,20 @@ export function startServe(
               `  </DefaultErrorBoundary>`,
             ]
           : [`  <Document />`]),
-        `  ), { manifest });`,
+        // A build prerenders this shell once into dist/client/index.html,
+        // so it must not carry a request's nonce; dev renders it per
+        // request, so the request's nonce applies there.
+        `  ), { manifest${isBuild ? '' : ', nonce: getRequestEvent()?.nonce'} });`,
         `}`,
       ].join('\n');
     }
     const { app } = requireEntries();
-    const streamOptions = `{ manifest${serverComponents ? ', plugins: [ServerComponentPlugin]' : ''} }`;
+    // `event.nonce` was validated (and host-overridden) by the handler
+    // before the render; @solidjs/web reads the nonce from the options only,
+    // so the entry hands it over explicitly.
+    const streamOptions = `{ manifest, nonce: getRequestEvent()?.nonce${serverComponents ? ', plugins: [ServerComponentPlugin]' : ''} }`;
     return [
-      `import { renderToStream${setupPath ? ', getRequestEvent' : ''} } from '@solidjs/web';`,
+      `import { renderToStream, getRequestEvent } from '@solidjs/web';`,
       ...(serverComponents
         ? [
             `import { configureServerFunctionsServer } from '@solidjs/web/server-functions';`,
@@ -1149,15 +1138,12 @@ export function startServe(
     const composeServerFunctions = internal.serverFunctions;
 
     const lines = [
-      `import { createRequestEvent, createSSRResponse, commitEventResponse, scriptNonce${middlewarePath ? ', composeMiddleware' : ''}, isResponseEnvelope } from '@solidjs/web';`,
+      `import { createRequestEvent, createSSRResponse, commitEventResponse, scriptNonce, styleNonce, isResponseEnvelope } from '@solidjs/web';`,
       ...(isBuild ? [`import { reportServerError } from 'solid-js/internal';`] : []),
       `import { provideRequestEvent } from ${JSON.stringify(STORAGE_SOURCE)};`,
       `import * as entry from ${JSON.stringify(entryServerSpec())};`,
       ...(middlewarePath
         ? [`import middlewareModule from ${JSON.stringify(middlewarePath)};`]
-        : []),
-      ...(renderModePath
-        ? [`import renderModeModule from ${JSON.stringify(renderModePath)};`]
         : []),
       ...(externalDev ? [`import DEV_STYLES_HEAD from ${JSON.stringify(DEV_STYLES_ID)};`] : []),
       ...(composeServerFunctions
@@ -1202,15 +1188,26 @@ export function startServe(
         `}`,
       );
     } else {
-      const devHead =
-        `<script>${devStylePatch}</script>` +
-        `<script type="module" src="${joinBase(base, '/@vite/client')}"></script>`;
-      lines.push(``, `const DEV_HEAD = ${JSON.stringify(devHead)};`);
+      // Built per request from the nonce attributes: under a nonce-based CSP
+      // the two scripts carry the script nonce (`'strict-dynamic'` then
+      // trusts the modules the Vite client loads) and the collected dev
+      // styles carry the style nonce.
+      lines.push(
+        ``,
+        `function devHead(nonceAttr) {`,
+        `  return '<script' + nonceAttr + '>' + ${JSON.stringify(devStylePatch)} + '</' + 'script>' +`,
+        `    '<script type="module"' + nonceAttr + ' src=' + ${JSON.stringify(JSON.stringify(joinBase(base, '/@vite/client')))} + '></' + 'script>';`,
+        `}`,
+        ``,
+        `function devStyles(html, styleAttr) {`,
+        `  return styleAttr ? html.split('<style data-asset=').join('<style' + styleAttr + ' data-asset=') : html;`,
+        `}`,
+      );
     }
 
-    // Middleware: the user module default-exports one fetch-style function
-    // or an array, composed in order. Without one, the chain degenerates to
-    // the terminal dispatch.
+    // Middleware: the user module default-exports one `(event, next)`
+    // function or an array, composed in order. Without one, the chain
+    // degenerates to the terminal dispatch.
     lines.push(``);
     if (middlewarePath) {
       lines.push(
@@ -1220,20 +1217,43 @@ export function startServe(
         `    throw new Error('[@solidjs/vite-plugin] start.middleware must default-export a function or an array of functions: ' + ${JSON.stringify(middlewarePath)});`,
         `  }`,
         `}`,
-        `const runMiddleware = composeMiddleware(middlewares);`,
+        // The plugin's own composition (event-first, unlike @solidjs/web's
+        // request-first composeMiddleware): each middleware receives the
+        // event, and next() takes no arguments — the request a later
+        // middleware, the server-function endpoint and the render see is
+        // always `event.request`, so substituting it is an assignment.
+        `function runMiddleware(event, last) {`,
+        `  let index = -1;`,
+        `  function dispatch(i) {`,
+        `    if (i <= index) return Promise.reject(new Error('[@solidjs/vite-plugin] next() called multiple times in start.middleware'));`,
+        `    index = i;`,
+        `    if (i === middlewares.length) return Promise.resolve(last());`,
+        `    return Promise.resolve(middlewares[i](event, function next() {`,
+        `      if (arguments.length && arguments[0] !== undefined) {`,
+        `        return Promise.reject(new TypeError('[@solidjs/vite-plugin] start.middleware: next() takes no arguments. ' +`,
+        `          'Middleware receives the request event — (event, next) — so to substitute the request, assign ' +`,
+        `          'event.request = newRequest before calling next().'));`,
+        `      }`,
+        `      return dispatch(i + 1);`,
+        `    }));`,
+        `  }`,
+        `  return dispatch(0);`,
+        `}`,
       );
     } else {
-      lines.push(`const runMiddleware = (request, next) => next(request);`);
+      lines.push(`const runMiddleware = (event, next) => next();`);
     }
 
-    // Render mode (`start.renderMode`): 'stream' flushes the shell with
-    // fallbacks in place and streams boundary content after it; 'async'
-    // adopts the renderToStream result's thenable — which waits for the
-    // complete render — so one settled document goes out (the fix for
-    // no-JS clients, solidjs/solid#3280). Precedence per request: the
-    // `handleRequest` option (hosts driving the handler directly), then the
-    // configured module's per-request result, then the static config. Every
-    // source is validated against the two literals with the offender named.
+    // Per-request render inputs live on the request event: `event.renderMode`
+    // and `event.nonce`, set by middleware before next() (the render runs
+    // inside it). Precedence per request: the `handleRequest` option (seeded
+    // onto the event before the chain and reasserted at dispatch), then the
+    // event field, then the static config. Render mode: 'stream' flushes the
+    // shell with fallbacks in place and streams boundary content after it;
+    // 'async' adopts the renderToStream result's thenable — which waits for
+    // the complete render — so one settled document goes out (the fix for
+    // no-JS clients, solidjs/solid#3280). Every source is validated against
+    // the two literals with the offender named.
     lines.push(
       ``,
       `function assertRenderMode(mode, source) {`,
@@ -1243,32 +1263,12 @@ export function startServe(
       `  return mode;`,
       `}`,
     );
-    if (renderModePath) {
-      lines.push(
-        `if (typeof renderModeModule !== 'function') {`,
-        `  throw new Error('[@solidjs/vite-plugin] start.renderMode must default-export a function ' +`,
-        `    "((event) => 'stream' | 'async' | Promise<...>): " + ${JSON.stringify(renderModePath)});`,
-        `}`,
-        `async function resolveRenderMode(event, options) {`,
-        `  if (options.renderMode !== undefined) return assertRenderMode(options.renderMode, 'handleRequest options.renderMode');`,
-        `  return assertRenderMode(await renderModeModule(event), 'the start.renderMode module (' + ${JSON.stringify(renderModePath)} + ') result');`,
-        `}`,
-      );
-    } else {
-      lines.push(
-        `function resolveRenderMode(event, options) {`,
-        `  if (options.renderMode !== undefined) return assertRenderMode(options.renderMode, 'handleRequest options.renderMode');`,
-        `  return ${JSON.stringify(renderMode)};`,
-        `}`,
-      );
-    }
 
-    // CSP nonce (`handleRequest(request, { nonce })`): @solidjs/web's
-    // `CSPNonce`, a string or a `{ script, style }` pair with both keys,
-    // each a non-empty string or `false`. An empty value (undefined, null or
-    // '') means none, as in the runtime. Anything else is rejected: projected
-    // as is, a typo'd key or a number would leave the tags without a nonce
-    // without a word.
+    // CSP nonce: @solidjs/web's `CSPNonce`, a string or a `{ script, style }`
+    // pair with both keys, each a non-empty string or `false`. An empty
+    // value (undefined, null or '') means none, as in the runtime. Anything
+    // else is rejected: projected as is, a typo'd key or a number would
+    // leave the tags without a nonce without a word.
     lines.push(
       ``,
       `function assertNonce(nonce, source) {`,
@@ -1286,6 +1286,11 @@ export function startServe(
       `  const got = Array.isArray(nonce) ? 'an array' : prototype ? 'an object with keys ' + JSON.stringify(Object.keys(nonce)) : typeof nonce;`,
       `  throw new Error('[@solidjs/vite-plugin] ' + source + ' must be a string, a { script, style } object (each a non-empty string or false), or undefined; got ' + got);`,
       `}`,
+      ``,
+      `function assertHostOptions(options) {`,
+      `  if (options.renderMode !== undefined) assertRenderMode(options.renderMode, 'handleRequest options.renderMode');`,
+      `  assertNonce(options.nonce, 'handleRequest options.nonce');`,
+      `}`,
     );
 
     // No `_$SC` bootstrap injection: the runtime's serialized
@@ -1301,8 +1306,16 @@ export function startServe(
       `  return value.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');`,
       `}`,
       ``,
+      `function nonceAttribute(value) {`,
+      `  return value ? ' nonce="' + escapeAttribute(value) + '"' : '';`,
+      `}`,
+      ``,
+      // The client entry and the dev scripts take the script destination of
+      // a `{ script, style }` pair; the dev styles and the csp-nonce meta the
+      // style destination.
       `function createHtmlChunkTransform(clientEntry, extraHead, nonce) {`,
-      `  const nonceAttr = nonce ? ' nonce="' + escapeAttribute(nonce) + '"' : '';`,
+      `  const nonceAttr = nonceAttribute(scriptNonce(nonce));`,
+      `  const styleAttr = nonceAttribute(styleNonce(nonce));`,
       `  let first = true;`,
       `  let injected = false;`,
       `  return (chunk) => {`,
@@ -1329,15 +1342,23 @@ export function startServe(
         `      chunk = chunk.replace(/<script(?:\\s[^>]*)?>window\\._\\$HY\\|\\|[\\s\\S]*?<\\/script>(?:<!--xs-->)?/, '');`,
       );
     }
-    const headParts: string[] = [];
+    // The `csp-nonce` meta hands the style nonce to Vite's client code,
+    // which reads `meta[property=csp-nonce]`: in dev for the styles the Vite
+    // client injects on HMR, in a build for the modulepreload and
+    // stylesheet links `__vitePreload` inserts for lazy chunks. (Vite only
+    // writes it itself when it transforms an index.html with
+    // `html.cspNonce`; here the handler writes the head per request.)
+    const headParts: string[] = [
+      `(styleAttr ? '<meta property="csp-nonce"' + styleAttr + '>' : '')`,
+    ];
     // Dev: the style patch + Vite client, then either middleware-provided
     // styles or the external environment's HMR-tracked virtual styles module.
     if (!isBuild) {
       headParts.push(
-        `DEV_HEAD`,
+        `devHead(nonceAttr)`,
         externalDev
-          ? `(extraHead === undefined ? DEV_STYLES_HEAD : extraHead)`
-          : `(extraHead || '')`,
+          ? `devStyles(extraHead === undefined ? DEV_STYLES_HEAD : extraHead, styleAttr)`
+          : `devStyles(extraHead || '', styleAttr)`,
       );
     }
     if (generated || clientMode) {
@@ -1351,9 +1372,7 @@ export function startServe(
         `(clientEntry ? '<script type="module"' + nonceAttr + ' src="' + clientEntry + '"${clientMode ? '' : ' async'}></' + 'script>' : '')`,
       );
     }
-    if (headParts.length) {
-      lines.push(`      chunk = chunk.replace('</head>', ${headParts.join(' + ')} + '</head>');`);
-    }
+    lines.push(`      chunk = chunk.replace('</head>', ${headParts.join(' + ')} + '</head>');`);
     lines.push(
       `    }`,
       `    if (first) { first = false; chunk = '<!DOCTYPE html>' + chunk; }`,
@@ -1371,7 +1390,15 @@ export function startServe(
     // (cookies append entry-by-entry, other headers gap-fill, status stays
     // the response's own) and commits the stub. Committed stubs pass
     // through untouched, so the edge applies it unconditionally.
-    lines.push(``, `async function dispatchRequest(request, event, options) {`);
+    lines.push(
+      ``,
+      // `consumed` records the render inputs the page render read, for the
+      // dev check in handleRequest (a write after next() came too late).
+      `async function dispatchRequest(event, options, consumed) {`,
+      // The event is the single source of truth for the request: middleware
+      // substitutes it by assigning `event.request` before next().
+      `  const request = event.request;`,
+    );
     if (composeServerFunctions) {
       lines.push(
         // A call's address is `<endpoint>/<id>`, `<endpoint>/data/<id>` or
@@ -1413,11 +1440,41 @@ export function startServe(
       isBuild
         ? `  const clientEntry = options.clientEntry || resolveClientEntry();`
         : `  const clientEntry = options.clientEntry || ${JSON.stringify(devClientEntryUrl())};`,
-      // Decided before the render starts (the module form may be async),
-      // inside the request scope and after the middleware chain, so a
-      // per-request policy sees the decorated event.
-      `  const renderMode = await resolveRenderMode(event, options);`,
-      `  let result = entry.render(request, { clientEntry, ...options.context });`,
+      // Read before the render starts, inside the request scope and after
+      // the middleware chain ran down to here: whatever middleware put on
+      // the event before next() is visible. Host options were seeded onto
+      // the event before the chain; reasserted here, they win over a
+      // middleware write. Generated entries hand `event.nonce` to
+      // renderToStream; authored entries read it the same way.
+      `  if (options.renderMode !== undefined) event.renderMode = options.renderMode;`,
+      `  if (options.nonce !== undefined) event.nonce = options.nonce;`,
+      `  const renderMode = event.renderMode === undefined || event.renderMode === null ? ${JSON.stringify(renderMode)} : assertRenderMode(event.renderMode, 'event.renderMode');`,
+      ...(clientMode && isBuild
+        ? [
+            // The client-mode shell is prerendered once into
+            // dist/client/index.html: a nonce baked into a static file is
+            // no nonce at all, so the shell renders without one (the
+            // generated entry renders without one either way).
+            `  if (assertNonce(event.nonce, 'event.nonce') !== undefined) {`,
+            `    console.warn('[@solidjs/vite-plugin] event.nonce is ignored for the client-mode shell: it is ' +`,
+            `      'prerendered once into dist/client/index.html, so a per-request nonce cannot reach it. Allow ' +`,
+            `      "the shell's inline scripts by hash ('sha256-...') instead, or set ssr: true.");`,
+            `    event.nonce = undefined;`,
+            `  }`,
+            `  const nonce = undefined;`,
+          ]
+        : [`  const nonce = assertNonce(event.nonce, 'event.nonce');`]),
+      `  consumed.rendered = true;`,
+      `  consumed.nonce = event.nonce;`,
+      `  consumed.renderMode = event.renderMode;`,
+      // Authored entries own renderToStream, and the runtime reads the nonce
+      // from those options only. The resolved value (host option, else the
+      // event) goes out as context.nonce; with none, a nonce the host
+      // already put on options.context is left alone. Generated entries
+      // read event.nonce themselves.
+      `  const renderContext = { clientEntry, ...options.context };`,
+      `  if (nonce !== undefined) renderContext.nonce = nonce;`,
+      `  let result = entry.render(request, renderContext);`,
       // renderToStream results are thenables whose then() waits for the
       // *complete* render — check for pipe first so streaming survives, and
       // only await plain promises (async render functions).
@@ -1449,13 +1506,12 @@ export function startServe(
       // The runtime's response-head lifecycle: commit at shell flush,
       // pre-flush Location as a real redirect, post-flush Location as the
       // script fallback; the transform injects the doctype/head pieces.
-      // Both write a single script, so a `{ script, style }` nonce
-      // contributes its script value, as with @solidjs/web's other
+      // The redirect fallback is a single script, so a `{ script, style }`
+      // nonce contributes its script value, as with @solidjs/web's other
       // single-script surfaces.
-      `  const nonce = scriptNonce(options.nonce);`,
       `  return createSSRResponse(result, event, {`,
       `    responseInit: options.responseInit,`,
-      `    nonce,`,
+      `    nonce: scriptNonce(nonce) || null,`,
       `    transformChunk: createHtmlChunkTransform(clientEntry, options.devHead, nonce),`,
       `  });`,
       `}`,
@@ -1474,9 +1530,9 @@ export function startServe(
     // the original error (with the built-in dev middleware, Vite's error
     // middleware and its overlay).
     //
-    // In a build any other failure (a middleware throw, a start.setup or
-    // start.renderMode module failure, a render that throws before
-    // renderToStream returns) must not leave handleRequest: each host would
+    // In a build any other failure (a middleware throw, a start.setup
+    // failure, an invalid event.renderMode or event.nonce, a render that
+    // throws before renderToStream returns) must not leave handleRequest: each host would
     // answer it its own way and the configured error policy would never see
     // it. It is reported the way `failRender` reports a failed render,
     // through the runtime's `reportServerError` (from solid-js/internal, as
@@ -1524,8 +1580,7 @@ export function startServe(
       // A bad per-call option is the host's own error, not the app's: it
       // rejects up front, before the chain runs, instead of being contained
       // as a request failure.
-      `  if (options.renderMode !== undefined) assertRenderMode(options.renderMode, 'handleRequest options.renderMode');`,
-      `  assertNonce(options.nonce, 'handleRequest options.nonce');`,
+      `  assertHostOptions(options);`,
       // `options.event` is the public wrapper->event extension seam: extra
       // fields (conventionally `nativeEvent`, the platform's raw request
       // object) spread over the event's defaults at creation, so hosts and
@@ -1533,16 +1588,38 @@ export function startServe(
       // with — no new convention beyond createRequestEvent's own init
       // parameter (spreading undefined is a no-op).
       `  const event = createRequestEvent(request, options.event);`,
+      // Host render inputs are seeded before the chain, so middleware sees
+      // them (e.g. `event.nonce ??= ...` builds its CSP header from the
+      // host's nonce); dispatch reasserts them so they also win.
+      `  if (options.nonce !== undefined) event.nonce = options.nonce;`,
+      `  if (options.renderMode !== undefined) event.renderMode = options.renderMode;`,
+      `  const consumed = { rendered: false };`,
       // Middleware runs inside the request scope, after event creation —
-      // getRequestEvent() answers in middleware exactly as in app code, and
-      // nothing reaches the wire until the outermost middleware returns.
+      // getRequestEvent() answers in middleware with the same event it
+      // receives, and nothing reaches the wire until the outermost
+      // middleware returns.
       `  const response = await provideRequestEvent(event, async () => {`,
       `    try {`,
-      `      return await runMiddleware(request, (req) => dispatchRequest(req || request, event, options));`,
+      `      return await runMiddleware(event, () => dispatchRequest(event, options, consumed));`,
       `    } catch (error) {`,
       `      return containFailure(error, event);`,
       `    }`,
       `  });`,
+      ...(isBuild
+        ? []
+        : [
+            // Dev-only footgun check: the render runs inside next(), so a
+            // render input written after `await next()` never reached it.
+            `  if (consumed.rendered) {`,
+            `    for (const key of ['nonce', 'renderMode']) {`,
+            `      if (event[key] !== consumed[key]) {`,
+            `        console.warn('[@solidjs/vite-plugin] event.' + key + ' changed after the page render read it, ' +`,
+            `          'so the change had no effect on this response. The render runs inside next(): set event.' + key +`,
+            `          ' in middleware before calling next(), not after awaiting it.');`,
+            `      }`,
+            `    }`,
+            `  }`,
+          ]),
       // The fold runs strictly AFTER the outermost middleware returned:
       // headers stay mutable through the whole unwind, and a middleware
       // early return (an API handler that never called next()) gets its
@@ -1601,11 +1678,8 @@ export function startServe(
         // Server-mode only as well: the client-mode shell renders no app,
         // so there is nothing to settle. Validated in every mode though —
         // a typo should not hide behind the `ssr` boolean.
-        ({ mode: renderMode, path: renderModePath } = resolveRenderMode(root, options.renderMode));
-        if (clientMode) {
-          renderMode = 'stream';
-          renderModePath = null;
-        }
+        renderMode = resolveRenderMode(options.renderMode);
+        if (clientMode) renderMode = 'stream';
         if (env.isPreview) {
           if (clientMode) {
             // Client-mode builds emit a real dist/client/index.html (the

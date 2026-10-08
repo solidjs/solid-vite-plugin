@@ -422,42 +422,61 @@ real 3xx redirect, and one set after it (streamed responses) falls back to
 a `<script>window.location=...</script>` tail.
 
 **`middleware`** points at a server-only module default-exporting one
-fetch-style middleware — `(request, next) => Response | Promise<Response>`
-— or an array of them, composed in order:
+middleware — `(event, next) => Response | Promise<Response>`, the request
+at `event.request` — or an array of them. The plugin composes the chain
+itself. `next()` takes no arguments: assign `event.request = new Request(...)`
+before calling it to hand a different request downstream (calling
+`next(request)`, the previous shape, throws a migration error).
+
+The page render runs inside `next()`, so per-request render inputs go on
+the event before that call. `event.nonce` is the CSP nonce (a string, or
+`{ script, style }` with each a non-empty string or `false`).
+`event.renderMode` is `'stream'` or `'async'` for this request, overriding
+the static `renderMode` below.
+`handleRequest(request, { nonce, renderMode })` is seeded onto the event
+before the chain and wins over a middleware write.
 
 ```ts
 // vite.config.ts
 solid({ start: { middleware: './src/middleware.ts' }, ssr: true });
 
 // src/middleware.ts
-import { getRequestEvent } from '@solidjs/web';
-
-export default async function auth(request: Request, next) {
-  getRequestEvent().locals.user = await userFromCookie(request);
-  try {
-    const response = await next();
-    response.headers.set('server-timing', 'app'); // pre-wire window
-    return response;
-  } catch (error) {
-    return new Response('oops', { status: 500 });
+export default async (event, next) => {
+  event.nonce ??= crypto.randomUUID();
+  if (/bot|crawler/i.test(event.request.headers.get('user-agent') ?? '')) {
+    event.renderMode = 'async';
   }
-}
+  const response = await next();
+  const scriptNonce = typeof event.nonce === 'string' ? event.nonce : event.nonce?.script;
+  if (scriptNonce && response.headers.get('content-type')?.startsWith('text/html')) {
+    response.headers.set(
+      'content-security-policy',
+      `script-src 'nonce-${scriptNonce}' 'strict-dynamic'; object-src 'none'; base-uri 'none'`,
+    );
+  }
+  return response;
+};
 ```
+
+Generated entries pass `event.nonce` into `renderToStream`. An authored
+`entry-server` must forward the `context.nonce` the handler passes it
+(`renderToStream(app, { manifest, nonce: context.nonce })`).
 
 The chain fronts every request the plugin dispatches — page SSR and the
 server-function endpoint, dev, production, and preview alike — and runs
-inside the request-event scope, so `getRequestEvent()` works exactly as in
-application code (the endpoint shares the chain's event, so `locals`
+inside the request-event scope, so `getRequestEvent()` answers with the
+same event as the `event` argument (the endpoint shares it, so `locals`
 decoration is visible to server functions too). Nothing reaches the wire
 until the outermost middleware returns: headers stay mutable after
-`next()` even for streamed responses.
+`next()` even for streamed responses. In dev, writing `event.nonce` or
+`event.renderMode` after `await next()` warns: the render already read them.
 
 Whatever escapes the chain is settled at the handler edge. A thrown
 `Response` is the response, so `throw redirect('/login')` answers the 302
 (as the server-function endpoint does), and so is the `Response` a thrown
 `respond()` envelope carries; `Response.error()` is not a response and
 counts as a failure. In a production build any other failure (a middleware
-throw, a `setup` or `renderMode` module failure) is contained by the
+throw, a `setup` failure, or an invalid `event.renderMode` / `event.nonce`) is contained by the
 handler instead of rejecting to the host. It is reported once to the hook
 registered with `configureServerErrors` from `@solidjs/web`, with the site
 a failed render reports (`{ kind: 'render', handling: 'failed' }` and the
@@ -538,7 +557,7 @@ server build must keep code splitting on (the default), since inlining
 dynamic imports would hoist the handler graph back above the instrument.
 
 **`renderMode`** — how a page render becomes a response body: `'stream'`
-(the default) or `'async'`, or a module path deciding per request.
+(the default) or `'async'`.
 
 Streaming flushes the document shell as soon as it is ready, with every
 `<Loading>` fallback in place, and streams the boundaries' content behind it
@@ -566,43 +585,33 @@ header written mid-render — the post-flush script redirect in stream mode —
 becomes a real 3xx with no body, which is exactly what a no-JS client needs.
 
 Most apps want streaming for browsers and a complete document for the few
-clients that cannot run the swap. The per-request form is a module path
-(relative to the Vite root, following the `middleware`/`setup` convention
-— a Vite config cannot serialize a closure into the generated handler)
-default-exporting `(event) => 'stream' | 'async' | Promise<'stream' |
-'async'>`. It runs inside the request scope after the middleware chain, so
-`event.locals` is decorated by the time it decides:
+clients that cannot run the swap. Decide that per request in middleware,
+before `next()` — see the middleware example above:
 
 ```ts
-// vite.config.ts
-solid({ start: { renderMode: './src/render-mode.ts' }, ssr: true });
-
-// src/render-mode.ts
-import type { RequestEvent } from '@solidjs/web';
-
-const CRAWLER = /Googlebot|bingbot|DuckDuckBot|Slurp|Baiduspider|YandexBot/i;
-
-export default function renderMode(event: RequestEvent) {
-  const { request } = event;
-  if (new URL(request.url).searchParams.has('nojs')) return 'async';
-  if (CRAWLER.test(request.headers.get('user-agent') ?? '')) return 'async';
-  return 'stream';
+if (/bot|crawler/i.test(event.request.headers.get('user-agent') ?? '')) {
+  event.renderMode = 'async';
 }
 ```
 
+The module form (`renderMode: './src/render-mode.ts'`) shipped only in
+3.0.0-next prereleases and is a config error pointing at `event.renderMode`.
+
 Hosts driving the handler directly can decide per call instead:
 `handleRequest(request, { renderMode: 'async' })`. Precedence is that
-runtime option, then the module function's result, then the static config;
-an unknown value from any of the three is an error naming its source (a
-bad runtime option rejects the `handleRequest` call; a bad module result is
-a request failure, contained in production like any other). The
-mode applies to generated and authored entries alike — an authored
-`render()` returning a `renderToStream` result is awaited the same way (and
-in production its client-entry reference is still rewritten). `httpStatus()` /
-`httpHeader()` declarations survive either mode: the runtime freezes the
-response head when the awaited render completes (`@solidjs/web` 2.0.0-rc.7+),
-just as streaming freezes it at shell flush. Server mode only — in client mode the served shell has no boundaries to
-settle, so the option is a documented no-op there.
+option, then `event.renderMode`, then this static value. A bad
+`handleRequest` option rejects the call before the chain runs; a bad
+`event.renderMode` is a request failure, contained in production like any
+other. The mode applies to generated and authored entries alike — an
+authored `render()` returning a `renderToStream` result is awaited the same
+way (and in production its client-entry reference is still rewritten).
+`httpStatus()` / `httpHeader()` declarations survive either mode: the
+runtime freezes the response head when the awaited render completes
+(`@solidjs/web` 2.0.0-rc.7+), just as streaming freezes it at shell flush.
+Server mode only — in client mode the served shell has no boundaries to
+settle, so the option is a documented no-op there. A nonce set during the
+client-mode shell prerender is ignored (and the build warns): baking one
+into `dist/client/index.html` would replay it on every load.
 
 **`env`** — first-party typed environment variables. A schema file at the
 project root — `env.ts` (or `env.js`), probed automatically; point

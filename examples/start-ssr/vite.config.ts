@@ -34,11 +34,14 @@ import solidPlugin from '@solidjs/vite-plugin';
 // - SOLID_OBSERVE=1 (observe mode) turns on `observe`: the `observe` export
 //   condition everywhere and the compiler's `sourceNames` for both
 //   postures, so the built server AND client bundles carry component labels.
-// - SSR_RENDER_MODE sets `start.renderMode` (render-mode mode): `module`
-//   wires src/render-mode.ts (the per-request policy: header / crawler UA /
-//   `?nojs`); any other value passes through verbatim — `async` for the
-//   static complete-document mode, and bogus literals or missing paths for
-//   the config-validation assertions.
+// - SSR_RENDER_MODE sets `start.renderMode` (render-mode mode): `middleware`
+//   wires src/middleware.ts instead, whose `renderPolicy` sets
+//   `event.renderMode` per request (header / crawler UA / `?nojs`); any
+//   other value passes through verbatim — `async` for the static
+//   complete-document mode, and bogus literals or paths (the retired module
+//   form) for the config-validation assertions.
+// - SSR_NONCE=1 (nonce mode) wires src/middleware.ts too: `renderPolicy`
+//   puts the test's CSP nonce headers on `event.nonce`.
 // - SERVER_FN_DEV_MIDDLEWARE=0 disables the built-in dev middleware via
 //   `serverFunctions.devMiddleware` (no-middleware mode) — endpoint dispatch
 //   becomes the host's job, like a Cloudflare-style environment plugin.
@@ -219,23 +222,21 @@ export default defineConfig({
               // preview — with getRequestEvent() live inside it.
               ...(process.env.SSR_MIDDLEWARE
                 ? { middleware: './src/middleware.ts', errorBoundary: false }
-                : {}),
+                : process.env.SSR_RENDER_MODE === 'middleware' || process.env.SSR_NONCE
+                  ? { middleware: './src/middleware.ts' }
+                  : {}),
               // SSR_SETUP=1 (middleware mode): the per-request app-setup
               // hook — src/setup.tsx runs between the middleware chain and
               // renderToStream, receiving the event and returning the
               // component to render (the TanStack-style async router seam).
               ...(process.env.SSR_SETUP ? { setup: './src/setup.tsx' } : {}),
               ...(process.env.SSR_INSTRUMENT ? { instrument: './src/instrument.ts' } : {}),
-              // SSR_RENDER_MODE (render-mode mode): `module` → the
-              // per-request policy module; anything else verbatim
-              // (`async`, or an invalid value for the validation checks).
-              ...(process.env.SSR_RENDER_MODE
-                ? {
-                    renderMode:
-                      process.env.SSR_RENDER_MODE === 'module'
-                        ? './src/render-mode.ts'
-                        : process.env.SSR_RENDER_MODE,
-                  }
+              // SSR_RENDER_MODE (render-mode mode): `middleware` → the
+              // per-request policy in src/middleware.ts (`event.renderMode`);
+              // anything else verbatim (`async`, or an invalid value / a
+              // retired module path for the validation checks).
+              ...(process.env.SSR_RENDER_MODE && process.env.SSR_RENDER_MODE !== 'middleware'
+                ? { renderMode: process.env.SSR_RENDER_MODE as 'stream' | 'async' }
                 : {}),
             },
       serverFunctions: serverComponents

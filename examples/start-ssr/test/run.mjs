@@ -112,12 +112,19 @@
 //     one settled document — no Loading fallback markup, no swap scripts,
 //     boundary content in place, hydration data intact (the streamed page's
 //     browser checks pass against it) — with httpStatus/httpHeader still on
-//     the wire and a mid-render Location as a real 3xx; the per-request
-//     module form (src/render-mode.ts) switches modes within one server by
-//     header / crawler UA / `?nojs`; the `handleRequest(request,
+//     the wire and a mid-render Location as a real 3xx; `event.renderMode`
+//     set by middleware (src/middleware.ts) switches modes within one server
+//     by header / crawler UA / `?nojs`; the `handleRequest(request,
 //     { renderMode })` override wins over both; authored entries get the same
-//     treatment; invalid config and runtime values are rejected with the fix
-//     in the message,
+//     treatment; invalid config (the retired module form included) and
+//     runtime values are rejected with the fix in the message,
+//   - the CSP nonce (nonce mode, SSR_NONCE): `event.nonce` set by middleware
+//     reaches every script, style and preload of the page, the client-entry
+//     tag, the redirect fallback, the dev head and the csp-nonce meta, in
+//     dev and in a build (default Fetchable included); handleRequest's nonce
+//     is seen by middleware and wins; invalid values are rejected; a nonce
+//     written after `await next()` warns in dev; request substitution via
+//     `event.request` and the next(request) migration error,
 //   - lazy asset keys survive module identities beyond plain root-relative
 //     paths (the /lazy-assets surface, dev and prod): a query-suffixed lazy
 //     import keeps its query through the manifest key / dev URL (#299), and
@@ -158,7 +165,7 @@
 //
 // Requires the plugin built (pnpm build at the repo root) and Google Chrome.
 // Usage: node test/run.mjs
-// [dev|prod|document|css-filter|entries|endpoint|configure|no-middleware|middleware|preview|render-mode|base|builder-order|builder-prepare|extra-input|file-names|babel-hmr|frames|external|observe|perf-tracks|detect|vitest|node]
+// [dev|prod|document|css-filter|entries|endpoint|configure|no-middleware|middleware|preview|render-mode|nonce|base|builder-order|builder-prepare|extra-input|file-names|babel-hmr|frames|external|observe|perf-tracks|detect|vitest|node]
 // (default: all)
 
 import { spawn, execSync, execFileSync } from 'node:child_process';
@@ -3905,7 +3912,7 @@ async function runMiddlewareMode() {
       );
       const transformed = await probe.environments.ssr.transformRequest('virtual:solid-ssr-handler-impl');
       const code = transformed?.code || '';
-      const unwind = code.indexOf('runMiddleware(request');
+      const unwind = code.indexOf('runMiddleware(event');
       // The SSR transform rewrites the imported binding to a member access
       // on the vite import handle (`(0, handle.commitEventResponse)(...)`),
       // so match the rewritten call site rather than the source text.
@@ -4305,9 +4312,9 @@ async function runPreviewMode() {
 //   real 3xx with no body,
 // - stream mode is byte-for-byte the streaming story it always was (the
 //   default: dev/prod modes above; here re-asserted next to async),
-// - the per-request module form (src/render-mode.ts) switches modes within
-//   one server — a header, a crawler user agent, `?nojs` → async; everyone
-//   else streams,
+// - `event.renderMode` set in middleware (src/middleware.ts) switches modes
+//   within one server — a header, a crawler user agent, `?nojs` → async;
+//   everyone else streams,
 // - the `handleRequest(request, { renderMode })` runtime override wins over
 //   both the module function and the static config, and rejects an invalid
 //   value with an actionable error,
@@ -4479,6 +4486,7 @@ async function runRenderModeMode() {
   for (const [value, label] of [
     ['bogus', 'unknown literal'],
     ['./src/no-such-render-mode.ts', 'missing module path'],
+    ['./src/middleware.ts', 'retired module form (existing file)'],
   ]) {
     process.env.SSR_RENDER_MODE = value;
     let error = '';
@@ -4496,7 +4504,8 @@ async function runRenderModeMode() {
       error.includes('start.renderMode') &&
         error.includes("'stream'") &&
         error.includes("'async'") &&
-        error.includes('module') &&
+        error.includes('event.renderMode') &&
+        error.includes('start.middleware') &&
         error.includes(value),
       error ? error.slice(0, 300) : 'config resolved without error',
     );
@@ -4549,8 +4558,8 @@ async function runRenderModeMode() {
     record(
       mode,
       'codegen',
-      'no render-mode module import without the option',
-      !!transformed && !transformed.code.includes('render-mode.ts'),
+      'no middleware import without the option',
+      !!transformed && !transformed.code.includes('middleware.ts'),
     );
   } catch (e) {
     record(mode, 'override', 'direct dispatch completed', false, String(e));
@@ -4559,7 +4568,7 @@ async function runRenderModeMode() {
   }
 
   // ---- Direct dispatch: override beats the per-request module too -----------
-  process.env.SSR_RENDER_MODE = 'module';
+  process.env.SSR_RENDER_MODE = 'middleware';
   try {
     probe = await withNodeEnvRestored(() =>
       createServer({ root: exampleDir, server: { middlewareMode: true } }),
@@ -4572,7 +4581,7 @@ async function runRenderModeMode() {
     record(
       mode,
       'override',
-      'module function answers per request (header → async)',
+      'middleware event.renderMode answers per request (header → async)',
       viaModule.status === 200 && !isStreamedMarkup(viaModule.html) && viaModule.html.includes('STREAMED-ASYNC-CONTENT'),
     );
     const forcedStream = await readAll(
@@ -4583,18 +4592,31 @@ async function runRenderModeMode() {
     record(
       mode,
       'override',
-      'handleRequest({ renderMode: "stream" }) beats the module function (precedence)',
+      'handleRequest({ renderMode: "stream" }) beats event.renderMode (precedence)',
       forcedStream.status === 200 && isStreamedMarkup(forcedStream.html),
     );
-    const transformed = await probe.environments.ssr.transformRequest('virtual:solid-ssr-handler');
+    // The throw happens inside next(), so the example's error middleware
+    // turns it into a caught 500 whose body names the field. Without that
+    // catch, dev rethrows and production contains it the same way.
+    let invalid = '';
+    try {
+      const invalidResponse = await handler.handleRequest(
+        new Request('http://localhost/', { headers: { accept: 'text/html', 'x-render-mode': 'bogus' } }),
+      );
+      const invalidBody = await invalidResponse.text();
+      invalid = invalidResponse.status === 500 ? invalidBody : '';
+    } catch (e) {
+      invalid = String(e && e.message ? e.message : e);
+    }
     record(
       mode,
-      'codegen',
-      'handler imports the configured render-mode module',
-      !!transformed && transformed.code.includes('render-mode.ts'),
+      'override',
+      'an invalid event.renderMode is rejected naming the field',
+      invalid.includes('event.renderMode') && invalid.includes('bogus'),
+      invalid.slice(0, 200) || 'resolved without error',
     );
   } catch (e) {
-    record(mode, 'override', 'module-config direct dispatch completed', false, String(e));
+    record(mode, 'override', 'middleware-policy direct dispatch completed', false, String(e));
   } finally {
     await probe?.close();
     delete process.env.SSR_RENDER_MODE;
@@ -4611,13 +4633,15 @@ async function runRenderModeMode() {
     record('rm-dev-async', 'ssr', 'responds 200', page.status === 200, `status ${page.status}`);
     record('rm-dev-async', 'ssr', 'app server-rendered', page.html.includes('SSR Start Mode'));
     assertComplete('rm-dev-async', 'ssr', page.html);
+    const hasViteClient = page.html.includes('/@vite/client');
+    const hasClientEntry = page.html.includes('virtual:solid-ssr-entry-client.tsx');
+    const hasAppCss = /<style[^>]*data-vite-dev-id="[^"]*App\.css"/.test(page.html);
     record(
       'rm-dev-async',
       'dev',
       'dev head still injected on the string path (Vite client + entry CSS)',
-      page.html.includes('/@vite/client') &&
-        page.html.includes('virtual:solid-ssr-entry-client.tsx') &&
-        /<style[^>]*data-vite-dev-id="[^"]*App\.css"/.test(page.html),
+      hasViteClient && hasClientEntry && hasAppCss,
+      `vite client ${hasViteClient}, entry ${hasClientEntry}, app css ${hasAppCss}; head ${page.html.slice(0, 500)}`,
     );
     await assertAsyncHttp('rm-dev-async', devAsyncOrigin);
     // The async document must still hydrate and be interactive — the same
@@ -4690,7 +4714,7 @@ async function runRenderModeMode() {
     );
   };
   try {
-    server = spawnDev(devModulePort, { SSR_RENDER_MODE: 'module' });
+    server = spawnDev(devModulePort, { SSR_RENDER_MODE: 'middleware' });
     captureLog(server);
     await waitForHttp(devModuleOrigin + '/src/api.ts', 30000);
     await perRequestChecks('rm-dev-module', devModuleOrigin);
@@ -4791,12 +4815,12 @@ async function runRenderModeMode() {
   const prodModuleOrigin = `http://localhost:${prodModulePort}`;
   try {
     console.log('  building (module)…');
-    build({ SSR_RENDER_MODE: 'module' });
+    build({ SSR_RENDER_MODE: 'middleware' });
     const serverBundle = readFileSync(path.join(exampleDir, 'dist/server/server.js'), 'utf-8');
     record(
       'rm-prod-module',
       'build',
-      'render-mode module bundled into the handler chunk',
+      'render-mode policy (middleware) bundled into the handler chunk',
       serverBundle.includes('x-render-mode'),
     );
     const assetsDir = path.join(exampleDir, 'dist/client/assets');
@@ -4806,11 +4830,11 @@ async function runRenderModeMode() {
     record(
       'rm-prod-module',
       'build',
-      'render-mode module absent from client assets',
+      'render-mode policy (middleware) absent from client assets',
       leaks.length === 0,
       leaks.join(', '),
     );
-    server = spawnProd(prodModulePort, { SSR_RENDER_MODE: 'module' });
+    server = spawnProd(prodModulePort, { SSR_RENDER_MODE: 'middleware' });
     captureLog(server);
     await waitForHttp(prodModuleOrigin + '/', 30000, { headers: { accept: 'text/html' } });
     await perRequestChecks('rm-prod-module', prodModuleOrigin);
@@ -4859,14 +4883,14 @@ async function runRenderModeMode() {
     kill(server);
     server = undefined;
 
-    server = spawnDev(authoredDevPort, { SSR_RENDER_MODE: 'module' });
+    server = spawnDev(authoredDevPort, { SSR_RENDER_MODE: 'middleware' });
     captureLog(server);
     await waitForHttp(authoredDevOrigin + '/src/api.ts', 30000);
     const streamed = await fetchStreamed(authoredDevOrigin + '/');
     record(
       'rm-authored',
       'per-request',
-      'authored entry streams by default under the module form',
+      'authored entry streams by default under the middleware policy',
       streamed.chunks.length > 1 && isStreamedMarkup(streamed.html),
       `${streamed.chunks.length} chunk(s)`,
     );
@@ -4875,7 +4899,7 @@ async function runRenderModeMode() {
     record(
       'rm-authored',
       'per-request',
-      'authored entry settles for ?nojs under the module form',
+      'authored entry settles for ?nojs under the middleware policy',
       settled.status === 200 && !isStreamedMarkup(settledHtml) && settledHtml.includes('STREAMED-ASYNC-CONTENT'),
     );
     kill(server);
@@ -4908,7 +4932,9 @@ async function runRenderModeMode() {
       'run',
       'authored completed',
       false,
-      String(e) + (serverLog ? `\nserver: ${serverLog.slice(-2000)}` : ''),
+      String(e) +
+        (e && e.cause ? ` cause: ${e.cause}` : '') +
+        (serverLog ? `\nserver: ${serverLog.slice(-2000)}` : ''),
     );
   } finally {
     kill(server);
@@ -6508,6 +6534,275 @@ async function runVitestMode() {
   );
 }
 
+// The CSP nonce on the request event (SSR_NONCE=1 wires src/middleware.ts,
+// whose `renderPolicy` copies the test's nonce headers onto `event.nonce`
+// before next() and sets the CSP header on HTML responses). Asserted on
+// in-process dispatch against the dev handler and against a build (named
+// handleRequest and the default Fetchable). Also covers the event-first
+// chain's request substitution and the next(request) migration error.
+async function runNonceMode() {
+  const mode = 'nonce';
+  console.log(`\n=== ${mode.toUpperCase()} ===`);
+  const page = (headers = {}, pathname = '/') =>
+    new Request('http://localhost' + pathname, { headers: { accept: 'text/html', ...headers } });
+  const escaped = (value) =>
+    value.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+  const tags = (html, name) => html.match(new RegExp(`<${name}(?=[\\s>])[^>]*>`, 'g')) || [];
+  // Every tag of a kind carries the expected nonce attribute (and there is
+  // at least one of them).
+  const allCarry = (html, name, nonce) => {
+    const found = tags(html, name);
+    const missing = found.filter((tag) => !tag.includes(` nonce="${escaped(nonce)}"`));
+    return { ok: found.length > 0 && missing.length === 0, detail: `${found.length} <${name}>, missing: ${missing.slice(0, 3).join(' ')}` };
+  };
+  const assertNonced = (tag, phase, response, html, { script, style }) => {
+    const scripts = allCarry(html, 'script', script);
+    record(tag, phase, `every <script> carries nonce=${JSON.stringify(script)}`, scripts.ok, scripts.detail);
+    record(
+      tag,
+      phase,
+      'csp-nonce meta carries the style nonce',
+      html.includes(`<meta property="csp-nonce" nonce="${escaped(style)}">`),
+    );
+    const preloads = tags(html, 'link').filter((l) => /rel="?modulepreload/.test(l));
+    record(
+      tag,
+      phase,
+      'modulepreload links carry the script nonce',
+      preloads.every((l) => l.includes(` nonce="${escaped(script)}"`)),
+      `${preloads.length} preload(s)`,
+    );
+    return scripts;
+  };
+
+  // ---- Dev handler, in process ---------------------------------------------
+  process.env.SSR_NONCE = '1';
+  let probe;
+  try {
+    probe = await createServer({ root: exampleDir, server: { middlewareMode: true }, logLevel: 'error' });
+    const handler = await probe.environments.ssr.runner.import('virtual:solid-ssr-handler');
+
+    const impl =
+      (await probe.environments.ssr.transformRequest('virtual:solid-ssr-handler-impl'))?.code || '';
+    record(
+      mode,
+      'authored',
+      'handler passes the resolved nonce to render() as context.nonce',
+      impl.includes('renderContext.nonce = nonce'),
+      impl.includes('renderContext') ? 'renderContext present' : impl.slice(0, 200),
+    );
+
+    const res = await handler.handleRequest(page({ 'x-csp-nonce': 'mw"<&' }));
+    const html = await res.text();
+    assertNonced(mode, 'dev', res, html, { script: 'mw"<&', style: 'mw"<&' });
+    record(
+      mode,
+      'dev',
+      'the hydration bootstrap, the Vite client and the client entry are nonced',
+      html.includes(`<script nonce="${escaped('mw"<&')}">window._$HY`) &&
+        /<script type="module" nonce="[^"]+" src="[^"]*@vite\/client"/.test(html) &&
+        /<script type="module" nonce="[^"]+" src="[^"]*entry-client/.test(html),
+    );
+    record(
+      mode,
+      'dev',
+      'middleware set the CSP header on the HTML response',
+      (res.headers.get('content-security-policy') || '').includes(`'nonce-mw"<&'`),
+    );
+
+    const pair = await handler.handleRequest(
+      page({ 'x-csp-nonce-json': JSON.stringify({ script: 'sss', style: 'ttt' }) }),
+    );
+    const pairHtml = await pair.text();
+    assertNonced(mode, 'dev-pair', pair, pairHtml, { script: 'sss', style: 'ttt' });
+
+    const none = await (await handler.handleRequest(page())).text();
+    record(
+      mode,
+      'dev',
+      'no nonce anywhere (and no meta) without one',
+      !none.includes('nonce=') && !none.includes('csp-nonce'),
+    );
+
+    const hosted = await handler.handleRequest(
+      page({ 'x-csp-nonce': 'from-mw', 'x-csp-host': '1' }),
+      { nonce: 'host' },
+    );
+    const hostedHtml = await hosted.text();
+    record(
+      mode,
+      'precedence',
+      'handleRequest nonce wins over a middleware write',
+      allCarry(hostedHtml, 'script', 'host').ok && !hostedHtml.includes('from-mw'),
+    );
+    record(
+      mode,
+      'precedence',
+      'middleware sees the host nonce on the event before next()',
+      hosted.headers.get('x-seen-nonce') === '"host"',
+      `x-seen-nonce: ${hosted.headers.get('x-seen-nonce')}`,
+    );
+
+    // The example's error middleware turns a throw under next() into a
+    // `caught: <message>` 500; either way the message must name the cause.
+    const failure = async (request) => {
+      try {
+        const response = await handler.handleRequest(request);
+        const body = await response.text();
+        return response.status === 500 ? body : '';
+      } catch (e) {
+        return String(e && e.message ? e.message : e);
+      }
+    };
+    const invalid = await failure(page({ 'x-csp-nonce-json': '42' }));
+    record(
+      mode,
+      'validation',
+      'an invalid event.nonce is rejected naming the field',
+      invalid.includes('event.nonce') && invalid.includes('number'),
+      invalid.slice(0, 200) || 'resolved without error',
+    );
+    let invalidHost = '';
+    try {
+      await handler.handleRequest(page(), { nonce: { script: 'x' } });
+    } catch (e) {
+      invalidHost = String(e && e.message ? e.message : e);
+    }
+    record(
+      mode,
+      'validation',
+      'an invalid handleRequest nonce is rejected up front',
+      invalidHost.includes('handleRequest options.nonce'),
+      invalidHost.slice(0, 200) || 'resolved without error',
+    );
+
+    const warnings = [];
+    const warn = console.warn;
+    console.warn = (...args) => warnings.push(args.join(' '));
+    try {
+      await (await handler.handleRequest(page({ 'x-csp-nonce': 'early', 'x-late-nonce': '1' }))).text();
+      await (await handler.handleRequest(page({ 'x-csp-nonce': 'early' }))).text();
+    } finally {
+      console.warn = warn;
+    }
+    record(
+      mode,
+      'footgun',
+      'dev warns once when event.nonce is written after the render read it',
+      warnings.length === 1 && warnings[0].includes('event.nonce') && warnings[0].includes('before calling next()'),
+      JSON.stringify(warnings).slice(0, 300),
+    );
+
+    const rewritten = await handler.handleRequest(page({}, '/rewrite-me'));
+    const rewrittenBody = await rewritten.text();
+    record(
+      mode,
+      'substitution',
+      'event.request assigned before next() is what downstream sees',
+      rewritten.status === 200 && rewrittenBody.includes('mw-user'),
+      `${rewritten.status} ${rewrittenBody.slice(0, 120)}`,
+    );
+    const nextArg = await failure(page({}, '/next-arg'));
+    record(
+      mode,
+      'substitution',
+      'next(request) rejects with the migration message',
+      nextArg.includes('next() takes no arguments') && nextArg.includes('event.request'),
+      nextArg.slice(0, 200) || 'resolved without error',
+    );
+
+    const redirect = await handler.handleRequest(page({ 'x-csp-nonce': 'rd' }, '/redirect-post'));
+    const redirectHtml = await redirect.text();
+    record(
+      mode,
+      'dev',
+      'post-flush redirect fallback carries the nonce',
+      redirectHtml.includes('<script nonce="rd">window.location='),
+    );
+  } catch (e) {
+    record(mode, 'dev', 'dev dispatch completed', false, String(e && e.stack ? e.stack : e));
+  } finally {
+    await probe?.close();
+  }
+
+  // ---- Dev server end to end: the dev head's collected styles ---------------
+  // The built-in dev middleware hands the handler the entry CSS as
+  // `<style data-asset>` tags; with a nonce they carry the style half.
+  const devPort = 3186;
+  let server;
+  let serverLog = '';
+  try {
+    server = startProcess('pnpm', ['exec', 'vite', '--port', String(devPort), '--strictPort'], {
+      cwd: exampleDir,
+      env: { ...process.env, SSR_DEVTOOLS: '0', SSR_NONCE: '1' },
+    });
+    server.stdout.on('data', (d) => (serverLog += d));
+    server.stderr.on('data', (d) => (serverLog += d));
+    await waitForHttp(`http://localhost:${devPort}/src/api.ts`, 30000);
+    const pairRes = await fetch(`http://localhost:${devPort}/`, {
+      headers: { accept: 'text/html', 'x-csp-nonce-json': JSON.stringify({ script: 'sss', style: 'ttt' }) },
+    });
+    const html = await pairRes.text();
+    const styles = allCarry(html, 'style', 'ttt');
+    record(mode, 'dev-server', 'every dev <style> carries the style nonce', styles.ok, styles.detail);
+    const scripts = allCarry(html, 'script', 'sss');
+    record(mode, 'dev-server', 'every <script> carries the script nonce', scripts.ok, scripts.detail);
+    record(
+      mode,
+      'dev-server',
+      'csp-nonce meta for the Vite client',
+      html.includes('<meta property="csp-nonce" nonce="ttt">'),
+    );
+  } catch (e) {
+    record(mode, 'dev-server', 'dev server completed', false, String(e) + `\nserver: ${serverLog.slice(-1500)}`);
+  } finally {
+    if (server) {
+      try {
+        process.kill(-server.pid, 'SIGTERM');
+      } catch {}
+    }
+  }
+
+  // ---- Build: named handleRequest and the default Fetchable -----------------
+  try {
+    console.log('  building (nonce)…');
+    execSync('pnpm run build', {
+      cwd: exampleDir,
+      stdio: 'pipe',
+      env: { ...process.env, NODE_ENV: 'production', SSR_NONCE: '1' },
+    });
+    const built = await import(
+      pathToFileURL(path.join(exampleDir, 'dist/server/server.js')).href + '?nonce=' + Date.now()
+    );
+    const res = await built.handleRequest(page({ 'x-csp-nonce': 'prod' }));
+    const html = await res.text();
+    assertNonced(mode, 'prod', res, html, { script: 'prod', style: 'prod' });
+    const viaFetch = await built.default.fetch(page({ 'x-csp-nonce': 'fetchable' }));
+    const viaFetchHtml = await viaFetch.text();
+    record(
+      mode,
+      'prod',
+      'the default Fetchable (no options) gets the middleware nonce',
+      allCarry(viaFetchHtml, 'script', 'fetchable').ok &&
+        (viaFetch.headers.get('content-security-policy') || '').includes("'nonce-fetchable'"),
+    );
+    const plain = await (await built.handleRequest(page())).text();
+    record(mode, 'prod', 'no nonce and no meta without one', !plain.includes('nonce=') && !plain.includes('csp-nonce'));
+    const asyncRes = await built.handleRequest(page({ 'x-csp-nonce': 'settled', 'x-render-mode': 'async' }));
+    const asyncHtml = await asyncRes.text();
+    record(
+      mode,
+      'prod',
+      'event.renderMode + event.nonce from one middleware: settled document, nonced',
+      !/<template id=/.test(asyncHtml) && allCarry(asyncHtml, 'script', 'settled').ok,
+    );
+  } catch (e) {
+    record(mode, 'prod', 'build dispatch completed', false, String(e && e.stack ? e.stack : e));
+  } finally {
+    delete process.env.SSR_NONCE;
+  }
+}
+
 const ALL_MODES = [
   'dev',
   'prod',
@@ -6520,6 +6815,7 @@ const ALL_MODES = [
   'middleware',
   'preview',
   'render-mode',
+  'nonce',
   'base',
   'builder-order',
   'builder-prepare',
@@ -6548,6 +6844,7 @@ for (const mode of modes) {
   else if (mode === 'middleware') await runMiddlewareMode();
   else if (mode === 'preview') await runPreviewMode();
   else if (mode === 'render-mode') await runRenderModeMode();
+  else if (mode === 'nonce') await runNonceMode();
   else if (mode === 'base') await runBaseMode();
   else if (mode === 'builder-order') await runBuilderOrderMode();
   else if (mode === 'builder-prepare') await runBuilderPrepareMode();

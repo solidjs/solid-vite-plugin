@@ -47,6 +47,7 @@ export type {
   ServerFunctionsFilter,
 } from './server-functions/index.js';
 export type { StartOptions };
+export type { StartMiddleware } from './request-event.js';
 import path from 'path';
 import type { FilterPattern, Logger, Plugin, ViteDevServer } from 'vite';
 import {

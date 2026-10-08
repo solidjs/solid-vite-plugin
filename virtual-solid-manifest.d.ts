@@ -52,16 +52,21 @@ declare module "virtual:solid-ssr-handler" {
       /** Status/headers for the HTML response. */
       responseInit?: ResponseInit;
       /**
-       * CSP nonce for the scripts the handler writes into the document: the
-       * injected client-entry tag and the fallback of a redirect decided
-       * after the shell flushed. A `{ script, style }` pair contributes its
-       * `script` value. Any value outside `CSPNonce` rejects the call before
-       * the middleware chain runs.
+       * Per-call CSP nonce, in `@solidjs/web`'s `CSPNonce` shape. Seeded onto
+       * the request event as `event.nonce` before the middleware chain runs
+       * (so middleware can read it) and reasserted at the page render, so it
+       * wins over a middleware write. It reaches every tag the render emits
+       * (hydration bootstrap, streamed data and swap scripts, preloads,
+       * styles), the injected client-entry tag, the post-flush redirect
+       * fallback and the `csp-nonce` meta. `null` or `''` renders without
+       * one. Any value outside `CSPNonce` rejects the call before the chain
+       * runs.
        */
-      nonce?: CSPNonce;
+      nonce?: CSPNonce | null;
       /**
-       * Per-call render mode, overriding `start.renderMode` (static value or
-       * per-request module alike). `'stream'` flushes the document shell
+       * Per-call render mode, seeded onto the request event as
+       * `event.renderMode` like `nonce`, and winning over both a middleware
+       * write and `start.renderMode`. `'stream'` flushes the document shell
        * with `<Loading>` fallbacks and streams boundary content behind it;
        * `'async'` awaits the render until every boundary settled and sends
        * one complete document — no fallbacks, no swap scripts, hydration
