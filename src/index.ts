@@ -740,10 +740,12 @@ function getSourceNames(
 }
 
 /**
- * The `sourceNames.primitives` pass is plain JavaScript in and out, so it
- * also applies to the `.ts`/`.js` modules primitives are composed in — the
- * ids the JSX transform gate below would otherwise return early for. A
- * `.d.ts` has nothing to name.
+ * Script modules the JSX gate returns early for: `.ts`/`.js` and the `m`/`c`
+ * variants. Primitive naming applies here (plain JavaScript in and out; a
+ * `.d.ts` has nothing to name), and so does the lazy module-URL pipeline —
+ * a `routes.ts` is not JSX, but its `lazy()` callsites and an SSR module's
+ * `$$moduleUrl` export still have to be written. Refresh and the JSX
+ * transform stay on the JSX path.
  */
 const PRIMITIVES_ONLY_MODULE = /\.[mc]?[jt]s$/i;
 const DECLARATION_MODULE = /\.d\.[mc]?ts$/i;
@@ -2123,16 +2125,51 @@ export default manifest;`;
         !inNodeModules && getSourceNames(options, replaceDev, observe).primitives;
 
       if (!(/\.[mc]?[tj]sx$/i.test(id) || isTsrx || allExtensions.includes(currentFileExtension))) {
-        // Not a JSX module. The one pass that still applies is primitive
-        // naming — `createSignal` lives in `.ts`/`.js` as much as in
-        // components — and it runs alone: no lazy/refresh/JSX work.
-        if (namePrimitives && PRIMITIVES_ONLY_MODULE.test(id) && !DECLARATION_MODULE.test(id)) {
-          const compiler = await loadNativeCompiler();
-          const named = await transformPrimitiveNames(this, compiler, source, id);
-          if (named === null) return null;
-          return { code: named.code, map: normalizeSourceMap(named.map) };
+        // Not a JSX module. Primitive naming stays gated as before
+        // (`createSignal` lives in `.ts`/`.js` as much as in components).
+        // The lazy module-URL pipeline also runs, and it is not gated on
+        // naming: a production `routes.ts` of `lazy(() => import(...))`
+        // still needs callsite module URLs, and an SSR script module still
+        // needs `$$moduleUrl`. No JSX transform and no refresh here — those
+        // stay on the JSX path. `.d.ts` is left untouched.
+        if (!PRIMITIVES_ONLY_MODULE.test(id) || DECLARATION_MODULE.test(id)) {
+          return null;
         }
-        return null;
+
+        let code = source;
+        const maps: ChainableMap[] = [];
+        // Same cheap pre-check as primitive naming: `transformLazy` only
+        // rewrites `lazy()` calls, so source without that identifier cannot
+        // change. SSR still appends `$$moduleUrl` below.
+        const needsCompiler = namePrimitives || code.includes('lazy');
+        if (needsCompiler) {
+          const compiler = await loadNativeCompiler();
+
+          if (namePrimitives) {
+            const named = await transformPrimitiveNames(this, compiler, code, id);
+            if (named !== null) {
+              code = named.code;
+              maps.push(named.map);
+            }
+          }
+
+          if (code.includes('lazy')) {
+            const lazyResult = await compiler.transformLazyAsync(code, {
+              filename: id,
+              sourceMap: true,
+            });
+            code = lazyResult.code;
+            maps.push(lazyResult.map);
+          }
+        }
+
+        const finalCode = injectSsrModuleId(
+          await resolveLazyModuleUrls(this, code, id),
+          moduleId,
+          !!isSsr,
+        );
+        if (finalCode === source) return null;
+        return { code: finalCode, map: combineSourcemaps(maps) };
       }
 
       const solidOptions = getSolidOptions(options, !!isSsr, replaceDev, observe, isTestMode);
