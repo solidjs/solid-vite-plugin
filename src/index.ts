@@ -1143,6 +1143,9 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
   // `start: true` is sugar for the empty options bag — one start mode,
   // two spellings — so normalize here and let everything downstream see a
   // single shape (`false` behaves exactly like omission).
+  // The diagnostics channels exist only in Solid's dev and observe builds.
+  const diagnosticsEnabled =
+    options.diagnostics !== false && (options.dev !== false || options.observe === true);
   const startOptions: StartOptions | null =
     options.start === true ? {} : options.start || null;
   const styleFilterOptions = startOptions?.css?.filter;
@@ -1177,6 +1180,7 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
 
   let needHmr = false;
   let replaceDev = false;
+  let forceProduction = false;
   let observe = false;
   // Resolved absolute path of the start-mode document shell (normalized to
   // forward slashes, matching Vite ids), reported back by the start plugin's
@@ -1382,6 +1386,7 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
       observe = options.observe === true;
       projectRoot = userConfig.root || projectRoot;
       isTestMode = userConfig.mode === 'test';
+      forceProduction = options.dev === false && command === 'serve' && !isTestMode;
       // Per-vitest-project posture: the client posture (browser conditions,
       // dom codegen, jsdom default) is right for DOM component tests but
       // wrong for server-runtime unit tests. A project that explicitly opts
@@ -1583,7 +1588,10 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
             // Dev refresh wrappers import the solid-js/refresh runtime in
             // every mode; pre-bundle it up front so its discovery doesn't
             // trigger a re-optimize + full reload on first use.
-            ...(command === 'serve' && options.hot !== false && !options.refresh?.disabled
+            ...(command === 'serve' &&
+            options.dev !== false &&
+            options.hot !== false &&
+            !options.refresh?.disabled
               ? [REFRESH_RUNTIME_SOURCE]
               : []),
             // The server-components client runtime is imported by the
@@ -1665,7 +1673,13 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
         // keep the default server conditions instead, so the framework's
         // real server build resolves (isServer true).
         ...(isTestMode && !serverTestPosture && !opts.isSsrTargetWebworker ? ['browser'] : []),
-        ...config.resolve.conditions,
+        // Vite's `development|production` resolves to `development` in any
+        // non-production mode, which would undo `dev: false` under `vite dev`.
+        ...(forceProduction
+          ? config.resolve.conditions.map((c) =>
+              c === 'development|production' ? 'production' : c,
+            )
+          : config.resolve.conditions),
       ];
 
       // Vite seeds only the `client` environment from the top-level
@@ -1842,6 +1856,8 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
       needHmr =
         config.command === 'serve' &&
         config.mode !== 'production' &&
+        // The production `solid-js/refresh` runtime is an inert stub.
+        options.dev !== false &&
         options.hot !== false &&
         !options.refresh?.disabled;
     },
@@ -2499,7 +2515,7 @@ export default manifest;`;
         serverComponents,
         ssr: !!options.ssr,
         styleFilter: filterDevStyles,
-        diagnostics: options.diagnostics ?? 'auto',
+        diagnostics: diagnosticsEnabled ? (options.diagnostics ?? 'auto') : false,
         performanceTracks: performanceTracksOptions !== null,
         onDocumentResolved(documentPath) {
           // Normalize to forward slashes to match Vite's transform ids.
@@ -2516,7 +2532,7 @@ export default manifest;`;
   // plugin no-ops itself for builds and preview via `apply`, and in the
   // default auto mode additionally disables itself unless the app has
   // `@solidjs/diagnostics` installed).
-  if (options.diagnostics !== false) {
+  if (diagnosticsEnabled) {
     plugins.push(solidDiagnostics(options.diagnostics === true ? true : 'auto'));
   }
 
