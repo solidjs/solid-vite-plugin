@@ -3628,8 +3628,8 @@ packages:
     peerDependencies:
       seroval: ^1.0
 
-  seroval@1.2.1:
-    resolution: {integrity: sha512-yBxFFs3zmkvKNmR0pFSU//rIsYjuX418TnlDmc2weaq5XFDqDIV/NOMPBoLrbxjLH42p4UzRuXHryXh9dYcKcw==}
+  seroval@1.6.9:
+    resolution: {integrity: sha512-UeEzHwAK+yl0YLbsvROV1t5yMYEwZZ0CfKYxDvUgS2fO9Vxdf8djqVIB+OuVpuawRNPqw68LE1Du/GMsW2ZPqA==}
     engines: {node: '>=10'}
 
   shebang-command@2.0.0:
@@ -7651,11 +7651,11 @@ snapshots:
 
   semver@7.6.3: {}
 
-  seroval-plugins@1.2.1(seroval@1.2.1):
+  seroval-plugins@1.2.1(seroval@1.6.9):
     dependencies:
-      seroval: 1.2.1
+      seroval: 1.6.9
 
-  seroval@1.2.1: {}
+  seroval@1.6.9: {}
 
   shebang-command@2.0.0:
     dependencies:
@@ -7720,8 +7720,8 @@ snapshots:
   solid-js@1.9.4:
     dependencies:
       csstype: 3.1.3
-      seroval: 1.2.1
-      seroval-plugins: 1.2.1(seroval@1.2.1)
+      seroval: 1.6.9
+      seroval-plugins: 1.2.1(seroval@1.6.9)
 
   solid-refresh@0.6.3(solid-js@1.9.4)(supports-color@8.1.1):
     dependencies:
