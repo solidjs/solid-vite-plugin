@@ -118,6 +118,7 @@
     "solid-compiler-packages",
     "solid-rc13",
     "solid-rc14",
+    "source-names-locations",
     "source-names",
     "ssr-inline-seroval",
     "ssr-inline-solid-consumers",
