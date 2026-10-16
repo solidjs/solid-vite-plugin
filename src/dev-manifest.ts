@@ -125,11 +125,11 @@ export function installDevManifestBridge(server: ViteDevServer): void {
 /**
  * The absolute URL isolated runners should fetch the bridge from, baked into
  * the dev flavor of `virtual:solid-manifest` when its code is generated.
- * Generation happens while serving an SSR request, so the server is already
- * listening and `resolvedUrls` carries the real origin (a config-time define
- * could only guess the port). Middleware-mode servers have no origin of
- * their own to advertise — returns null there, and the manifest module keeps
- * the js-only fallback (in-process registry hits are unaffected either way).
+ * Once the server is listening `resolvedUrls` carries the real origin (a
+ * config-time define could only guess the port). Before that it returns
+ * null and the manifest module defers the lookup (#414). Middleware-mode
+ * servers have no origin of their own: null there too, and the manifest
+ * module keeps the js-only fallback (registry hits are unaffected).
  */
 export function devManifestBridgeUrl(server: ViteDevServer): string | null {
   const local = server.resolvedUrls?.local?.[0];

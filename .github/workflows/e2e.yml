@@ -31,5 +31,9 @@ jobs:
       - name: Build project
         run: pnpm run build
 
+      - name: Dev manifest startup test
+        working-directory: examples/css-matrix
+        run: node test/startup.mjs
+
       - name: Run tests
         run: pnpm run test
