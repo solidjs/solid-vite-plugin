@@ -1334,6 +1334,23 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
     return code + `\nexport const $$moduleUrl = ${JSON.stringify(relativeId)};\n`;
   }
 
+  // Pads removed specifiers with spaces so the chunk's source map stays valid.
+  function stripModuleUrlExport(code: string): string | null {
+    const clause = /export\s*\{([^}]*)\}\s*;?(?=(?:\s|\/\/[^\n]*|\/\*[\s\S]*?\*\/)*$)/.exec(code);
+    if (!clause) return null;
+    const specifiers = clause[1].split(',');
+    const kept = specifiers.filter(
+      (spec) => !/^\s*(?:[\w$]+\s+as\s+)?(?:\$\$moduleUrl|(["'])\$\$moduleUrl\1)\s*$/.test(spec),
+    );
+    if (kept.length === specifiers.length) return null;
+    const start = clause.index + clause[0].indexOf('{') + 1;
+    return (
+      code.slice(0, start) +
+      kept.join(',').padEnd(clause[1].length) +
+      code.slice(start + clause[1].length)
+    );
+  }
+
   function nativeTsrxCss(result: unknown): string {
     const css = (result as { css?: unknown }).css;
     return typeof css === 'string' ? css : '';
@@ -2068,6 +2085,24 @@ export default manifest;`;
           sanitizeFileName: collapseDotRuns(outputOptions.sanitizeFileName),
         };
       },
+    },
+
+    renderChunk(code, chunk, outputOptions) {
+      // Hosts re-export server entries whole, and workerd rejects non-handler exports.
+      if (!isBuild || isClientBuild(this) || outputOptions.format !== 'es') return null;
+      if (!chunk.isEntry || !chunk.exports.includes('$$moduleUrl')) return null;
+      const build = this.environment?.config?.build;
+      const input = build?.lib
+        ? build.lib.entry
+        : typeof build?.ssr === 'string'
+          ? build.ssr
+          : configuredBuildInput(build);
+      if (!resolveConfiguredEntries(input, projectRoot).isEntryModule(chunk.facadeModuleId))
+        return null;
+      const facade = this.getModuleInfo(chunk.facadeModuleId!);
+      if (facade?.importers.length || facade?.dynamicImporters.length) return null;
+      const stripped = stripModuleUrlExport(code);
+      return stripped === null ? null : { code: stripped, map: null };
     },
 
     generateBundle(outputOptions, bundle) {
