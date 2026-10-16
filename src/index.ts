@@ -11,6 +11,7 @@ import {
   installDevManifestBridge,
   devManifestBridgeUrl,
   DEV_MANIFEST_REGISTRY_KEY,
+  DEV_MANIFEST_INVALIDATE_EVENT,
 } from './dev-manifest.js';
 import { boundaryModules } from './boundary-modules.js';
 import { solidDiagnostics } from './diagnostics/index.js';
@@ -139,33 +140,42 @@ function moduleUrl(key) {
 const jsOnly = key => ({ js: [moduleUrl(key)], css: [] });
 const bridgeUrl = ${JSON.stringify(bridgeUrl)};
 function createBridgeResolver() {
-  // Convergence cache, mirroring the in-process resolver: server-side lazy()
-  // re-requests assets on every retry of a suspended render pass, and only a
-  // synchronous answer lets the pass converge (a fresh promise per call
-  // suspends every retry anew — nested routes then loop until the render
-  // stack overflows). Cached entries can go stale after a CSS edit (no
-  // watcher reaches this side of the bridge); the HMR client replaces SSR'd
-  // dev styles on load, so staleness self-heals at hydration. Only successful
-  // answers are cached: a null (bridge failure) must stay retryable, or one
-  // transient miss would strip the module's client assets — silently — for
-  // the rest of the dev session. In-flight dedupe still gives retries of the
-  // same pass a stable promise, so convergence holds either way.
+  // Lazy SSR retries need synchronous cache hits to converge. Failed bridge
+  // requests stay retryable; concurrent lookups share one pending promise.
   const cache = new Map();
   const inFlight = new Map();
+  let generation = 0;
+  const invalidate = () => {
+    generation++;
+    cache.clear();
+    inFlight.clear();
+  };
+  if (import.meta.hot) {
+    // Hosts such as Nitro consume full-reload before it reaches this runner.
+    import.meta.hot.on(${JSON.stringify(DEV_MANIFEST_INVALIDATE_EVENT)}, invalidate);
+    import.meta.hot.dispose(() => {
+      import.meta.hot.off(${JSON.stringify(DEV_MANIFEST_INVALIDATE_EVENT)}, invalidate);
+      invalidate();
+    });
+  }
+
   return {
     resolve(key) {
       const cached = cache.get(key);
       if (cached) return cached;
       let request = inFlight.get(key);
       if (!request) {
+        const startedAt = generation;
         request = fetchAssets(key).then(
           (assets) => {
-            if (assets) cache.set(key, assets);
-            inFlight.delete(key);
+            if (generation === startedAt) {
+              if (assets) cache.set(key, assets);
+              inFlight.delete(key);
+            }
             return assets;
           },
           (error) => {
-            inFlight.delete(key);
+            if (generation === startedAt) inFlight.delete(key);
             throw error;
           },
         );
@@ -1213,6 +1223,7 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
   // The live dev server, kept so the dev manifest module can bake the bridge
   // endpoint URL in when its code is generated (see devManifestBridgeUrl).
   let devServer: ViteDevServer | null = null;
+  let devAssetResolver: ReturnType<typeof createDevAssetResolver> | undefined;
   let projectRoot = process.cwd();
   let isTestMode = false;
   let serverTestPosture = false;
@@ -1908,10 +1919,8 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
       // that don't share globals with this process, through the HTTP bridge
       // endpoint the middleware serves.
       if (options.ssr || options.start) {
-        registerDevAssetResolver(
-          server.config.root,
-          createDevAssetResolver(server, filterDevStyles),
-        );
+        devAssetResolver = createDevAssetResolver(server, filterDevStyles);
+        registerDevAssetResolver(server.config.root, devAssetResolver);
         installDevManifestBridge(server);
       }
       if (!needHmr) return;
@@ -1959,6 +1968,11 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
     },
 
     async hotUpdate({ file, modules, read }) {
+      if (devAssetResolver && this.environment.config.consumer === 'server') {
+        // Vite awaits watchChange and invalidates transforms before hotUpdate.
+        devAssetResolver.invalidate();
+        this.environment.hot.send({ type: 'custom', event: DEV_MANIFEST_INVALIDATE_EVENT });
+      }
       if (isTsrxModule(file) && this.environment.name === 'client') {
         updateTsrxCss(tsrxCss, file, await compileTsrxCss(await read(), file));
         const cssModule = this.environment.moduleGraph.getModuleById(resolvedTsrxCssModuleId(file));
