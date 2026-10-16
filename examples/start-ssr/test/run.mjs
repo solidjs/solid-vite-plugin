@@ -5699,6 +5699,9 @@ async function runDetectMode() {
 //     behind a framework-style handler still renders and dispatches server
 //     functions, never touches dist/client, and the `event` fields show up
 //     next to nativeEvent,
+//   - with `start.instrument`, node.js has no static imports: it awaits
+//     ./server.js (and so the instrument) before node:http loads (#418),
+//     still listens as the program and still exports without listening,
 //   - a Cloudflare-shaped setup (ssr `noExternal: true` + a config-level
 //     server-first `builder.buildApp`) emits nothing without the option and
 //     behaves as before; with it, node.js is still emitted and points at the
@@ -6237,6 +6240,87 @@ async function runNodeMode() {
         `status ${factoryNative.status}, body ${JSON.stringify(factoryNativeBody)}`,
       );
     }
+    try {
+      process.kill(-server.pid, 'SIGTERM');
+    } catch {}
+    server = undefined;
+
+    // ---- start.instrument: node:http loads after the instrument (#418) -------
+    rmSync(distDir, { recursive: true, force: true });
+    console.log('  building (with start.node and start.instrument)…');
+    execSync('pnpm run build', {
+      cwd: exampleDir,
+      stdio: 'pipe',
+      env: { ...env, START_NODE: '1', SSR_INSTRUMENT: '1' },
+    });
+    const instrumentedSource = existsSync(nodeJs) ? readFileSync(nodeJs, 'utf-8') : '';
+    record(
+      mode,
+      'instrument',
+      'instrumented node.js has no static imports and awaits ./server.js first',
+      !/^import\b/m.test(instrumentedSource) &&
+        instrumentedSource.indexOf("await import('./server.js')") !== -1 &&
+        instrumentedSource.indexOf("await import('./server.js')") <
+          instrumentedSource.indexOf("await import('./node-runtime.js')"),
+      instrumentedSource.slice(0, 600),
+    );
+    serverLog = '';
+    server = startProcess('node', ['dist/server/node.js'], {
+      cwd: exampleDir,
+      env: { ...env, SSR_INSTRUMENT: '1', PORT: '0', NODE_ENV: 'production' },
+    });
+    server.stdout.on('data', (d) => (serverLog += d));
+    server.stderr.on('data', (d) => (serverLog += d));
+    const instrumentedListening = await waitForLog(
+      () => serverLog,
+      /Listening on (http:\/\/localhost:\d+)/,
+    );
+    record(
+      mode,
+      'instrument',
+      'instrumented node.js listens when run as the program',
+      !!instrumentedListening,
+      serverLog.slice(-300),
+    );
+    if (instrumentedListening) {
+      const instrumentedPage = await fetchStreamed(instrumentedListening[1] + '/');
+      const instrumentRaw = instrumentedPage.headers.get('x-instrument');
+      let instrument = null;
+      try {
+        instrument = instrumentRaw ? JSON.parse(instrumentRaw) : null;
+      } catch {}
+      record(
+        mode,
+        'instrument',
+        'instrument module ran to completion before node:http loaded',
+        !!instrument &&
+          instrument.order[0] === 'instrument(before:0)' &&
+          instrument.done === true &&
+          instrument.httpLoaded === false,
+        `x-instrument: ${instrumentRaw}`,
+      );
+    }
+    try {
+      process.kill(-server.pid, 'SIGTERM');
+    } catch {}
+    server = undefined;
+    let instrumentedMountLog = '';
+    server = startProcess('node', [mountScript], {
+      cwd: tmpDir,
+      env: { ...env, SSR_INSTRUMENT: '1' },
+    });
+    server.stdout.on('data', (d) => (instrumentedMountLog += d));
+    server.stderr.on('data', (d) => (instrumentedMountLog += d));
+    const instrumentedMounted = await waitForLog(() => instrumentedMountLog, /MOUNTED=(\d+)/);
+    record(
+      mode,
+      'instrument',
+      'instrumented node.js exports createListener, listener and serve without auto-listening',
+      !!instrumentedMounted &&
+        /EXPORTS=createListener,listener,serve/.test(instrumentedMountLog) &&
+        !instrumentedMountLog.includes('Listening on'),
+      instrumentedMountLog.slice(-300),
+    );
     try {
       process.kill(-server.pid, 'SIGTERM');
     } catch {}

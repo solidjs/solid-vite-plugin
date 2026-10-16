@@ -357,7 +357,11 @@ mode, the `index.html` history fallback — the framework owns both.
 event })` takes the same two options on top of the listen address.
 
 `node.js` is an emitted asset, not a second build input: `server.js` and
-its `handleRequest` / `{ fetch }` contracts are unchanged. It applies to
+its `handleRequest` / `{ fetch }` contracts are unchanged. With
+`instrument` set, `node.js` is a small wrapper that awaits `./server.js`
+(and so the instrument module) before it loads the server from
+`node-runtime.js` beside it, so `node:http` is not loaded until the
+instrument has run; deploy both files. It applies to
 both start modes — in client mode with `serverFunctions` (which keeps
 `dist/server`) the entry serves the static client with an `index.html`
 history fallback for HTML navigations plus the endpoint. Nothing is
@@ -551,7 +555,7 @@ entry still runs after everything the entry imports. The plugin therefore
 hands out the handler as `await import(instrument); await import(handler)`
 — top-level await sequencing, the one construct that guarantees the order —
 on every surface (`vite dev`, `vite build`, `vite preview`, a host consuming
-the handler entry). This replaces the per-host `node --import
+the handler entry, and the `node` entry). This replaces the per-host `node --import
 instrument.mjs` dance. The module may be async and needs no exports; the
 server build must keep code splitting on (the default), since inlining
 dynamic imports would hoist the handler graph back above the instrument.
