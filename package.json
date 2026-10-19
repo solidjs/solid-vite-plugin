@@ -22,7 +22,8 @@
     "prepublishOnly": "pnpm build",
     "release": "pnpm build && changeset publish",
     "check": "package-check",
-    "test": "node scripts/test-examples.ts"
+    "test": "node scripts/test-examples.ts",
+    "test:ecosystem": "node scripts/test-ecosystem.mjs"
   },
   "repository": {
     "type": "git",
