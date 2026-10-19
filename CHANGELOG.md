@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.11.15
+
+### Patch Changes
+
+- b50c064: Keep `$ServerOnly` templates in client transforms while HMR is active so hot updates of components using `$ServerOnly` no longer throw `template is not a function`. An explicit `solid.omitServerOnlyTemplates` setting still takes precedence.
+
 ## 2.11.14
 
 ### Patch Changes
