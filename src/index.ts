@@ -237,10 +237,9 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin {
         },
       });
 
+      const solidDeps = ['solid-js', 'solid-js/web', 'solid-js/store', 'solid-js/html', 'solid-js/h'];
       // fix for bundling dev in production
-      const nestedDeps = replaceDev
-        ? ['solid-js', 'solid-js/web', 'solid-js/store', 'solid-js/html', 'solid-js/h']
-        : [];
+      const nestedDeps = replaceDev ? solidDeps : [];
 
       const userTest = (userConfig as any).test ?? {};
       const test = {} as any;
@@ -286,7 +285,9 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin {
                 ...(replaceDev ? ['development'] : []),
                 ...(userConfig.mode === 'test' && !options.ssr ? ['browser'] : []),
               ],
-          dedupe: nestedDeps,
+          // Dedupe in builds too. A dependency that ships its own nested
+          // solid-js would otherwise add a second runtime to the bundle. #112
+          dedupe: solidDeps,
           alias: [{ find: /^solid-refresh$/, replacement: runtimePublicPath }],
         },
         optimizeDeps: {
