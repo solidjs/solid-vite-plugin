@@ -22,7 +22,8 @@
     "prepublishOnly": "pnpm build",
     "release": "pnpm build && changeset publish",
     "check": "package-check",
-    "test": "node scripts/test-examples.ts"
+    "test": "node scripts/test-examples.ts",
+    "test:unit": "vitest run"
   },
   "repository": {
     "type": "git",
@@ -68,7 +69,8 @@
     "rollup-plugin-cleaner": "^1.0.0",
     "solid-js": "^1.9.3",
     "typescript": "^5.2.2",
-    "vite": "^6.0.0"
+    "vite": "^6.0.0",
+    "vitest": "^3.0.7"
   },
   "peerDependencies": {
     "@testing-library/jest-dom": "^5.16.6 || ^5.17.0 || ^6.0.0 || ^7.0.0",
