@@ -3,9 +3,10 @@ import solid from 'babel-preset-solid';
 import { readFileSync } from 'fs';
 import { mergeAndConcat } from 'merge-anything';
 import { createRequire } from 'module';
+import path from 'path';
 import solidRefresh from 'solid-refresh/babel';
 import type { Alias, AliasOptions, FilterPattern, Plugin } from 'vite';
-import { createFilter, version } from 'vite';
+import { createFilter, searchForWorkspaceRoot, version } from 'vite';
 import { crawlFrameworkPkgs } from 'vitefu';
 
 const require = createRequire(import.meta.url);
@@ -236,6 +237,33 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin {
           return containsSolidField(pkgJson.exports || {});
         },
       });
+
+      // vitefu only reads the dependencies of the package.json at the Vite
+      // root. In a workspace, the project can also import packages that are
+      // only declared in the workspace root's package.json (npm and yarn
+      // hoist them). A framework package found that way was left external,
+      // so Node loaded its raw `.jsx` source and failed with
+      // `Unknown file extension ".jsx"` (#157). Crawl the workspace root too
+      // and inline its framework packages. Only `ssr.noExternal` is merged:
+      // inlining a name that is never imported does nothing, while
+      // `optimizeDeps.include` entries must resolve from the project root.
+      const crawlRoot = path.resolve(projectRoot || process.cwd());
+      const workspaceRoot = searchForWorkspaceRoot(crawlRoot);
+      if (workspaceRoot !== crawlRoot) {
+        const workspacePkgs = await crawlFrameworkPkgs({
+          viteUserConfig: userConfig,
+          root: workspaceRoot,
+          isBuild: command === 'build',
+          isFrameworkPkgByJson(pkgJson) {
+            return containsSolidField(pkgJson.exports || {});
+          },
+        });
+        for (const name of workspacePkgs.ssr.noExternal) {
+          if (!solidPkgsConfig.ssr.noExternal.includes(name)) {
+            solidPkgsConfig.ssr.noExternal.push(name);
+          }
+        }
+      }
 
       // fix for bundling dev in production
       const nestedDeps = replaceDev
