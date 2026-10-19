@@ -218,6 +218,10 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin {
   // by the crawl in test mode. They are inlined with solid-js (see
   // `test.server.deps` below).
   const testRuntimeConsumers = new Set<string>();
+  // True when a DOM test run inlines the Solid runtime. The `ssr`
+  // environment then does not get the `browser` condition (see
+  // `configEnvironment` below).
+  let domTestRuntimeInlined = false;
 
   return {
     name: 'solid',
@@ -228,6 +232,7 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin {
       replaceDev = options.dev === true || (options.dev !== false && command === 'serve');
       projectRoot = userConfig.root;
       isTestMode = userConfig.mode === 'test';
+      domTestRuntimeInlined = false;
 
       if (!userConfig.resolve) userConfig.resolve = {};
       userConfig.resolve.alias = normalizeAliases(userConfig.resolve && userConfig.resolve.alias);
@@ -310,6 +315,11 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin {
               },
             };
           }
+          const environment = userTest.environment ?? test.environment;
+          domTestRuntimeInlined =
+            !options.ssr &&
+            !userTest.browser?.enabled &&
+            (environment === 'jsdom' || environment === 'happy-dom');
         }
         if (!userTest.browser?.enabled) {
           // vitest browser mode already has bundled jest-dom assertions
@@ -367,10 +377,22 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin {
           config.resolve.conditions = [...defaultServerConditions];
         }
       }
+      // Vitest passes the `ssr` environment's conditions to Node as
+      // `--conditions` for the packages it leaves external. With `browser`
+      // there, Node-only packages fail to load. For example, `msw/node`
+      // imports `@mswjs/interceptors/ClientRequest`, whose `browser`
+      // export is `null` (#125). DOM tests run in the `client` environment,
+      // and the Solid runtime is inlined in that case, so the `ssr`
+      // environment does not need `browser`.
+      const addBrowser =
+        isTestMode &&
+        !opts.isSsrTargetWebworker &&
+        !options.ssr &&
+        !(domTestRuntimeInlined && name === 'ssr');
       config.resolve.conditions = [
         'solid',
         ...(replaceDev ? ['development'] : []),
-        ...(isTestMode && !opts.isSsrTargetWebworker && !options.ssr ? ['browser'] : []),
+        ...(addBrowser ? ['browser'] : []),
         ...config.resolve.conditions,
       ];
 
