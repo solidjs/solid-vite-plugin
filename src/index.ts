@@ -3,6 +3,7 @@ import solid from 'babel-preset-solid';
 import { readFileSync } from 'fs';
 import { mergeAndConcat } from 'merge-anything';
 import { createRequire } from 'module';
+import path from 'path';
 import solidRefresh from 'solid-refresh/babel';
 import type { Alias, AliasOptions, FilterPattern, Plugin } from 'vite';
 import { createFilter, version } from 'vite';
@@ -206,6 +207,32 @@ function getJestDomExport(setupFiles: string[]) {
       );
 }
 
+function readPackageJson(specifier: string, requires: NodeRequire[]) {
+  for (const req of requires) {
+    try {
+      const file = req.resolve(`${specifier}/package.json`);
+      return { dir: path.dirname(file), pkg: JSON.parse(readFileSync(file, 'utf-8')) };
+    } catch (e) {}
+  }
+  return undefined;
+}
+
+/**
+ * Vitest before 1.0 resolves `setupFiles` with `require.resolve`, which picks
+ * jest-dom's CommonJS `vitest` entry. In that file `require('vitest').expect`
+ * is undefined, so it throws "Cannot read properties of undefined (reading
+ * 'extend')". For those versions, return the path of jest-dom's ESM entry. #141
+ */
+function getJestDomVitestEsmPath(root: string): string | undefined {
+  const rootRequire = createRequire(path.join(path.resolve(root), 'package.json'));
+  const vitest = readPackageJson('vitest', [rootRequire, require]);
+  if (!vitest || +String(vitest.pkg.version).split('.')[0] >= 1) return undefined;
+  const jestDom = readPackageJson('@testing-library/jest-dom', [require, rootRequire]);
+  const entry = jestDom?.pkg.exports?.['./vitest']?.import;
+  const file = typeof entry === 'string' ? entry : entry?.default;
+  return typeof file === 'string' ? path.join(jestDom.dir, file) : undefined;
+}
+
 export default function solidPlugin(options: Partial<Options> = {}): Plugin {
   const filter = createFilter(options.include, options.exclude);
 
@@ -267,7 +294,11 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin {
           // https://main.vitest.dev/guide/browser/assertion-api.html#assertion-api
           const jestDomImport = getJestDomExport(userSetupFiles);
           if (jestDomImport) {
-            test.setupFiles = [jestDomImport];
+            test.setupFiles = [
+              (jestDomImport === '@testing-library/jest-dom/vitest' &&
+                getJestDomVitestEsmPath(userConfig.root || process.cwd())) ||
+                jestDomImport,
+            ];
           }
         }
       }
