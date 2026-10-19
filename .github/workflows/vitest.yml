@@ -34,3 +34,7 @@ jobs:
       - name: Run tests
         working-directory: examples/vite-6
         run: pnpm run test
+
+      - name: Run jsdom tests
+        working-directory: examples/vite-6
+        run: pnpm run test:jsdom
