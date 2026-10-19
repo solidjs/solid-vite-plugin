@@ -17,7 +17,7 @@
     "playwright": "^1.50.1",
     "vite": "^7.0.0",
     "vite-plugin-solid": "workspace:*",
-    "vitest": "^3.0.7"
+    "vitest": "^4.1.11"
   },
   "dependencies": {
     "solid-js": "catalog:"
