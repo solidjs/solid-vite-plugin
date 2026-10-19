@@ -130,6 +130,10 @@ If set to false, it won't inject the runtime in dev.
 
 This will force SSR code in the produced files.
 
+With `ssr: true`, client code is hydratable and server code renders with hydration keys.
+
+With `ssr: false`, client code is non-hydratable DOM output. Modules that Vite loads on the server, for example through `ssrLoadModule` to prerender static pages, get non-hydratable SSR output. They render to HTML without hydration keys. Vitest is the exception and keeps DOM output.
+
 #### options.babel
 
 - Type: Babel.TransformOptions

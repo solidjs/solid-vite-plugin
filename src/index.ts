@@ -46,6 +46,11 @@ export interface Options {
   /**
    * This will force SSR code in the produced files.
    *
+   * With `true`, client code is hydratable and server code is hydratable SSR
+   * output. With `false`, client code is non-hydratable DOM output, and modules
+   * loaded on the server (for example through `ssrLoadModule` to prerender a
+   * page) get non-hydratable SSR output.
+   *
    * @default false
    */
   ssr?: boolean;
@@ -386,7 +391,15 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin {
           solidOptions = { generate: 'dom', hydratable: true };
         }
       } else {
-        solidOptions = { generate: 'dom', hydratable: false };
+        // A client-rendered app can still load modules on the server, for
+        // example to prerender static pages with `ssrLoadModule`. DOM output
+        // cannot run there, so server transforms use the SSR generate. Nothing
+        // hydrates the result, so it stays non-hydratable. Vitest keeps DOM
+        // output, since tests resolve the browser build of solid-js.
+        solidOptions = {
+          generate: isSsr && !isTestMode ? 'ssr' : 'dom',
+          hydratable: false,
+        };
       }
 
       // We need to know if the current file extension has a typescript options tied to it
