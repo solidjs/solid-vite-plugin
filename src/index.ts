@@ -178,7 +178,18 @@ export interface Options {
 
 function getExtension(filename: string): string {
   const index = filename.lastIndexOf('.');
-  return index < 0 ? '' : filename.substring(index).replace(/\?.+$/, '');
+  return index < 0 ? '' : filename.substring(index);
+}
+
+/**
+ * The path the transform compiles for `id`. This is normally `id` without its
+ * query. Some plugins put the extension after the query instead, such as
+ * unplugin-icons' `~icons/mdi/folder?width=2em.tsx`. Then the full id is used,
+ * as it was before queries were stripped. #206
+ */
+function getTransformPath(id: string, isHandled: (path: string) => boolean): string {
+  const cleanId = id.replace(/\?.*$/, '');
+  return cleanId !== id && !isHandled(cleanId) && isHandled(id) ? id : cleanId;
 }
 function containsSolidField(fields: Record<string, any>) {
   const keys = Object.keys(fields);
@@ -357,7 +368,6 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin {
       const isSsr = this.environment
         ? this.environment.config.consumer === 'server'
         : Boolean(transformOptions?.ssr);
-      const currentFileExtension = getExtension(id);
 
       const extensionsToWatch = options.extensions || [];
       const allExtensions = extensionsToWatch.map((extension) =>
@@ -369,7 +379,13 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin {
         return null;
       }
 
-      id = id.replace(/\?.*$/, '');
+      id = getTransformPath(
+        id,
+        (path) => /\.[mc]?[tj]sx$/i.test(path) || allExtensions.includes(getExtension(path)),
+      );
+      // Read the extension from the query-free path, so a dot inside the
+      // query (`a.mdx?x=1.5`) is not taken as the extension.
+      const currentFileExtension = getExtension(id);
 
       if (!(/\.[mc]?[tj]sx$/i.test(id) || allExtensions.includes(currentFileExtension))) {
         return null;
