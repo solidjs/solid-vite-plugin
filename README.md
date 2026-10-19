@@ -184,6 +184,93 @@ if (import.meta.hot) {
 }
 ```
 
+## Building a library
+
+Publish your components as JSX source under a `solid` export condition. The app that uses the library then compiles it with its own settings.
+
+Solid compiles JSX at build time, and the output depends on the target. Client code, server code (`ssr`), and hydratable code are all different. A library that ships only compiled JavaScript has fixed one of these choices. For example, DOM output throws "Client-only API called on the server side" when an app renders it on the server. React and Vue libraries do not have this problem, because their compiled output is the same on the client and the server.
+
+This plugin adds `solid` to Vite's `resolve.conditions`. It also scans your dependencies, and every package that has a `solid` key in its `exports` is excluded from dependency pre-bundling and is bundled into the SSR build instead of being externalized. Its JSX then goes through the same compile step as your own files.
+
+### package.json
+
+Put `solid` before `import` so Vite picks it first. Keep `import` for tools that do not know the `solid` condition. List `solid-js` as a peer dependency, so the app and the library share one copy.
+
+```json
+{
+  "name": "my-solid-lib",
+  "type": "module",
+  "files": ["dist"],
+  "sideEffects": ["**/*.css"],
+  "exports": {
+    ".": {
+      "types": "./dist/source/index.d.ts",
+      "solid": "./dist/source/index.jsx",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "vite build && tsc -p tsconfig.build.json && cp src/*.css dist/source/"
+  },
+  "peerDependencies": {
+    "solid-js": "^1.9.0"
+  }
+}
+```
+
+Each subpath export, such as `"./button"`, needs its own `solid` entry.
+
+### Source output and types
+
+TypeScript can write the JSX source and the type declarations in one step. Set `jsx` to `preserve` so the JSX stays in the output.
+
+```jsonc
+// tsconfig.build.json
+{
+  "compilerOptions": {
+    "target": "ESNext",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "jsx": "preserve",
+    "jsxImportSource": "solid-js",
+    "declaration": true,
+    "outDir": "dist/source",
+    "rootDir": "src",
+    "strict": true,
+    "skipLibCheck": true
+  },
+  "include": ["src"]
+}
+```
+
+`tsc` does not copy CSS files. Copy them next to the output yourself, as the `build` script above does. CSS that needs a preprocessor, such as Sass, has to be compiled to plain CSS first, unless every app that uses the library also has that preprocessor installed.
+
+### Compiled output
+
+Vite's [library mode](https://vite.dev/guide/build.html#library-mode) builds the `import` entry. Mark `solid-js` as external so it is not bundled into the library.
+
+```js
+// vite.config.js
+import { defineConfig } from 'vite';
+import solid from 'vite-plugin-solid';
+
+export default defineConfig({
+  plugins: [solid()],
+  build: {
+    lib: { entry: 'src/index.tsx', formats: ['es'], fileName: 'index' },
+    rollupOptions: { external: [/^solid-js(\/|$)/] },
+  },
+});
+```
+
+This output is client-only DOM code that cannot hydrate. Library mode also writes imported CSS to a separate file (`dist/index.css`) and does not import it from the JavaScript.
+
+### Using the library
+
+Install the library and import it. No extra configuration is needed. This also works for a package in the same monorepo that is linked through the workspace, as long as it is listed in the app's `package.json`.
+
+If a library ships only compiled code and fails during SSR, ask its author to add a `solid` export condition.
+
 # Troubleshooting
 
 - It appears that Webstorm generate some weird triggers when saving a file. In order to prevent that you can follow [this thread](https://intellij-support.jetbrains.com/hc/en-us/community/posts/360000154544-I-m-having-a-huge-problem-with-Webstorm-and-react-hot-loader-) and disable the **"Safe Write"** option in **"Settings | Appearance & Behavior | System Settings"**.
