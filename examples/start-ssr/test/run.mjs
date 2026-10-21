@@ -3804,7 +3804,7 @@ async function runContainmentChecks(
       const failures = heardFor(secret);
       return (
         failures.length === 1 &&
-        failures[0].kind === 'render' &&
+        failures[0].kind === 'request' &&
         failures[0].handling === 'failed' &&
         failures[0].event === true
       );
@@ -3812,7 +3812,7 @@ async function runContainmentChecks(
     record(
       mode,
       'contain',
-      'configureServerErrors hook hears the failure once (render/failed, with the event)',
+      'configureServerErrors hook hears the failure once (request/failed, with the event)',
       failedOnce('mw-throw-secret') && failedOnce('late-throw-secret'),
       JSON.stringify(heard),
     );
@@ -3820,7 +3820,7 @@ async function runContainmentChecks(
       record(
         mode,
         'contain',
-        'a start.setup failure reaches the hook once (render/failed, with the event)',
+        'a start.setup failure reaches the hook once (request/failed, with the event)',
         failedOnce('setup-throw-secret'),
         JSON.stringify(heard),
       );
@@ -3960,16 +3960,15 @@ async function runMiddlewareMode() {
       );
       // Dev containment is the thrown-Response half only: the catch answers
       // a thrown Response or envelope and rethrows everything else to
-      // Vite's error middleware. Reporting (reportServerError from
-      // solid-js/internal) and the bodyless 500 are build-only.
+      // Vite's error middleware. Reporting (reportRequestFailure) and the
+      // bodyless 500 are build-only.
       record(
         'mw-codegen',
         'gen',
-        'dev handler catch rethrows failures (no reportServerError, no synthesized 500)',
+        'dev handler catch rethrows failures (no reportRequestFailure, no synthesized 500)',
         code.includes('function containFailure') &&
           code.includes('throw error') &&
-          !code.includes('reportServerError') &&
-          !code.includes('solid-js/internal'),
+          !code.includes('reportRequestFailure'),
       );
       // The generated entry-server threads start.setup: awaited with the
       // request event before renderToStream, its result (or App) rendered.
@@ -5705,6 +5704,9 @@ async function runDetectMode() {
 //     behind a framework-style handler still renders and dispatches server
 //     functions, never touches dist/client, and the `event` fields show up
 //     next to nativeEvent,
+//   - with `start.instrument`, node.js has no static imports: it awaits
+//     ./server.js (and so the instrument) before node:http loads (#418),
+//     still listens as the program and still exports without listening,
 //   - a Cloudflare-shaped setup (ssr `noExternal: true` + a config-level
 //     server-first `builder.buildApp`) emits nothing without the option and
 //     behaves as before; with it, node.js is still emitted and points at the
@@ -6248,6 +6250,87 @@ async function runNodeMode() {
     } catch {}
     server = undefined;
 
+    // ---- start.instrument: node:http loads after the instrument (#418) -------
+    rmSync(distDir, { recursive: true, force: true });
+    console.log('  building (with start.node and start.instrument)…');
+    execSync('pnpm run build', {
+      cwd: exampleDir,
+      stdio: 'pipe',
+      env: { ...env, START_NODE: '1', SSR_INSTRUMENT: '1' },
+    });
+    const instrumentedSource = existsSync(nodeJs) ? readFileSync(nodeJs, 'utf-8') : '';
+    record(
+      mode,
+      'instrument',
+      'instrumented node.js has no static imports and awaits ./server.js first',
+      !/^import\b/m.test(instrumentedSource) &&
+        instrumentedSource.indexOf("await import('./server.js')") !== -1 &&
+        instrumentedSource.indexOf("await import('./server.js')") <
+          instrumentedSource.indexOf("await import('./node-runtime.js')"),
+      instrumentedSource.slice(0, 600),
+    );
+    serverLog = '';
+    server = startProcess('node', ['dist/server/node.js'], {
+      cwd: exampleDir,
+      env: { ...env, SSR_INSTRUMENT: '1', PORT: '0', NODE_ENV: 'production' },
+    });
+    server.stdout.on('data', (d) => (serverLog += d));
+    server.stderr.on('data', (d) => (serverLog += d));
+    const instrumentedListening = await waitForLog(
+      () => serverLog,
+      /Listening on (http:\/\/localhost:\d+)/,
+    );
+    record(
+      mode,
+      'instrument',
+      'instrumented node.js listens when run as the program',
+      !!instrumentedListening,
+      serverLog.slice(-300),
+    );
+    if (instrumentedListening) {
+      const instrumentedPage = await fetchStreamed(instrumentedListening[1] + '/');
+      const instrumentRaw = instrumentedPage.headers.get('x-instrument');
+      let instrument = null;
+      try {
+        instrument = instrumentRaw ? JSON.parse(instrumentRaw) : null;
+      } catch {}
+      record(
+        mode,
+        'instrument',
+        'instrument module ran to completion before node:http loaded',
+        !!instrument &&
+          instrument.order[0] === 'instrument(before:0)' &&
+          instrument.done === true &&
+          instrument.httpLoaded === false,
+        `x-instrument: ${instrumentRaw}`,
+      );
+    }
+    try {
+      process.kill(-server.pid, 'SIGTERM');
+    } catch {}
+    server = undefined;
+    let instrumentedMountLog = '';
+    server = startProcess('node', [mountScript], {
+      cwd: tmpDir,
+      env: { ...env, SSR_INSTRUMENT: '1' },
+    });
+    server.stdout.on('data', (d) => (instrumentedMountLog += d));
+    server.stderr.on('data', (d) => (instrumentedMountLog += d));
+    const instrumentedMounted = await waitForLog(() => instrumentedMountLog, /MOUNTED=(\d+)/);
+    record(
+      mode,
+      'instrument',
+      'instrumented node.js exports createListener, listener and serve without auto-listening',
+      !!instrumentedMounted &&
+        /EXPORTS=createListener,listener,serve/.test(instrumentedMountLog) &&
+        !instrumentedMountLog.includes('Listening on'),
+      instrumentedMountLog.slice(-300),
+    );
+    try {
+      process.kill(-server.pid, 'SIGTERM');
+    } catch {}
+    server = undefined;
+
     // ---- Cloudflare-shaped setup ---------------------------------------------
     // ssr `noExternal: true` plus a config-level orchestrator that builds the
     // ssr environment before the client (the @cloudflare/vite-plugin shape).
@@ -6324,7 +6407,7 @@ async function runNodeMode() {
 
 // Vitest posture: even though this app is `ssr: true`, tests compile and
 // resolve with the client posture — dom codegen, non-hydratable, browser
-// conditions, jsdom default — with no `test` block and no
+// conditions — with only `environment: 'jsdom'` and no
 // `ssr: mode !== 'test'` workaround in the config. src/posture.test.tsx
 // carries the actual assertions (isServer false, non-hydratable codegen, a
 // DOM component rendering and updating under jsdom); this mode just runs it.
@@ -6356,6 +6439,44 @@ async function runVitestMode() {
     // Attach output on ANY failure: exit 0 with unmatched output previously
     // recorded an empty detail, leaving CI failures undiagnosable.
     testPass ? undefined : out.slice(-2000),
+  );
+
+  // Runtime-consuming packages in the client posture (#369). An externalized
+  // package's own imports are resolved by the host runtime, not by Vite.
+  // Node gets the `browser` condition from vitest's worker `--conditions`;
+  // Deno does not, and `@solidjs/testing-library` then loaded the server
+  // build of `@solidjs/web`. test/deno-conditions.mjs makes the workers
+  // resolve the way Deno does, so this fails unless the plugin inlines the
+  // runtime and its consumers.
+  let consumersOut = '';
+  let consumersOk = false;
+  try {
+    consumersOut = execSync('pnpm exec vitest run src/testing-library.test.tsx --pool=forks', {
+      cwd: exampleDir,
+      stdio: 'pipe',
+      timeout: 180000,
+      env: {
+        ...process.env,
+        NO_COLOR: '1',
+        NODE_OPTIONS: [
+          process.env.NODE_OPTIONS,
+          `--import=${pathToFileURL(path.join(exampleDir, 'test', 'deno-conditions.mjs')).href}`,
+        ]
+          .filter(Boolean)
+          .join(' '),
+      },
+    }).toString();
+    consumersOk = true;
+  } catch (e) {
+    consumersOut = String(e.stdout || '') + String(e.stderr || '');
+  }
+  const consumersPass = consumersOk && /2 passed/.test(consumersOut);
+  record(
+    mode,
+    'runtime-consumers',
+    '@solidjs/testing-library renders with the browser build when the host runtime ignores `browser`',
+    consumersPass,
+    consumersPass ? undefined : consumersOut.slice(-2000),
   );
 
   // Both postures in ONE workspace (VITEST_PROJECTS=1 adds test.projects to
@@ -6392,17 +6513,15 @@ async function runVitestMode() {
     projectsPass ? undefined : projectsOut.slice(-2000),
   );
 
-  // Browser-mode projects must NOT get the jsdom default: vitest 4 probes
-  // for the environment's package at startup (getEnvPackageName →
-  // ensureInstalled) and sets a failing exit code when jsdom isn't
-  // installed — even though the suite itself runs (and passes) in the real
-  // browser. The gate mirrors the plugin's jest-dom one (`browser.enabled`
-  // skips the injection); everything else keeps the jsdom default. Asserted
-  // at the config-resolution level: jsdom IS installed in this example, so
-  // a full browser run couldn't reproduce the missing-package probe.
+  // The plugin injects no `test.environment`, in any project shape: a
+  // default applied to Node-only suites that loaded the plugin too, and in
+  // browser mode or a projects root vitest probes for the environment's
+  // package at startup and fails the run when it isn't installed (#205).
+  // Resolved without the example's config file, which sets jsdom itself.
+  const { default: solid } = await import('@solidjs/vite-plugin');
   const resolveTestEnvironment = async (testBlock) => {
     const resolved = await resolveConfig(
-      { root: exampleDir, mode: 'test', test: testBlock },
+      { root: exampleDir, mode: 'test', configFile: false, plugins: [solid()], test: testBlock },
       'serve',
     );
     return resolved.test?.environment;
@@ -6418,20 +6537,17 @@ async function runVitestMode() {
   } catch (e) {
     envError = String(e);
   }
-  const browserEnvPass = !envError && browserEnv === undefined && defaultEnv === 'jsdom';
+  const browserEnvPass = !envError && browserEnv === undefined && defaultEnv === undefined;
   record(
     mode,
     'browser-env',
-    'browser-mode project gets no injected jsdom environment (non-browser keeps the jsdom default)',
+    'no injected test environment (browser mode or a plain test block)',
     browserEnvPass,
     browserEnvPass ? undefined : envError || `browser: ${browserEnv}, default: ${defaultEnv}`,
   );
 
-  // A root config that defines `test.projects` runs no tests itself — each
-  // project controls its own environment — so it must NOT get the jsdom
-  // default either: vitest probes for the root environment's package at
-  // startup and prompts for jsdom even when every project runs under node
-  // or in the browser (solidjs/solid-vite-plugin#205, forward-port of #323).
+  // A root config that defines `test.projects` runs no tests itself; it
+  // gets no environment either (solidjs/solid-vite-plugin#205).
   let projectsEnv;
   let projectsEnvError = '';
   try {
@@ -6559,6 +6675,130 @@ async function runVitestMode() {
       ? undefined
       : jestDomError ||
           `empty root: ${JSON.stringify(emptySetupFiles)}, example root: ${JSON.stringify(exampleSetupFiles)}`,
+  );
+
+  // A framework package (one with a `solid` export condition) that only the
+  // workspace root's package.json declares must still be inlined for a
+  // project in that workspace (#157). The crawl used to read only the
+  // project's own package.json, so vitest left the package external and
+  // Node failed on its `.jsx` files with `Unknown file extension ".jsx"`.
+  // The fixture is a workspace outside the repo: the root declares
+  // `fake-solid-lib`, and the project `packages/app` declares nothing.
+  const workspaceDir = path.join(os.tmpdir(), `solid-vite-plugin-workspace-${process.pid}`);
+  const appDir = path.join(workspaceDir, 'packages', 'app');
+  const libDir = path.join(workspaceDir, 'node_modules', 'fake-solid-lib');
+  const noExternalProbe = `
+    import { resolveConfig } from 'vite';
+    import solid from '@solidjs/vite-plugin';
+    const resolved = await resolveConfig(
+      { root: process.argv[1], mode: 'test', configFile: false, logLevel: 'silent', plugins: [solid()] },
+      'serve',
+    );
+    console.log(JSON.stringify(resolved.environments.ssr.resolve.noExternal));
+  `;
+  let workspaceNoExternal;
+  let workspaceError = '';
+  try {
+    rmSync(workspaceDir, { recursive: true, force: true });
+    mkdirSync(appDir, { recursive: true });
+    mkdirSync(libDir, { recursive: true });
+    writeFileSync(
+      path.join(workspaceDir, 'package.json'),
+      JSON.stringify({
+        name: 'workspace',
+        private: true,
+        workspaces: ['packages/*'],
+        dependencies: { 'fake-solid-lib': '1.0.0' },
+      }),
+    );
+    writeFileSync(path.join(appDir, 'package.json'), '{ "name": "app", "private": true }\n');
+    writeFileSync(
+      path.join(libDir, 'package.json'),
+      JSON.stringify({
+        name: 'fake-solid-lib',
+        version: '1.0.0',
+        type: 'module',
+        exports: { '.': { solid: './index.jsx', default: './index.js' } },
+      }),
+    );
+    writeFileSync(path.join(libDir, 'index.jsx'), 'export const Lib = () => <p>lib</p>;\n');
+    writeFileSync(path.join(libDir, 'index.js'), 'export const Lib = () => null;\n');
+    workspaceNoExternal = JSON.parse(
+      execFileSync(process.execPath, ['--input-type=module', '-e', noExternalProbe, '--', appDir], {
+        cwd: exampleDir,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: 60000,
+      })
+        .toString()
+        .trim(),
+    );
+  } catch (e) {
+    workspaceError = String(e.stderr || e);
+  } finally {
+    rmSync(workspaceDir, { recursive: true, force: true });
+  }
+  const workspacePass =
+    !workspaceError &&
+    Array.isArray(workspaceNoExternal) &&
+    workspaceNoExternal.includes('fake-solid-lib');
+  record(
+    mode,
+    'workspace-root-pkgs',
+    'framework packages declared only in the workspace root are inlined for a workspace project',
+    workspacePass,
+    workspacePass
+      ? undefined
+      : workspaceError || `noExternal: ${JSON.stringify(workspaceNoExternal)}`,
+  );
+
+  // Vitest passes the `ssr` environment's conditions to Node as
+  // `--conditions` for the packages it leaves external. A jsdom run used to
+  // put `browser` there, so Node-only packages failed to load: `msw/node`
+  // imports `@mswjs/interceptors/ClientRequest`, whose `browser` export is
+  // `null` (#125). jsdom: `client` keeps `browser` and `ssr` does not.
+  // node: neither gets it (server posture, unchanged).
+  const conditionsProbe = `
+    import { resolveConfig } from 'vite';
+    import solid from '@solidjs/vite-plugin';
+    const out = {};
+    for (const environment of ['jsdom', 'node']) {
+      const resolved = await resolveConfig(
+        { mode: 'test', configFile: false, logLevel: 'silent', plugins: [solid()], test: { environment } },
+        'serve',
+      );
+      out[environment] = {
+        client: resolved.environments.client.resolve.conditions,
+        ssr: resolved.environments.ssr.resolve.conditions,
+      };
+    }
+    console.log(JSON.stringify(out));
+  `;
+  let testConditions;
+  let conditionsError = '';
+  try {
+    testConditions = JSON.parse(
+      execFileSync(process.execPath, ['--input-type=module', '-e', conditionsProbe], {
+        cwd: exampleDir,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: 60000,
+      })
+        .toString()
+        .trim(),
+    );
+  } catch (e) {
+    conditionsError = String(e.stderr || e);
+  }
+  const conditionsPass =
+    !conditionsError &&
+    testConditions.jsdom.client.includes('browser') &&
+    !testConditions.jsdom.ssr.includes('browser') &&
+    !testConditions.node.ssr.includes('browser');
+  record(
+    mode,
+    'ssr-conditions',
+    'jsdom tests keep the browser condition out of the ssr environment (Node --conditions)',
+    conditionsPass,
+    conditionsPass ? undefined : conditionsError || JSON.stringify(testConditions),
   );
 }
 

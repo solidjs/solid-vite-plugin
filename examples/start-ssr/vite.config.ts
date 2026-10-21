@@ -114,9 +114,8 @@ export default defineConfig({
   // DOM component tests under jsdom get the client posture (browser
   // conditions, dom codegen), while the node project gets the server
   // posture end to end (server conditions, isServer true, ssr codegen)
-  // just by writing `environment: 'node'`. Without the knob the config has
-  // no `test` block at all: the zero-config client-posture default stays
-  // under test too.
+  // just by writing `environment: 'node'`. Without the knob the config only
+  // picks jsdom: the client posture needs no other `test` options.
   ...(process.env.VITEST_PROJECTS
     ? {
         test: {
@@ -140,7 +139,7 @@ export default defineConfig({
           ],
         },
       }
-    : {}),
+    : { test: { environment: 'jsdom' } }),
   ...(process.env.EXTRA_CLIENT_INPUT
     ? {
         environments: {

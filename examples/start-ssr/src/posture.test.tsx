@@ -1,8 +1,8 @@
 // Vitest posture regression test (vitest mode in test/run.mjs): this app is
 // `ssr: true`, but tests must compile and resolve with the CLIENT posture —
-// dom codegen, non-hydratable, browser export conditions, jsdom by default
-// (the plugin injects all of that in test mode; this example's config has no
-// `test` block and no `ssr: mode !== 'test'` workaround). Before the fix this
+// dom codegen, non-hydratable, browser export conditions (the plugin injects
+// all of that in test mode; this example's config only sets `environment:
+// 'jsdom'` and has no `ssr: mode !== 'test'` workaround). Before the fix this
 // file would compile hydratable (or with server semantics under a node
 // environment) and DOM component tests broke.
 import { expect, it } from 'vitest';

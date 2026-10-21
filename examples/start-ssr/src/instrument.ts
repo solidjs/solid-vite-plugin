@@ -14,13 +14,19 @@
 //   run before this module's body.
 // - it counts evaluations: once per server process (dev and prod), not once
 //   per request.
+// - it records whether node:http was already loaded (node mode asserts not, #418).
 declare global {
   // eslint-disable-next-line no-var
-  var __solidInstrument: { order: string[]; done: boolean; evaluations: number } | undefined;
+  var __solidInstrument:
+    { order: string[]; done: boolean; evaluations: number; httpLoaded?: boolean } | undefined;
 }
 
 const state = (globalThis.__solidInstrument ??= { order: [], done: false, evaluations: 0 });
 state.evaluations++;
+// Undocumented but stable: the internal modules Node has loaded so far.
+state.httpLoaded ??= (process as unknown as { moduleLoadList?: string[] }).moduleLoadList?.includes(
+  'NativeModule http',
+);
 const alreadyLoaded = state.order.length;
 await new Promise((resolve) => setTimeout(resolve, 20));
 state.order.push(`instrument(before:${alreadyLoaded})`);
