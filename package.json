@@ -35,7 +35,9 @@
     "prepublishOnly": "pnpm build",
     "release": "pnpm build && changeset publish",
     "check": "package-check",
-    "test": "node scripts/test-examples.ts"
+    "test": "node scripts/test-examples.ts",
+    "test:unit": "vitest run",
+    "test:ecosystem": "node scripts/test-ecosystem.mjs"
   },
   "repository": {
     "type": "git",
@@ -88,7 +90,8 @@
     "rollup-plugin-cleaner": "^1.0.0",
     "solid-js": "^2.0.0-rc.14",
     "typescript": "^5.2.2",
-    "vite": "^8.2.1"
+    "vite": "^8.2.1",
+    "vitest": "^4.1.11"
   },
   "peerDependencies": {
     "@solidjs/start-devtools": "^1.0.0-next.2",

@@ -11,6 +11,7 @@ import {
   installDevManifestBridge,
   devManifestBridgeUrl,
   DEV_MANIFEST_REGISTRY_KEY,
+  DEV_MANIFEST_INVALIDATE_EVENT,
 } from './dev-manifest.js';
 import { boundaryModules } from './boundary-modules.js';
 import { solidDiagnostics } from './diagnostics/index.js';
@@ -27,6 +28,16 @@ import {
 } from './server-functions/index.js';
 import { SSR_HANDLER_ID, startServe, type StartOptions } from './ssr/index.js';
 import { startEnv } from './start-env.js';
+import {
+  detectLocationSupport,
+  getJsxSourceNamesOptions,
+  getPrimitiveNamesOptions,
+  getSourceNames,
+  requestedLocations,
+  type LocationTarget,
+  type ResolvedSourceNames,
+  type SourceNamesOptions,
+} from './source-names.js';
 import {
   cleanModuleId,
   isTsrxCssModule,
@@ -155,19 +166,25 @@ function lookupBridge() {
   return bridgeLookup;
 }
 function createBridgeResolver() {
-  // Convergence cache, mirroring the in-process resolver: server-side lazy()
-  // re-requests assets on every retry of a suspended render pass, and only a
-  // synchronous answer lets the pass converge (a fresh promise per call
-  // suspends every retry anew — nested routes then loop until the render
-  // stack overflows). Cached entries can go stale after a CSS edit (no
-  // watcher reaches this side of the bridge); the HMR client replaces SSR'd
-  // dev styles on load, so staleness self-heals at hydration. Only successful
-  // answers are cached: a null (bridge failure) must stay retryable, or one
-  // transient miss would strip the module's client assets — silently — for
-  // the rest of the dev session. In-flight dedupe still gives retries of the
-  // same pass a stable promise, so convergence holds either way.
+  // Lazy SSR retries need synchronous cache hits to converge. Failed bridge
+  // requests stay retryable; concurrent lookups share one pending promise.
   const cache = new Map();
   const inFlight = new Map();
+  let generation = 0;
+  const invalidate = () => {
+    generation++;
+    cache.clear();
+    inFlight.clear();
+  };
+  if (import.meta.hot) {
+    // Hosts such as Nitro consume full-reload before it reaches this runner.
+    import.meta.hot.on(${JSON.stringify(DEV_MANIFEST_INVALIDATE_EVENT)}, invalidate);
+    import.meta.hot.dispose(() => {
+      import.meta.hot.off(${JSON.stringify(DEV_MANIFEST_INVALIDATE_EVENT)}, invalidate);
+      invalidate();
+    });
+  }
+
   return {
     resolve(key) {
       const cached = cache.get(key);
@@ -179,14 +196,17 @@ function createBridgeResolver() {
       }
       let request = inFlight.get(key);
       if (!request) {
+        const startedAt = generation;
         request = fetchAssets(key).then(
           (assets) => {
-            if (assets && !bridgeMissing) cache.set(key, assets);
-            inFlight.delete(key);
+            if (generation === startedAt) {
+              if (assets && !bridgeMissing) cache.set(key, assets);
+              inFlight.delete(key);
+            }
             return assets;
           },
           (error) => {
-            inFlight.delete(key);
+            if (generation === startedAt) inFlight.delete(key);
             throw error;
           },
         );
@@ -237,44 +257,38 @@ export interface ExtensionOptions {
 }
 
 export type Compiler = 'babel' | 'native';
-/**
- * Which source names are carried into output for the dev and observe
- * runtimes to label the reactive graph with (see
- * `Options.solid.sourceNames`). Each kind defaults to the posture: on for
- * dev and `observe`, off for production builds. `components` and `bindings`
- * are the JSX compiler's `sourceNames` option; `primitives` is the native
- * compiler's standalone `transformSourceNames` pass, which the plugin runs
- * on every module — babel apps included.
- */
-export interface SourceNamesOptions {
-  /** `createComponent(Home, props, "Home")` — owners labelled `<Home>`. */
-  components?: boolean;
-  /** Binding effects named by what they write: `span.textContent`, `div.children`. */
-  bindings?: boolean;
-  /**
-   * Primitives named after the identifier they are declared as —
-   * `createSignal(0, { name: "count" })`, `createCounter.value` inside a
-   * composed primitive — by the native compiler's `transformSourceNames`
-   * pass. Runs on `.ts`/`.js` modules as well as components (outside
-   * node_modules), whichever JSX compiler the app uses.
-   */
-  primitives?: boolean;
-}
+export type { SourceNamesOptions };
 
-export type SolidOptions = Omit<JsxCompilerOptions, 'filename' | 'sourceMap' | 'sourceNames'> & {
+// `root` (the project root `sourceNames.locations` paths are relative to)
+// is not a user option: the plugin passes Vite's resolved `config.root`.
+export type SolidOptions = Omit<
+  JsxCompilerOptions,
+  'filename' | 'sourceMap' | 'sourceNames' | 'root'
+> & {
   /**
    * Source names in output: `true`/`false` for every kind, or per kind.
    * Defaults to the posture — on for dev and `observe`, off for production
-   * builds; `false` opts out of every kind, in dev too.
+   * builds (`locations`: on for dev only); `false` opts out of every kind,
+   * in dev too.
    */
   sourceNames?: boolean | SourceNamesOptions;
 };
 type NativeCompiler = typeof import('@solidjs/compiler');
 let nativeCompilerPromise: Promise<NativeCompiler> | undefined;
+/**
+ * Whether the loaded `@solidjs/compiler` takes `sourceNames.locations` and
+ * `root` (see `detectLocationSupport`). Probed once, when the compiler
+ * loads, so it is only meaningful after `loadNativeCompiler()` resolved —
+ * every caller that builds native options awaits the compiler first.
+ */
+let nativeLocations = false;
 
 async function loadNativeCompiler() {
   try {
-    return await (nativeCompilerPromise ??= import('@solidjs/compiler'));
+    return await (nativeCompilerPromise ??= import('@solidjs/compiler').then((compiler) => {
+      nativeLocations = detectLocationSupport(compiler);
+      return compiler;
+    }));
   } catch (error) {
     nativeCompilerPromise = undefined;
     const reason = error instanceof Error ? `\n\nCause: ${error.message}` : '';
@@ -372,7 +386,10 @@ export interface Options {
    *
    * Without {@link start}: the legacy transform-only flag, unchanged.
    * `true` enables the SSR transforms (hydratable client code, SSR server
-   * code) — you provide the entries and the server yourself.
+   * code) — you provide the entries and the server yourself. With `false`,
+   * client code is non-hydratable DOM output, and modules loaded on the
+   * server (for example through `ssrLoadModule` to prerender a page) get
+   * non-hydratable SSR output.
    *
    * With {@link start}: selects the start mode. `true` is SSR start mode
    * (per-request streaming render + hydration); `false`/omitted is client
@@ -561,7 +578,18 @@ export interface RefreshOptions {
 
 function getExtension(filename: string): string {
   const index = filename.lastIndexOf('.');
-  return index < 0 ? '' : filename.substring(index).replace(/\?.+$/, '');
+  return index < 0 ? '' : filename.substring(index);
+}
+
+/**
+ * The path the transform compiles for `id`. This is normally `id` without its
+ * query. Some plugins put the extension after the query instead, such as
+ * unplugin-icons' `~icons/mdi/folder?width=2em.tsx`. Then the full id is used,
+ * as it was before queries were stripped. #206
+ */
+function getTransformPath(id: string, isHandled: (path: string) => boolean): string {
+  const cleanId = id.replace(/\?.*$/, '');
+  return cleanId !== id && !isHandled(cleanId) && isHandled(id) ? id : cleanId;
 }
 // The packages whose dev/production server builds are selected by the
 // `development` export condition. A dependency on either means the package
@@ -663,13 +691,24 @@ function getJestDomExport(setupFiles: string[], root: string) {
   );
 }
 
+/**
+ * The options for one JSX compile. `jsxCompiler` names the backend the
+ * result goes to, which decides whether `sourceNames.locations` and `root`
+ * can be included (the native compiler rejects options it does not know,
+ * so its probe result gates them; the babel plugin ignores unknown keys);
+ * for `'native'` the compiler must already be loaded (`loadNativeCompiler`
+ * resolved) for the probe to have run. `root` is the resolved Vite root
+ * the locations are made relative to.
+ */
 function getSolidOptions(
   options: Partial<Options>,
   isSsr: boolean,
   dev: boolean,
   observe: boolean,
-  isTestMode = false,
-): SolidOptions {
+  isTestMode: boolean,
+  jsxCompiler: Compiler,
+  root: string,
+): SolidOptions & { root?: string } {
   let solidOptions: Pick<SolidOptions, 'generate' | 'hydratable'>;
 
   if (isTestMode) {
@@ -692,7 +731,11 @@ function getSolidOptions(
       solidOptions = { generate: 'dom', hydratable: true };
     }
   } else {
-    solidOptions = { generate: 'dom', hydratable: false };
+    // A client-rendered app can still load modules on the server, for
+    // example to prerender static pages with `ssrLoadModule`. DOM output
+    // cannot run there, so server transforms use the SSR generate. Nothing
+    // hydrates the result, so it stays non-hydratable.
+    solidOptions = { generate: isSsr ? 'ssr' : 'dom', hydratable: false };
   }
 
   // Server components (serverFunctions.components) turn on the SSR-side
@@ -728,50 +771,29 @@ function getSolidOptions(
   //
   // The compilers default their own `sourceNames` on under `dev` (rc.10), so
   // the resolved value is always passed — `false` when both kinds are off —
-  // and the plugin's table below, not the compiler default, decides. That is
-  // what makes `solid.sourceNames: false` an opt-out in dev rather than a
-  // no-op.
+  // and the plugin's table (getSourceNames), not the compiler default,
+  // decides. That is what makes `solid.sourceNames: false` an opt-out in dev
+  // rather than a no-op. `locations` rides inside the same object, with
+  // `root` (the Vite root the paths are relative to) beside it, on a
+  // compiler that takes them: see getJsxSourceNamesOptions.
   const { sourceNames: _userSourceNames, ...userSolidOptions } = options.solid || {};
-  const { components, bindings } = getSourceNames(options, dev, observe);
+  const names = getSourceNames(options.solid?.sourceNames, dev, observe);
   return {
     ...solidOptions,
     ...(serverComponents && solidOptions.generate === 'ssr' ? { serverComponents: true } : {}),
     dev,
-    sourceNames: components || bindings ? { components, bindings } : false,
+    ...getJsxSourceNamesOptions(names, locationTarget(jsxCompiler, root)),
     ...userSolidOptions,
   };
 }
 
 /**
- * Resolve `solid.sourceNames` to one flag per kind — `components` and
- * `bindings` go to the JSX compiler, `primitives` gates the standalone
- * `transformSourceNames` pass in the transform hook.
- *
- * The default follows the posture. `dev` here is the same flag the compilers
- * receive as `dev` (`options.dev`, which defaults to on under `vite dev` and
- * off for `vite build`), and `observe` is `options.observe`; those are the
- * two runtimes that read the names, and the production runtime ignores them.
- *
- * | `solid.sourceNames`     | dev or observe            | production                 |
- * | ----------------------- | ------------------------- | -------------------------- |
- * | (unset)                 | all on                    | all off                    |
- * | `true`                  | all on                    | all on                     |
- * | `false`                 | all off                   | all off                    |
- * | `{ kind: true/false }`  | as given; the rest on     | as given; the rest off     |
+ * What a compiler can do with locations: the babel plugin ignores keys it
+ * does not know, so it always takes them; the native compiler answers
+ * through its load-time probe.
  */
-function getSourceNames(
-  options: Partial<Options>,
-  dev: boolean,
-  observe: boolean,
-): Required<SourceNamesOptions> {
-  const posture = dev || observe;
-  const user = options.solid?.sourceNames;
-  if (typeof user === 'boolean') return { components: user, bindings: user, primitives: user };
-  return {
-    components: user?.components ?? posture,
-    bindings: user?.bindings ?? posture,
-    primitives: user?.primitives ?? posture,
-  };
+function locationTarget(compiler: Compiler, root: string): LocationTarget {
+  return { supportsLocations: compiler === 'babel' || nativeLocations, root };
 }
 
 /**
@@ -792,17 +814,39 @@ const DECLARATION_MODULE = /\.d\.[mc]?ts$/i;
 const PRIMITIVE_SOURCES = ['solid-js', '@solidjs/signals'];
 
 let warnedMissingSourceNamesPass = false;
+let warnedMissingLocations = false;
+
+/**
+ * Warn once when the user asked for `locations` in so many words and the
+ * native compiler predates the kind — the dev default stays silent, like
+ * every other default-on nicety an older compiler cannot provide. Call
+ * after `loadNativeCompiler()` resolved (the probe sets `nativeLocations`).
+ */
+function warnMissingLocations(ctx: { warn(message: string): void }, options: Partial<Options>) {
+  if (nativeLocations || warnedMissingLocations) return;
+  if (!requestedLocations(options.solid?.sourceNames)) return;
+  warnedMissingLocations = true;
+  ctx.warn(
+    '@solidjs/vite-plugin: the installed @solidjs/compiler does not take the `locations` ' +
+      'source-names kind, so `solid.sourceNames.locations` is ignored and diagnostics ' +
+      'carry no file:line:col. Update @solidjs/compiler.',
+  );
+}
 
 /**
  * Run the compiler's `transformSourceNames` pass, or leave the code alone
  * (warning once) on a compiler predating it — the pass is a default-on
- * nicety for dev/observe, not something to fail a build over.
+ * nicety for dev/observe, not something to fail a build over. `names` is
+ * the resolved `solid.sourceNames` (its `locations` flag goes to the pass)
+ * and `root` the Vite root locations are made relative to.
  */
 async function transformPrimitiveNames(
   ctx: { warn(message: string): void },
   compiler: NativeCompiler,
   code: string,
   filename: string,
+  names: ResolvedSourceNames,
+  root: string,
 ): Promise<{ code: string; map: ChainableMap } | null> {
   if (!PRIMITIVE_SOURCES.some((source) => code.includes(source))) return null;
   if (typeof compiler.transformSourceNamesAsync !== 'function') {
@@ -816,7 +860,10 @@ async function transformPrimitiveNames(
     }
     return null;
   }
-  const result = await compiler.transformSourceNamesAsync(code, { filename, sourceMap: true });
+  const result = await compiler.transformSourceNamesAsync(
+    code,
+    getPrimitiveNamesOptions(names, locationTarget('native', root), filename),
+  );
   // Nothing to name: the pass hands the source back verbatim, with no map.
   if (result.code === code) return null;
   return { code: result.code, map: result.map };
@@ -1229,9 +1276,14 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
   // The live dev server, kept so the dev manifest module can bake the bridge
   // endpoint URL in when its code is generated (see devManifestBridgeUrl).
   let devServer: ViteDevServer | null = null;
+  let devAssetResolver: ReturnType<typeof createDevAssetResolver> | undefined;
   let projectRoot = process.cwd();
   let isTestMode = false;
   let serverTestPosture = false;
+  // True when a jsdom or happy-dom test run inlines the Solid runtime. The
+  // `ssr` environment then does not get the `browser` condition (see
+  // `configEnvironment`).
+  let domTestRuntimeInlined = false;
 
   // Lets the dependency scanner crawl `.tsrx` imports. Registered on every
   // environment's `optimizeDeps` (top-level for client, configEnvironment
@@ -1242,7 +1294,7 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
       if (!isTsrxModule(id) || isTsrxCssModule(id)) return null;
       const compiler = await loadNativeCompiler();
       const result = await compiler.transformAsync(source, {
-        ...getSolidOptions(options, false, replaceDev, observe, isTestMode),
+        ...getSolidOptions(options, false, replaceDev, observe, isTestMode, 'native', projectRoot),
         filename: cleanModuleId(id),
         sourceMap: false,
       });
@@ -1276,6 +1328,10 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
   // Names of the packages `isSemiFrameworkPkgByJson` classified, so their
   // dependencies can be taken back out of `optimizeDeps.include` (see below).
   const semiFrameworkPkgs = new Set<string>();
+  // Packages that import the Solid runtime without a `solid` export
+  // condition, found by the same crawl in the vitest client posture. They are
+  // inlined there with the runtime (see `test.server.deps` below).
+  const testRuntimeConsumers = new Set<string>();
   const tsrxCss = new Map<string, string>();
 
   // The client build's manifest, read back by SSR builds. In builder-mode
@@ -1369,6 +1425,23 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
     return code + `\nexport const $$moduleUrl = ${JSON.stringify(relativeId)};\n`;
   }
 
+  // Pads removed specifiers with spaces so the chunk's source map stays valid.
+  function stripModuleUrlExport(code: string): string | null {
+    const clause = /export\s*\{([^}]*)\}\s*;?(?=(?:\s|\/\/[^\n]*|\/\*[\s\S]*?\*\/)*$)/.exec(code);
+    if (!clause) return null;
+    const specifiers = clause[1].split(',');
+    const kept = specifiers.filter(
+      (spec) => !/^\s*(?:[\w$]+\s+as\s+)?(?:\$\$moduleUrl|(["'])\$\$moduleUrl\1)\s*$/.test(spec),
+    );
+    if (kept.length === specifiers.length) return null;
+    const start = clause.index + clause[0].indexOf('{') + 1;
+    return (
+      code.slice(0, start) +
+      kept.join(',').padEnd(clause[1].length) +
+      code.slice(start + clause[1].length)
+    );
+  }
+
   function nativeTsrxCss(result: unknown): string {
     const css = (result as { css?: unknown }).css;
     return typeof css === 'string' ? css : '';
@@ -1380,8 +1453,16 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
   }
 
   async function compileTsrxCss(source: string, id: string): Promise<string> {
-    const solidOptions = getSolidOptions(options, false, replaceDev, observe, isTestMode);
     if (options.compiler === 'babel') {
+      const solidOptions = getSolidOptions(
+        options,
+        false,
+        replaceDev,
+        observe,
+        isTestMode,
+        'babel',
+        projectRoot,
+      );
       const babelUserOptions = await getBabelUserOptions(options, source, id, false);
       const babelOptions = mergeAndConcat(babelUserOptions, {
         root: projectRoot,
@@ -1402,7 +1483,18 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
       return result ? babelTsrxCss(result) : '';
     }
 
+    // The compiler is loaded ahead of the options: its location probe runs
+    // at load, and getSolidOptions reads the result.
     const compiler = await loadNativeCompiler();
+    const solidOptions = getSolidOptions(
+      options,
+      false,
+      replaceDev,
+      observe,
+      isTestMode,
+      'native',
+      projectRoot,
+    );
     const result = await compiler.transformAsync(source, {
       ...solidOptions,
       filename: id,
@@ -1421,16 +1513,17 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
       observe = options.observe === true;
       projectRoot = userConfig.root || projectRoot;
       isTestMode = userConfig.mode === 'test';
+      domTestRuntimeInlined = false;
       forceProduction = options.dev === false && command === 'serve' && !isTestMode;
       // Per-vitest-project posture: the client posture (browser conditions,
-      // dom codegen, jsdom default) is right for DOM component tests but
+      // dom codegen) is right for DOM component tests but
       // wrong for server-runtime unit tests. A project that explicitly opts
       // into a server runtime — `test: { environment: 'node' }` (or
       // 'edge-runtime') — gets the server posture end to end: no browser
       // condition injection, so the framework resolves its real server
       // build (isServer true) with no inline/alias workarounds. DOM
-      // environments (the jsdom default, happy-dom, browser mode) keep the
-      // client posture. Each vitest project resolves its own config, so the
+      // environments (jsdom, happy-dom, browser mode) and an unset
+      // environment keep the client posture. Each vitest project resolves its own config, so the
       // hooks below see the posture of the project they serve.
       serverTestPosture =
         isTestMode &&
@@ -1466,10 +1559,20 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
           // the same way `development` does, and an externalized consumer
           // would split it just the same), never vitest (it manages inlining
           // via test.server.deps).
-          if (!(replaceDev || observe) || isTestMode) return false;
           const semi = SOLID_RUNTIME_PKGS.some(
             (name) => pkgJson.dependencies?.[name] || pkgJson.peerDependencies?.[name],
           );
+          if (isTestMode) {
+            // Client test posture: record the runtime consumers so
+            // `test.server.deps.inline` below can inline them, without
+            // handing them to vitefu (its `ssr.external` for their
+            // dependencies would reach vitest's `server.deps.external`).
+            if (semi && !serverTestPosture && typeof pkgJson.name === 'string') {
+              testRuntimeConsumers.add(pkgJson.name);
+            }
+            return false;
+          }
+          if (!(replaceDev || observe)) return false;
           if (semi && typeof pkgJson.name === 'string') semiFrameworkPkgs.add(pkgJson.name);
           return semi;
         },
@@ -1514,14 +1617,18 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
       // `solid-js` fails with ERR_MODULE_NOT_FOUND as soon as anything
       // externalizes it (vitefu does, once a semi-framework package such as
       // `@solidjs/diagnostics` lists it under `dependencies`). With no root
-      // copy there is nothing to dedupe TO, so the gate loses nothing. Not
-      // added to `optimizeDeps.include`: the optimizer already reaches
-      // signals through `solid-js`, and an include entry that doesn't
-      // resolve from the root logs a warning on every start.
-      const dedupe =
-        replaceDev && findPackageDir('@solidjs/signals', path.resolve(projectRoot || process.cwd()))
-          ? [...nestedDeps, '@solidjs/signals']
-          : nestedDeps;
+      // copy there is nothing to dedupe TO, so the gate loses nothing.
+      //
+      // Dedupe applies to builds as well as dev. A dependency that ships its
+      // own nested copy of `solid-js` would otherwise put a second runtime
+      // in the production bundle, with its own owner tree and contexts. #112
+      // Each package is only listed when the root can resolve it, for the
+      // reason given above for `@solidjs/signals`.
+      const dedupeRoot = path.resolve(projectRoot || process.cwd());
+      const dedupe = ['solid-js', '@solidjs/web', '@solidjs/signals'].filter((name) =>
+        findPackageDir(name, dedupeRoot),
+      );
+      const rootSignals = dedupe.includes('@solidjs/signals');
 
       const userTest = (userConfig as any).test ?? {};
       const test = {} as any;
@@ -1532,30 +1639,10 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
             ? [userTest.setupFiles]
             : userTest.setupFiles || [];
 
-        // Regardless of the app's `ssr` flag: tests run with the client
-        // posture (DOM component tests are the norm), so the default test
-        // environment is a DOM. Node-environment tests opt in explicitly.
-        // Browser-mode projects get the real browser DOM, so don't default
-        // them to jsdom — vitest probes for the environment's package at
-        // startup and fails the run if jsdom isn't installed. They fall
-        // back to vitest's own node default (no package probe).
-        // A root config that defines `test.projects` (or the pre-vitest-4
-        // `test.workspace`) doesn't run tests itself: each project controls
-        // its own environment, so the root gets no jsdom default either —
-        // otherwise vitest probes for jsdom at the root on startup even when
-        // every project runs under node or in the browser. Note that an
-        // inline project with `extends: true` inherits the root file's
-        // `test.projects` and opts out too: projects declare their
-        // environment explicitly, as in vitest's own projects guide.
-        // https://github.com/solidjs/solid-vite-plugin/issues/205
-        if (
-          !userTest.environment &&
-          !userTest.browser?.enabled &&
-          !userTest.workspace &&
-          !userTest.projects
-        ) {
-          test.environment = 'jsdom';
-        }
+        // No `test.environment` is injected: the project picks its own
+        // (`jsdom` or `happy-dom` for DOM component tests). A default here
+        // also applied to every Node-only test suite that happened to load
+        // the plugin, which then ran under a DOM it never asked for.
 
         // Vitest 5 defaults `test.sharedViteServer` to true: inline projects
         // then reuse the root Vite server and take their `test` options from
@@ -1578,12 +1665,45 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
             test.server = { deps: { inline: [/solid-js/, /@solidjs[+/]web/] } };
           }
         } else if (
+          // `inline: true` inlines everything already (and Vite's config
+          // merge would turn it into `[true, ...]`, which vitest can't read).
+          // A user list is merged with this one; a user who externalizes
+          // solid-js keeps it external.
+          userTest.server?.deps?.inline !== true &&
           !userTest.server?.deps?.external?.find((item: string | RegExp) =>
             /solid-js/.test(item.toString()),
           )
         ) {
-          test.server = { deps: { external: [/solid-js/] } };
+          // An externalized package is imported natively, and its own imports
+          // are resolved by the host runtime, not by Vite. Node gets the
+          // `browser` condition from vitest's worker `--conditions`, but Deno
+          // does not apply them in worker threads. It resolves `deno`/`node`
+          // and lands on the server build (`isServer` true inside
+          // `@solidjs/testing-library`'s `render`, #369). Inline the runtime and the packages that consume it, so
+          // every import of `solid-js` and `@solidjs/web` goes through Vite's
+          // `browser` condition and loads one client-build instance. A
+          // consumer left external would load a second, native copy, so the
+          // consumers found by the crawl are inlined with the runtime.
+          // Packages with a `solid` export condition are inlined already
+          // through vitefu's `ssr.noExternal`.
+          test.server = {
+            deps: {
+              inline: [
+                /[\\/]node_modules[\\/]solid-js[\\/]/,
+                /[\\/]node_modules[\\/]@solidjs[\\/]web[\\/]/,
+                ...testRuntimeConsumers,
+              ],
+            },
+          };
         }
+        const environment = userTest.environment ?? test.environment;
+        domTestRuntimeInlined =
+          !serverTestPosture &&
+          !userTest.browser?.enabled &&
+          (environment === 'jsdom' || environment === 'happy-dom') &&
+          !userTest.server?.deps?.external?.find((item: string | RegExp) =>
+            /solid-js/.test(item.toString()),
+          );
         // jest-dom's DOM matchers have no place in a server-posture project;
         // vitest browser mode already has bundled jest-dom assertions
         // https://main.vitest.dev/guide/browser/assertion-api.html#assertion-api
@@ -1636,17 +1756,32 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
             // can't trigger a re-optimize + full reload, and both entries
             // share one instance of the transport config module (the
             // server-components runtime installs its response policy there).
+            // `@solidjs/web/frames` imports that runtime as
+            // `@solidjs/web/server-functions/client`, so list that subpath
+            // too: when the app excludes `@solidjs/web`, the frames bundle
+            // would otherwise load it raw from node_modules, a second
+            // instance the response policy never reaches.
             ...(command === 'serve' && serverComponents
-              ? ['@solidjs/web/frames', '@solidjs/web/server-functions']
+              ? [
+                  '@solidjs/web/frames',
+                  '@solidjs/web/server-functions',
+                  '@solidjs/web/server-functions/client',
+                ]
               : []),
             // Plain `serverFunctions` needs the runtime too: the scanner never
             // runs the transform that adds its import, so the first "use server"
             // module forces the same re-optimize + full reload (in Vitest
             // browser mode, "Vite unexpectedly reloaded a test").
+            // `@solidjs/web/server-functions/rich-args`, which the app imports
+            // itself, also reaches the default runtime by the `/client`
+            // subpath, so that is listed as well for the same reason as
+            // frames above.
             ...(command === 'serve' &&
             serverFunctionsClientDep &&
             !(serverComponents && serverFunctionsClientDep === '@solidjs/web/server-functions')
-              ? [serverFunctionsClientDep]
+              ? serverFunctionsClientDep === '@solidjs/web/server-functions'
+                ? [serverFunctionsClientDep, '@solidjs/web/server-functions/client']
+                : [serverFunctionsClientDep]
               : []),
             // The attribution engine and the Chrome performance-tracks
             // recorder are subpaths the scanner only sees when the app's own
@@ -1661,6 +1796,14 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
             ...(command === 'serve'
               ? ['solid-js/attribution', '@solidjs/web/performance-tracks']
               : []),
+            // An app that depends on `@solidjs/signals` directly can import
+            // it from a module the scanner never reaches (a test file in
+            // Vitest browser mode, a non-literal dynamic import). The first
+            // pass bundled signals inside `solid-js`, so that import is a
+            // late discovery: re-optimize, full reload. Only when it resolves
+            // from the root: otherwise the app can't import it by name, and
+            // an include entry that doesn't resolve warns on every start.
+            ...(command === 'serve' && rootSignals ? ['@solidjs/signals'] : []),
             ...solidPkgsConfig.optimizeDeps.include,
           ],
           exclude: solidPkgsConfig.optimizeDeps.exclude,
@@ -1696,6 +1839,11 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
       }
       config.resolve.conditions = [
         'solid',
+        // A server build with `ssr.target: 'webworker'` starts from Vite's
+        // client conditions, which select the browser builds of `solid-js`
+        // and `@solidjs/web`. Their `worker` export points at the server
+        // build, so add it for that environment. #153
+        ...(opts.isSsrTargetWebworker ? ['worker'] : []),
         ...(replaceDev ? ['development'] : []),
         // `development` nests above `observe` in the runtime's exports, so
         // both may be present: dev serve keeps the dev build, builds get the
@@ -1707,7 +1855,20 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
         // a server runtime (`test.environment: 'node'` / 'edge-runtime')
         // keep the default server conditions instead, so the framework's
         // real server build resolves (isServer true).
-        ...(isTestMode && !serverTestPosture && !opts.isSsrTargetWebworker ? ['browser'] : []),
+        //
+        // Vitest passes the `ssr` environment's conditions to Node as
+        // `--conditions` for the packages it leaves external. With `browser`
+        // there, Node-only packages fail to load. For example, `msw/node`
+        // imports `@mswjs/interceptors/ClientRequest`, whose `browser`
+        // export is `null` (#125). jsdom and happy-dom tests run in the
+        // `client` environment with the runtime inlined, so `ssr` does not
+        // get `browser` in that case.
+        ...(isTestMode &&
+        !serverTestPosture &&
+        !opts.isSsrTargetWebworker &&
+        !(domTestRuntimeInlined && name === 'ssr')
+          ? ['browser']
+          : []),
         // Vite's `development|production` resolves to `development` in any
         // non-production mode, which would undo `dev: false` under `vite dev`.
         ...(forceProduction
@@ -1905,10 +2066,8 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
       // that don't share globals with this process, through the HTTP bridge
       // endpoint the middleware serves.
       if (options.ssr || options.start) {
-        registerDevAssetResolver(
-          server.config.root,
-          createDevAssetResolver(server, filterDevStyles),
-        );
+        devAssetResolver = createDevAssetResolver(server, filterDevStyles);
+        registerDevAssetResolver(server.config.root, devAssetResolver);
         installDevManifestBridge(server);
       }
       if (!needHmr) return;
@@ -1956,6 +2115,11 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
     },
 
     async hotUpdate({ file, modules, read }) {
+      if (devAssetResolver && this.environment.config.consumer === 'server') {
+        // Vite awaits watchChange and invalidates transforms before hotUpdate.
+        devAssetResolver.invalidate();
+        this.environment.hot.send({ type: 'custom', event: DEV_MANIFEST_INVALIDATE_EVENT });
+      }
       if (isTsrxModule(file) && this.environment.name === 'client') {
         updateTsrxCss(tsrxCss, file, await compileTsrxCss(await read(), file));
         const cssModule = this.environment.moduleGraph.getModuleById(resolvedTsrxCssModuleId(file));
@@ -2117,6 +2281,24 @@ export default manifest;`;
       },
     },
 
+    renderChunk(code, chunk, outputOptions) {
+      // Hosts re-export server entries whole, and workerd rejects non-handler exports.
+      if (!isBuild || isClientBuild(this) || outputOptions.format !== 'es') return null;
+      if (!chunk.isEntry || !chunk.exports.includes('$$moduleUrl')) return null;
+      const build = this.environment?.config?.build;
+      const input = build?.lib
+        ? build.lib.entry
+        : typeof build?.ssr === 'string'
+          ? build.ssr
+          : configuredBuildInput(build);
+      if (!resolveConfiguredEntries(input, projectRoot).isEntryModule(chunk.facadeModuleId))
+        return null;
+      const facade = this.getModuleInfo(chunk.facadeModuleId!);
+      if (facade?.importers.length || facade?.dynamicImporters.length) return null;
+      const stripped = stripModuleUrlExport(code);
+      return stripped === null ? null : { code: stripped, map: null };
+    },
+
     generateBundle(outputOptions, bundle) {
       if (!isBuild || !isClientBuild(this)) return;
       clientOutDir = outputOptions.dir ?? null;
@@ -2161,7 +2343,6 @@ export default manifest;`;
     async transform(source, id, transformOptions) {
       if (isTsrxCssModule(id)) return null;
       const isSsr = getEnvironmentConsumer(this.environment, transformOptions) === 'server';
-      const currentFileExtension = getExtension(id);
 
       const extensionsToWatch = options.extensions || [];
       const allExtensions = extensionsToWatch.map((extension) =>
@@ -2177,15 +2358,21 @@ export default manifest;`;
       // manifest key / dev URL); keep it for the `$$moduleUrl` injection
       // while the transform pipeline below works on the clean file path.
       const moduleId = id;
-      id = id.replace(/\?.*$/, '');
+      id = getTransformPath(
+        id,
+        (path) => /\.[mc]?[tj]sx$/i.test(path) || allExtensions.includes(getExtension(path)),
+      );
+      // Read the extension from the query-free path, so a dot inside the
+      // query (`a.mdx?x=1.5`) is not taken as the extension.
+      const currentFileExtension = getExtension(id);
       const isTsrx = isTsrxModule(id);
       const inNodeModules = /node_modules/.test(id);
       // Primitive names stop at node_modules: a dependency's internals
       // (Solid's own flow controls included) name what they mean to name,
       // and a composed primitive from a library is identified by its
       // package, not re-labelled by this app's build.
-      const namePrimitives =
-        !inNodeModules && getSourceNames(options, replaceDev, observe).primitives;
+      const sourceNames = getSourceNames(options.solid?.sourceNames, replaceDev, observe);
+      const namePrimitives = !inNodeModules && sourceNames.primitives;
 
       if (!(/\.[mc]?[tj]sx$/i.test(id) || isTsrx || allExtensions.includes(currentFileExtension))) {
         // Not a JSX module. Primitive naming stays gated as before
@@ -2209,7 +2396,15 @@ export default manifest;`;
           const compiler = await loadNativeCompiler();
 
           if (namePrimitives) {
-            const named = await transformPrimitiveNames(this, compiler, code, id);
+            warnMissingLocations(this, options);
+            const named = await transformPrimitiveNames(
+              this,
+              compiler,
+              code,
+              id,
+              sourceNames,
+              projectRoot,
+            );
             if (named !== null) {
               code = named.code;
               maps.push(named.map);
@@ -2234,8 +2429,6 @@ export default manifest;`;
         if (finalCode === source) return null;
         return { code: finalCode, map: combineSourcemaps(maps) };
       }
-
-      const solidOptions = getSolidOptions(options, !!isSsr, replaceDev, observe, isTestMode);
 
       // We need to know if the current file extension has a typescript options tied to it
       const shouldBeProcessedWithTypescript =
@@ -2284,13 +2477,33 @@ export default manifest;`;
       // compiler backends. Sourcemaps are collected in application order and
       // merged at the end.
       const compiler = await loadNativeCompiler();
+      // After the compiler load: the options carry `sourceNames.locations`
+      // and `root` only when the load-time probe found the native compiler
+      // takes them (the babel backend always does).
+      const solidOptions = getSolidOptions(
+        options,
+        !!isSsr,
+        replaceDev,
+        observe,
+        isTestMode,
+        options.compiler === 'babel' ? 'babel' : 'native',
+        projectRoot,
+      );
+      warnMissingLocations(this, options);
       let code = source;
       const maps: ChainableMap[] = [];
 
       // Authored TSRX cannot be parsed by a standalone pass; its primitives
       // are named after Solid lowering, on the generated module, below.
       if (namePrimitives && !isTsrx) {
-        const named = await transformPrimitiveNames(this, compiler, code, nativeFilename);
+        const named = await transformPrimitiveNames(
+          this,
+          compiler,
+          code,
+          nativeFilename,
+          sourceNames,
+          projectRoot,
+        );
         if (named !== null) {
           code = named.code;
           maps.push(named.map);
@@ -2354,7 +2567,14 @@ export default manifest;`;
         }
 
         if (namePrimitives) {
-          const named = await transformPrimitiveNames(this, compiler, code, generatedFilename);
+          const named = await transformPrimitiveNames(
+            this,
+            compiler,
+            code,
+            generatedFilename,
+            sourceNames,
+            projectRoot,
+          );
           if (named !== null) {
             code = named.code;
             maps.push(named.map);

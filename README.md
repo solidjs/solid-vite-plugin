@@ -192,7 +192,11 @@ Whether the app is server-rendered — one meaning everywhere.
 
 Without [`start`](#optionsstart), `ssr: true` enables the SSR transforms
 (hydratable client code, SSR server code); you provide the entries and the
-server yourself, as before. With `start`, the boolean selects the start
+server yourself, as before. With `ssr: false`, client code is
+non-hydratable DOM output. Modules that Vite loads on the server, for
+example through `ssrLoadModule` to prerender static pages, get
+non-hydratable SSR output, so they render to HTML without hydration keys.
+With `start`, the boolean selects the start
 mode: `ssr: true` is SSR start mode, `ssr: false`/omitted is client start
 mode — see below.
 
@@ -357,7 +361,11 @@ mode, the `index.html` history fallback — the framework owns both.
 event })` takes the same two options on top of the listen address.
 
 `node.js` is an emitted asset, not a second build input: `server.js` and
-its `handleRequest` / `{ fetch }` contracts are unchanged. It applies to
+its `handleRequest` / `{ fetch }` contracts are unchanged. With
+`instrument` set, `node.js` is a small wrapper that awaits `./server.js`
+(and so the instrument module) before it loads the server from
+`node-runtime.js` beside it, so `node:http` is not loaded until the
+instrument has run; deploy both files. It applies to
 both start modes — in client mode with `serverFunctions` (which keeps
 `dist/server`) the entry serves the static client with an `index.html`
 history fallback for HTML navigations plus the endpoint. Nothing is
@@ -551,7 +559,7 @@ entry still runs after everything the entry imports. The plugin therefore
 hands out the handler as `await import(instrument); await import(handler)`
 — top-level await sequencing, the one construct that guarantees the order —
 on every surface (`vite dev`, `vite build`, `vite preview`, a host consuming
-the handler entry). This replaces the per-host `node --import
+the handler entry, and the `node` entry). This replaces the per-host `node --import
 instrument.mjs` dance. The module may be async and needs no exports; the
 server build must keep code splitting on (the default), since inlining
 dynamic imports would hoist the handler graph back above the instrument.
@@ -1009,8 +1017,9 @@ here is merged over them and applied to whichever backend is selected.
 
 ##### options.solid.sourceNames
 
-- Type: `boolean | { components?: boolean; bindings?: boolean; primitives?: boolean }`
-- Default: on in dev and under `observe`, off in production builds
+- Type:
+  `boolean | { components?: boolean; bindings?: boolean; primitives?: boolean; locations?: boolean }`
+- Default: on in dev and under `observe`, off in production builds; `locations` on in dev only
 
 Which names as written in source are carried into output so the dev and observe runtimes
 can label the reactive graph after minification — in diagnostics, `whyDidRun` chains, error
@@ -1024,6 +1033,13 @@ owner paths, and the Chrome performance tracks. Three kinds:
   are declared as (`count`, `doubled`, `todos.title`), prefixed with the enclosing
   non-component function for composed primitives (`createCounter.value`). An explicit
   `name` option is never overridden.
+- `locations` adds a `file:line:col` next to every name the other kinds emit —
+  `createComponent(Home, props, "Home", "src/App.tsx:12:5")`,
+  `createSignal(0, { name: "count", loc: "src/store.ts:3:22" })` — so a diagnostic report, a
+  `whyDidRun` chain, or a devtools entry points at the line that declared the node. Paths are
+  relative to the Vite root, so under `vite dev` the console's
+  `http://localhost:5173/src/App.tsx:12:5` opens the file in the browser's sources panel. A
+  location is only emitted where its name is.
 
 The kinds come from two different places. `components` and `bindings` are the JSX compiler's
 own `sourceNames` option, passed through to whichever backend compiles your JSX
@@ -1036,10 +1052,23 @@ too.
 The default follows the posture: on whenever the plugin compiles for the dev runtime (the
 same `dev` flag it hands the compilers — `vite dev`, or `dev: true`) and for `observe`
 builds; off for production builds, whose runtime ignores the names anyway, so production
-output is unchanged. `sourceNames: false` turns every kind off, in dev too; `true` turns every
-kind on, production builds included. The object form sets the listed kinds and leaves the
-rest at the posture default — `{ primitives: false }` keeps component and binding names in
-dev but skips the primitives pass.
+output is unchanged. `locations` is the one kind that does not follow `observe`: an observe
+build is a production bundle, and a source path inside it is an opt-in, so it is on in dev
+only. `sourceNames: false` turns every kind off, in dev too; `true` turns every kind on,
+production builds included. The object form sets the listed kinds and leaves the rest at the
+posture default — `{ primitives: false }` keeps component and binding names in dev but skips
+the primitives pass; `{ locations: true }` ships locations in an observe build.
+
+| `sourceNames`          | dev                    | `observe` build              | production build            |
+| ---------------------- | ---------------------- | ---------------------------- | --------------------------- |
+| (unset)                | all on                 | names on, `locations` off    | all off                     |
+| `true`                 | all on                 | all on                       | all on                      |
+| `false`                | all off                | all off                      | all off                     |
+| `{ kind: true/false }` | as given; the rest on  | as given; the rest as unset  | as given; the rest off      |
+
+`locations` needs a compiler release that takes the option; on an older `@solidjs/compiler`
+the names keep coming without locations, with a one-time warning when it was asked for
+explicitly.
 
 #### options.typescript
 
@@ -1111,6 +1140,94 @@ if (import.meta.hot) {
 }
 ```
 
+## Building a library
+
+Publish your components as JSX source under a `solid` export condition. The app that uses the library then compiles it with its own settings.
+
+Solid compiles JSX at build time, and the output depends on the target. Client code, server code (`ssr`), and hydratable code are all different. A library that ships only compiled JavaScript has fixed one of these choices. For example, DOM output throws "Client-only API called on the server side" when an app renders it on the server. React and Vue libraries do not have this problem, because their compiled output is the same on the client and the server.
+
+This plugin adds `solid` to Vite's `resolve.conditions`. It also scans your dependencies, and every package that has a `solid` key in its `exports` is excluded from dependency pre-bundling and is bundled into the SSR build instead of being externalized. Its JSX then goes through the same compile step as your own files.
+
+### package.json
+
+Put `solid` before `import` so Vite picks it first. Keep `import` for tools that do not know the `solid` condition. List `solid-js` and `@solidjs/web` as peer dependencies, so the app and the library share one copy.
+
+```json
+{
+  "name": "my-solid-lib",
+  "type": "module",
+  "files": ["dist"],
+  "sideEffects": ["**/*.css"],
+  "exports": {
+    ".": {
+      "types": "./dist/source/index.d.ts",
+      "solid": "./dist/source/index.jsx",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "vite build && tsc -p tsconfig.build.json && cp src/*.css dist/source/"
+  },
+  "peerDependencies": {
+    "@solidjs/web": "^2.0.0-rc.14",
+    "solid-js": "^2.0.0-rc.14"
+  }
+}
+```
+
+Each subpath export, such as `"./button"`, needs its own `solid` entry.
+
+### Source output and types
+
+TypeScript can write the JSX source and the type declarations in one step. Set `jsx` to `preserve` so the JSX stays in the output.
+
+```jsonc
+// tsconfig.build.json
+{
+  "compilerOptions": {
+    "target": "ESNext",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "jsx": "preserve",
+    "jsxImportSource": "@solidjs/web",
+    "declaration": true,
+    "outDir": "dist/source",
+    "rootDir": "src",
+    "strict": true,
+    "skipLibCheck": true
+  },
+  "include": ["src"]
+}
+```
+
+`tsc` does not copy CSS files. Copy them next to the output yourself, as the `build` script above does. CSS that needs a preprocessor, such as Sass, has to be compiled to plain CSS first, unless every app that uses the library also has that preprocessor installed.
+
+### Compiled output
+
+Vite's [library mode](https://vite.dev/guide/build.html#library-mode) builds the `import` entry. Mark `solid-js` and `@solidjs/web` as external so they are not bundled into the library.
+
+```js
+// vite.config.js
+import { defineConfig } from 'vite';
+import solid from '@solidjs/vite-plugin';
+
+export default defineConfig({
+  plugins: [solid()],
+  build: {
+    lib: { entry: 'src/index.tsx', formats: ['es'], fileName: 'index' },
+    rolldownOptions: { external: [/^solid-js(\/|$)/, /^@solidjs\/web(\/|$)/] },
+  },
+});
+```
+
+This output is client-only DOM code that cannot hydrate. Library mode also writes imported CSS to a separate file (`dist/index.css`) and does not import it from the JavaScript.
+
+### Using the library
+
+Install the library and import it. No extra configuration is needed. This also works for a package in the same monorepo that is linked through the workspace, as long as it is listed in the app's `package.json`.
+
+If a library ships only compiled code and fails during SSR, ask its author to add a `solid` export condition.
+
 # Troubleshooting
 
 - It appears that Webstorm generate some weird triggers when saving a file. In order to prevent that you can follow [this thread](https://intellij-support.jetbrains.com/hc/en-us/community/posts/360000154544-I-m-having-a-huge-problem-with-Webstorm-and-react-hot-loader-) and disable the **"Safe Write"** option in **"Settings | Appearance & Behavior | System Settings"**.
@@ -1131,7 +1248,7 @@ For other breaking changes, check [the migration guide of vite](https://vitejs.d
 
 If you are using [vitest](https://vitest.dev/), this plugin already injects the necessary configuration for you. It even automatically detects if you have `@testing-library/jest-dom` installed in your project and automatically adds it to the `setupFiles`. All you need to add (if you want) is `globals`, `coverage`, and other testing configuration of your choice. If you can live without those, enjoy using vitest without the need to configure it yourself.
 
-Tests default to the client posture, regardless of the app's `ssr` flag: DOM codegen, non-hydratable (nothing hydrates in a test), browser export conditions, and a `jsdom` default `test.environment`. A server-rendered app needs no `ssr: mode !== 'test'` workaround — DOM component tests just work.
+Tests default to the client posture, regardless of the app's `ssr` flag: DOM codegen, non-hydratable (nothing hydrates in a test), and browser export conditions. The plugin does not set `test.environment`: set `environment: 'jsdom'` (or `'happy-dom'`) for DOM component tests, as Vitest's own default is `node`. `solid-js`, `@solidjs/web` and the packages that import them (such as `@solidjs/testing-library`) are inlined, so their imports resolve the browser build through Vite on any host runtime, Deno included. A server-rendered app needs no `ssr: mode !== 'test'` workaround — DOM component tests just work.
 
 Server-runtime unit tests (server functions, sessions, `renderToString` — anything that needs `isServer` to be `true` and the real server build of the framework) opt out per [vitest project](https://vitest.dev/guide/projects) by setting `test.environment: 'node'` (or `'edge-runtime'`) explicitly. That project gets the server posture end to end: server export conditions, ssr codegen, and the framework inlined so the whole graph — request-event storage included — resolves into one server-build instance. No inline/alias configuration needed. Both postures coexist in one workspace:
 
@@ -1151,7 +1268,7 @@ test: {
 },
 ```
 
-The posture is chosen while each project resolves its own Vite config. Vitest 5 lets inline projects reuse the root Vite server instead (`test.sharedViteServer`, on by default), which skips that step, so the plugin sets `sharedViteServer: false` when the root config declares `test.projects` — trading Vitest 5's shared-server optimization for the per-project resolution Vitest 4 always did. Setting the option yourself overrides this; with `true`, every shared project runs with the root config's posture, without the injected `jest-dom` setup file, and without the plugin's `server.deps` handling (the framework inlined for the server posture, externalized for the client one).
+The posture is chosen while each project resolves its own Vite config. Vitest 5 lets inline projects reuse the root Vite server instead (`test.sharedViteServer`, on by default), which skips that step, so the plugin sets `sharedViteServer: false` when the root config declares `test.projects` — trading Vitest 5's shared-server optimization for the per-project resolution Vitest 4 always did. Setting the option yourself overrides this; with `true`, every shared project runs with the root config's posture, without the injected `jest-dom` setup file, and without the plugin's `server.deps` handling (the framework inlined in both postures, together with its consumers such as `@solidjs/testing-library` in the client one).
 
 # Credits
 
