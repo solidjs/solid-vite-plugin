@@ -6592,6 +6592,56 @@ async function runVitestMode() {
       : jestDomError ||
           `empty root: ${JSON.stringify(emptySetupFiles)}, example root: ${JSON.stringify(exampleSetupFiles)}`,
   );
+
+  // Vitest passes the `ssr` environment's conditions to Node as
+  // `--conditions` for the packages it leaves external. A jsdom run used to
+  // put `browser` there, so Node-only packages failed to load: `msw/node`
+  // imports `@mswjs/interceptors/ClientRequest`, whose `browser` export is
+  // `null` (#125). jsdom: `client` keeps `browser` and `ssr` does not.
+  // node: neither gets it (server posture, unchanged).
+  const conditionsProbe = `
+    import { resolveConfig } from 'vite';
+    import solid from '@solidjs/vite-plugin';
+    const out = {};
+    for (const environment of ['jsdom', 'node']) {
+      const resolved = await resolveConfig(
+        { mode: 'test', configFile: false, logLevel: 'silent', plugins: [solid()], test: { environment } },
+        'serve',
+      );
+      out[environment] = {
+        client: resolved.environments.client.resolve.conditions,
+        ssr: resolved.environments.ssr.resolve.conditions,
+      };
+    }
+    console.log(JSON.stringify(out));
+  `;
+  let testConditions;
+  let conditionsError = '';
+  try {
+    testConditions = JSON.parse(
+      execFileSync(process.execPath, ['--input-type=module', '-e', conditionsProbe], {
+        cwd: exampleDir,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: 60000,
+      })
+        .toString()
+        .trim(),
+    );
+  } catch (e) {
+    conditionsError = String(e.stderr || e);
+  }
+  const conditionsPass =
+    !conditionsError &&
+    testConditions.jsdom.client.includes('browser') &&
+    !testConditions.jsdom.ssr.includes('browser') &&
+    !testConditions.node.ssr.includes('browser');
+  record(
+    mode,
+    'ssr-conditions',
+    'jsdom tests keep the browser condition out of the ssr environment (Node --conditions)',
+    conditionsPass,
+    conditionsPass ? undefined : conditionsError || JSON.stringify(testConditions),
+  );
 }
 
 // The CSP nonce on the request event (SSR_NONCE=1 wires src/middleware.ts,

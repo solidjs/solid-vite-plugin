@@ -1216,6 +1216,10 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
   let projectRoot = process.cwd();
   let isTestMode = false;
   let serverTestPosture = false;
+  // True when a jsdom or happy-dom test run inlines the Solid runtime. The
+  // `ssr` environment then does not get the `browser` condition (see
+  // `configEnvironment`).
+  let domTestRuntimeInlined = false;
 
   // Lets the dependency scanner crawl `.tsrx` imports. Registered on every
   // environment's `optimizeDeps` (top-level for client, configEnvironment
@@ -1428,6 +1432,7 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
       observe = options.observe === true;
       projectRoot = userConfig.root || projectRoot;
       isTestMode = userConfig.mode === 'test';
+      domTestRuntimeInlined = false;
       forceProduction = options.dev === false && command === 'serve' && !isTestMode;
       // Per-vitest-project posture: the client posture (browser conditions,
       // dom codegen, jsdom default) is right for DOM component tests but
@@ -1632,6 +1637,14 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
             },
           };
         }
+        const environment = userTest.environment ?? test.environment;
+        domTestRuntimeInlined =
+          !serverTestPosture &&
+          !userTest.browser?.enabled &&
+          (environment === 'jsdom' || environment === 'happy-dom') &&
+          !userTest.server?.deps?.external?.find((item: string | RegExp) =>
+            /solid-js/.test(item.toString()),
+          );
         // jest-dom's DOM matchers have no place in a server-posture project;
         // vitest browser mode already has bundled jest-dom assertions
         // https://main.vitest.dev/guide/browser/assertion-api.html#assertion-api
@@ -1755,7 +1768,20 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
         // a server runtime (`test.environment: 'node'` / 'edge-runtime')
         // keep the default server conditions instead, so the framework's
         // real server build resolves (isServer true).
-        ...(isTestMode && !serverTestPosture && !opts.isSsrTargetWebworker ? ['browser'] : []),
+        //
+        // Vitest passes the `ssr` environment's conditions to Node as
+        // `--conditions` for the packages it leaves external. With `browser`
+        // there, Node-only packages fail to load. For example, `msw/node`
+        // imports `@mswjs/interceptors/ClientRequest`, whose `browser`
+        // export is `null` (#125). jsdom and happy-dom tests run in the
+        // `client` environment with the runtime inlined, so `ssr` does not
+        // get `browser` in that case.
+        ...(isTestMode &&
+        !serverTestPosture &&
+        !opts.isSsrTargetWebworker &&
+        !(domTestRuntimeInlined && name === 'ssr')
+          ? ['browser']
+          : []),
         // Vite's `development|production` resolves to `development` in any
         // non-production mode, which would undo `dev: false` under `vite dev`.
         ...(forceProduction
