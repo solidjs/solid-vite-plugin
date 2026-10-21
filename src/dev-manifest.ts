@@ -48,6 +48,8 @@ export type DevAssetResolver = {
   resolveSync: (key: string) => ResolvedAssets;
 };
 
+type InvalidatableDevAssetResolver = DevAssetResolver & { invalidate: () => void };
+
 // The resolver is created plugin-side (it closes over the dev server) but is
 // called from the SSR module runner, which only shares `globalThis` with the
 // plugin when it runs in-process (the default). The primary channel is a
@@ -74,6 +76,7 @@ export function registerDevAssetResolver(root: string, resolver: DevAssetResolve
  * registry and never touch HTTP.
  */
 export const DEV_MANIFEST_ENDPOINT = '/@solidjs/vite-plugin/dev-manifest';
+export const DEV_MANIFEST_INVALIDATE_EVENT = 'solid:dev-manifest-invalidate';
 
 export function installDevManifestBridge(server: ViteDevServer): void {
   // configureServer middlewares run ahead of Vite's internals, so `req.url`
@@ -378,7 +381,7 @@ export function devModuleUrl(root: string, base: string, key: string): string {
 export function createDevAssetResolver(
   server: ViteDevServer,
   filter: DevStyleFilter = defaultStyleFilter,
-): DevAssetResolver {
+): InvalidatableDevAssetResolver {
   // Server-side lazy() re-requests a module's assets on every retry of a
   // suspended render pass (retries re-create the component). The build
   // manifest answers those repeats synchronously and the pass converges; an
@@ -394,11 +397,12 @@ export function createDevAssetResolver(
   const pending = new Map<string, Promise<ResolvedAssets | null>>();
   const { root, base } = server.config;
   let generation = 0;
-  server.watcher.on('all', () => {
+  const invalidate = () => {
     generation++;
     resolved.clear();
     pending.clear();
-  });
+  };
+  server.watcher.on('all', invalidate);
 
   const resolve = function resolveDevAssets(
     key: string,
@@ -433,6 +437,7 @@ export function createDevAssetResolver(
     return walk;
   };
   return {
+    invalidate,
     resolve,
     resolveSync: (key: string) =>
       resolved.get(normalizeModuleKey(key)) ?? { js: [devModuleUrl(root, base, key)], css: [] },

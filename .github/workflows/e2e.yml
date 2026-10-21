@@ -31,5 +31,9 @@ jobs:
       - name: Build project
         run: pnpm run build
 
+      - name: Test isolated dev manifest cache
+        working-directory: examples/css-matrix
+        run: node test/bridge.mjs && node test/cache.mjs
+
       - name: Run tests
         run: pnpm run test
