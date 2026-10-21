@@ -341,7 +341,10 @@ export interface Options {
    *
    * Without {@link start}: the legacy transform-only flag, unchanged.
    * `true` enables the SSR transforms (hydratable client code, SSR server
-   * code) — you provide the entries and the server yourself.
+   * code) — you provide the entries and the server yourself. With `false`,
+   * client code is non-hydratable DOM output, and modules loaded on the
+   * server (for example through `ssrLoadModule` to prerender a page) get
+   * non-hydratable SSR output.
    *
    * With {@link start}: selects the start mode. `true` is SSR start mode
    * (per-request streaming render + hydration); `false`/omitted is client
@@ -683,7 +686,11 @@ function getSolidOptions(
       solidOptions = { generate: 'dom', hydratable: true };
     }
   } else {
-    solidOptions = { generate: 'dom', hydratable: false };
+    // A client-rendered app can still load modules on the server, for
+    // example to prerender static pages with `ssrLoadModule`. DOM output
+    // cannot run there, so server transforms use the SSR generate. Nothing
+    // hydrates the result, so it stays non-hydratable.
+    solidOptions = { generate: isSsr ? 'ssr' : 'dom', hydratable: false };
   }
 
   // Server components (serverFunctions.components) turn on the SSR-side

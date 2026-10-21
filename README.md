@@ -192,7 +192,11 @@ Whether the app is server-rendered — one meaning everywhere.
 
 Without [`start`](#optionsstart), `ssr: true` enables the SSR transforms
 (hydratable client code, SSR server code); you provide the entries and the
-server yourself, as before. With `start`, the boolean selects the start
+server yourself, as before. With `ssr: false`, client code is
+non-hydratable DOM output. Modules that Vite loads on the server, for
+example through `ssrLoadModule` to prerender static pages, get
+non-hydratable SSR output, so they render to HTML without hydration keys.
+With `start`, the boolean selects the start
 mode: `ssr: true` is SSR start mode, `ssr: false`/omitted is client start
 mode — see below.
 
