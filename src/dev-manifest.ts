@@ -183,7 +183,9 @@ function wrapId(id: string): string {
  *   seeded is missed by the scan, so the CSS module injects its own copy
  *   client-side. Whenever two style tags share a `data-vite-dev-id`, the
  *   SSR'd one (marked `data-asset`) is removed in favor of the Vite-owned
- *   one, which is the tag HMR updates.
+ *   one, which is the tag HMR updates. When both are SSR'd (a stylesheet
+ *   shared by the entry graph and a lazy component), the later one is
+ *   removed so the sheet keeps its first position, as in production.
  *
  * Observation is two-phase to stay cheap: a document-wide subtree observer
  * only for the streaming window (SSR tags can only arrive while the parser
@@ -198,7 +200,7 @@ function wrapId(id: string): string {
  */
 export const devStylePatch = `(function(){var P=${JSON.stringify(
   NULL_BYTE_PLACEHOLDER,
-)};var handle=function(el){var v=el.getAttribute("data-vite-dev-id");if(!v)return;if(v.indexOf(P)===0){v="\\0"+v.slice(P.length);el.setAttribute("data-vite-dev-id",v)}var all=document.querySelectorAll("style[data-vite-dev-id]");for(var i=0;i<all.length;i++){var o=all[i];if(o!==el&&o.getAttribute("data-vite-dev-id")===v){var ssr=o.hasAttribute("data-asset")?o:el.hasAttribute("data-asset")?el:null;if(ssr)ssr.remove();break}}};var scan=function(n){if(n.nodeType!==1)return;if(n.tagName==="STYLE")handle(n);else if(n.querySelectorAll)n.querySelectorAll("style[data-vite-dev-id]").forEach(handle)};var onMuts=function(muts){for(var i=0;i<muts.length;i++)muts[i].addedNodes.forEach(scan)};var headPhase=function(){scan(document.documentElement);new MutationObserver(onMuts).observe(document.head,{childList:true})};scan(document.documentElement);if(document.readyState==="loading"){var mo=new MutationObserver(onMuts);mo.observe(document.documentElement,{childList:true,subtree:true});document.addEventListener("DOMContentLoaded",function(){mo.disconnect();headPhase()})}else headPhase()})();`;
+)};var handle=function(el){var v=el.isConnected&&el.getAttribute("data-vite-dev-id");if(!v)return;if(v.indexOf(P)===0){v="\\0"+v.slice(P.length);el.setAttribute("data-vite-dev-id",v)}var all=document.querySelectorAll("style[data-vite-dev-id]");for(var i=0;i<all.length;i++){var o=all[i];if(o!==el&&o.getAttribute("data-vite-dev-id")===v){var oa=o.hasAttribute("data-asset"),ea=el.hasAttribute("data-asset");var ssr=oa&&ea?(o.compareDocumentPosition(el)&4?el:o):oa?o:ea?el:null;if(ssr)ssr.remove();break}}};var scan=function(n){if(n.nodeType!==1)return;if(n.tagName==="STYLE")handle(n);else if(n.querySelectorAll)n.querySelectorAll("style[data-vite-dev-id]").forEach(handle)};var onMuts=function(muts){for(var i=0;i<muts.length;i++)muts[i].addedNodes.forEach(scan)};var headPhase=function(){scan(document.documentElement);new MutationObserver(onMuts).observe(document.head,{childList:true})};scan(document.documentElement);if(document.readyState==="loading"){var mo=new MutationObserver(onMuts);mo.observe(document.documentElement,{childList:true,subtree:true});document.addEventListener("DOMContentLoaded",function(){mo.disconnect();headPhase()})}else headPhase()})();`;
 
 async function getModuleNode(
   env: DevEnvironment,

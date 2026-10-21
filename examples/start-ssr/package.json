@@ -6,7 +6,7 @@
     "dev": "vite",
     "build": "vite build",
     "serve": "NODE_ENV=production node server.js",
-    "test": "node test/run.mjs && node test/http-bridge.mjs && node test/components-warning.mjs && node test/webworker-warning.mjs && node test/dedupe.mjs && node test/ssr-inline.mjs"
+    "test": "node test/run.mjs && node test/http-bridge.mjs && node test/components-warning.mjs && node test/webworker-warning.mjs && node test/dedupe.mjs && node test/style-patch.mjs && node test/ssr-inline.mjs"
   },
   "devDependencies": {
     "@solidjs/testing-library": "^1.0.0-beta.2",
