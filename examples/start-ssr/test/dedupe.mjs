@@ -1,16 +1,18 @@
-// Config-level test for the dev `resolve.dedupe` list:
-//   - `solid-js` and `@solidjs/web` are always deduped under `serve`,
-//   - `@solidjs/signals` joins them only when the app root can reach a copy
-//     (`<root>/node_modules/@solidjs/signals`, walking up). Dedupe resolves
+// Config-level test for the `resolve.dedupe` list:
+//   - `solid-js`, `@solidjs/web` and `@solidjs/signals` are each deduped only
+//     when the app root can reach a copy (`<root>/node_modules/<name>`,
+//     walking up). Dedupe resolves
 //     the listed package from the root and Vite's Node-side resolver
 //     (`fetchModule`, the externalize decision) has no importer fallback,
 //     so under pnpm's isolated layout — signals present only as `solid-js`'s
 //     transitive dependency, which is this example's own layout — the entry
 //     would turn `import "@solidjs/signals"` from the inlined `solid-js` into
 //     ERR_MODULE_NOT_FOUND once anything externalizes signals,
-//   - `@solidjs/signals` never rides into `optimizeDeps.include` (an include
-//     entry that doesn't resolve from the root warns on every start),
-//   - under `build` the list is empty (dev-only fix).
+//   - `@solidjs/signals` rides into `optimizeDeps.include` only when it
+//     resolves from the root (an include entry that doesn't resolve from the
+//     root warns on every start),
+//   - `build` gets the same list as `serve` (#112: a nested `solid-js` copy
+//     must not land in the production bundle).
 //
 // Pure resolveConfig — no dev server, no browser. Requires the plugin built
 // (pnpm build at the repo root). Usage: node test/dedupe.mjs
@@ -81,12 +83,14 @@ async function resolveWith(root, command) {
       path.join(root, 'package.json'),
       JSON.stringify({ name: 'dedupe-probe', private: true, type: 'module' }),
     );
-    const stub = path.join(root, 'node_modules', '@solidjs', 'signals');
-    fs.mkdirSync(stub, { recursive: true });
-    fs.writeFileSync(
-      path.join(stub, 'package.json'),
-      JSON.stringify({ name: '@solidjs/signals', version: '0.0.0-stub' }),
-    );
+    for (const name of ['solid-js', '@solidjs/web', '@solidjs/signals']) {
+      const stub = path.join(root, 'node_modules', name);
+      fs.mkdirSync(stub, { recursive: true });
+      fs.writeFileSync(
+        path.join(stub, 'package.json'),
+        JSON.stringify({ name, version: '0.0.0-stub' }),
+      );
+    }
 
     const serve = await resolveWith(root, 'serve');
     record(
@@ -100,15 +104,17 @@ async function resolveWith(root, command) {
       serve.resolve.dedupe.join(', '),
     );
     record(
-      'serve, root copy present: @solidjs/signals still not in optimizeDeps.include',
-      !serve.optimizeDeps.include.includes('@solidjs/signals'),
+      'serve, root copy present: @solidjs/signals in optimizeDeps.include',
+      serve.optimizeDeps.include.includes('@solidjs/signals'),
       serve.optimizeDeps.include.join(', '),
     );
 
     const build = await resolveWith(root, 'build');
     record(
-      'build: resolve.dedupe is empty (dev-only fix)',
-      build.resolve.dedupe.length === 0,
+      'build: solid-js, @solidjs/web and @solidjs/signals deduped (#112)',
+      ['solid-js', '@solidjs/web', '@solidjs/signals'].every((name) =>
+        build.resolve.dedupe.includes(name),
+      ),
       build.resolve.dedupe.join(', '),
     );
   } finally {
