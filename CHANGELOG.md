@@ -1,5 +1,58 @@
 # Changelog
 
+## 3.0.0-next.51
+
+### Patch Changes
+
+- ff493b9: Production builds now dedupe `solid-js`, `@solidjs/web` and `@solidjs/signals` the same way dev does. A dependency with its own nested copy of Solid no longer adds a second runtime to the bundle, which broke context lookups (#112).
+- 81555d8: Invalidate the dev manifest's CSS cache in isolated SSR runners after file changes. Subsequent server responses include the updated styles before hydration. Responses started before invalidation cannot restore old cache entries or remove newer pending requests.
+- 00d6746: Lazy-route CSS no longer goes missing from dev SSR when a host imports `virtual:solid-manifest` before the dev server is listening (#414). Nitro's isolated runner does this at startup: the manifest had no origin to bake into the bridge URL yet, so it fell back to js-only resolution for the rest of the session. The bridge URL is now looked up on first use, without making the manifest import wait for the port, and a lookup made before the server listened is retried once it does.
+- eecd5b6: Two dev fixes for the server function manifest, which the generated handler imports when another plugin owns the SSR environment (for example `@cloudflare/vite-plugin`):
+
+  - The manifest no longer waits a fixed second on each load (#427). It reloads each time a new server function module is transformed, so startup, restarts and the first call to a new function each waited 1,000 ms. The debounce is only needed for builds, so dev now returns the current list. Each new module still invalidates the manifest before anything can call it.
+  - A deleted `"use server"` file, or one that no longer declares server functions, is now removed from the manifest. Before, the manifest kept importing it, and every request failed with `Failed to load url` until the dev server restarted.
+
+- b0887c0: Start mode dev: a stylesheet shared by the entry graph and a lazy component now keeps its first position in `<head>`, as in production. The dev shell renders it twice. The dev style patch used to drop the earlier copy, so the stylesheet moved after the lazy component's own styles and equal-specificity overrides in the lazy component lost. When both copies are server-rendered, the patch now drops the later one.
+- 711c918: The plugin no longer sets `test.environment: 'jsdom'` for Vitest. Set the
+  environment yourself (`jsdom` or `happy-dom` for DOM component tests); Vitest's
+  own default is `node`. The default also applied to Node-only suites that loaded
+  the plugin through a shared config, which then ran under jsdom and failed in
+  ways that were hard to trace. The client test posture (browser conditions, DOM
+  codegen) is unchanged, and `environment: 'node'` still selects the server
+  posture.
+- f3fb6f2: `start.node` with `start.instrument`: `dist/server/node.js` no longer loads `node:http` before the instrument module runs, so OpenTelemetry's HTTP instrumentation now records a server span for each request. The entry awaits `./server.js` first and loads its runtime from `node-runtime.js` afterwards.
+- e01a6b3: Compile modules whose id has the extension after the query, such as unplugin-icons' `~icons/mdi/folder?width=2em.tsx`. These were left to Vite's default JSX transform, which produced React code (#206). Custom `extensions` are now also matched when the query contains a dot.
+- 3954804: With `serverFunctions` on, the dev server now also pre-bundles `@solidjs/web/server-functions/client` (#428):
+
+  - `@solidjs/web/frames`, used with `components: true`, imports the client runtime by that subpath.
+  - `@solidjs/web/server-functions/rich-args` imports it by that subpath too.
+
+  When the app listed `@solidjs/web` in `optimizeDeps.exclude`, both loaded a second copy of the client from node_modules. Server components that mounted after boot resolved to `undefined`, and `enableRichArguments()` configured a client that compiled server functions did not use.
+
+  A custom `runtime.client` is unchanged.
+
+- 84a681d: In dev, the server function manifest is now invalidated in every Vite environment, not just `client` and `ssr`. A host that imports the generated handler from a server environment of its own, such as Void's `void_worker` or a Cloudflare worker, kept a stale manifest before. A server function that only the client referenced then failed with "not part of the deployment" until the dev server restarted.
+- dd21761: Pre-bundle `@solidjs/signals` up front under `vite dev` (and Vitest browser
+  mode) when the app can import it by name, i.e. it resolves from the project
+  root. The first optimizer pass otherwise inlines signals into `solid-js`, so a
+  direct `@solidjs/signals` import from a module the scanner never reached (a
+  browser-mode test file, a non-literal dynamic import) was a late discovery:
+  re-optimize and a full page reload ("Vite unexpectedly reloaded a test").
+  Apps that only get signals transitively (pnpm's isolated layout) are
+  unchanged.
+- ab61dcc: Require solid-js / @solidjs/web 2.0.0-rc.16 (peer floor) and compile with @solidjs/compiler / @solidjs/babel-plugin rc.16. rc.16 adds `reportRequestFailure` to @solidjs/web, and start mode's production handler now reports a contained failure (a middleware throw, a `setup` failure) through it, so the `configureServerErrors` hook hears it as `{ kind: 'request', handling: 'failed', event }` — and not at all when the runtime already reported that error (an uncaught in-process server-function call stays `server-function`/`thrown`), where rc.16's per-kind ledger would otherwise have heard it twice. JSX source locations (`sourceNames.locations`, which rc.16's compilers emit) now point at the authored source on both compiler backends: the JSX transform runs after the primitive-names, `lazy()` and refresh passes have reprinted the module, so its positions are mapped back through those passes' sourcemap.
+- cc8c3bd: `sourceNames` gains a `locations` kind: a `file:line:col` next to every component, binding and primitive label — `createComponent(Home, props, "Home", "src/App.tsx:12:5")`, `createSignal(0, { name: "count", loc: "src/store.ts:3:22" })` — so diagnostics, `whyDidRun` chains and devtools point at the line that declared the node. On in dev; off for `observe` and production builds unless set (`{ locations: true }` or `sourceNames: true`), since those are shipped bundles. The plugin passes the resolved Vite root to both JSX compilers and to the primitives pass as `root`, so paths are root-relative and `http://localhost:5173/<path>` opens the file in the browser's sources panel. Requires the `@solidjs/compiler` release that takes the option; the plugin probes the installed compiler and, on an older one, keeps passing the names without locations (warning once when `locations` was asked for explicitly).
+- 7335d3a: Without `ssr: true`, modules loaded on the server now compile to non-hydratable SSR output instead of DOM output. Prerendering a client-rendered app with `ssrLoadModule` no longer throws "Client-only API called on the server side" (#64).
+- c10fe96: Server builds with `ssr.target: 'webworker'` now resolve the server builds of `solid-js` and `@solidjs/web`. The plugin adds the `worker` export condition to that environment, so `renderToString` and the other server APIs no longer resolve to their browser stubs (#153).
+- fe5be7b: New `start.clientSetup` option: a client module the generated client entry runs before it hydrates or mounts the app. Use it to install a server-function transport wrapper, a `vite:preloadError` listener, or an error reporter before the first render, without writing your own `entry-client` / `entry-server` pair. The module may use top-level `await`, and `hydrate()` / `render()` waits for it. Combining it with an authored `entry-client` is a config error.
+
+  The start options list in the README now also names `instrument`.
+
+- 56e2b85: SSR builds no longer export `$$moduleUrl` from entry chunks, so a Cloudflare Worker whose `main` is a project module starts again in workerd.
+- 5c5fd6f: In the Vitest client posture (jsdom, happy-dom), the plugin now inlines `solid-js`, `@solidjs/web` and the packages that import them without a `solid` export condition, such as `@solidjs/testing-library`. Before, they stayed external, and the host runtime resolved their own imports. Node gets the `browser` condition from Vitest's worker `--conditions`, but Deno does not apply it in worker threads (the `threads` pool) and resolves `deno`/`node`. Under Deno, `@solidjs/testing-library` loaded the server build of `@solidjs/web` and `render` failed with `isServer` true (#369). Inlining sends these imports through Vite's `browser` condition and loads one client-build instance. A `test.server.deps.inline` list is merged with the plugin's, and a `test.server.deps.external` entry for `solid-js` still opts out.
+- a6cae59: In jsdom and happy-dom tests, Node no longer gets the `browser` condition for packages that Vitest leaves external. Node-only packages such as `msw/node` now load (#125).
+- 629a957: Packages with a `solid` export condition that are declared only in the workspace root's `package.json` are now inlined for projects in that workspace. Before, Vitest loaded them with Node and failed with `Unknown file extension ".jsx"` (#157).
+
 ## 3.0.0-next.50
 
 ### Patch Changes
