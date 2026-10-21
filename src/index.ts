@@ -101,6 +101,8 @@ const DEFAULT_STYLE_EXCLUDE = /node_modules/;
 
 const VIRTUAL_MANIFEST_ID = 'virtual:solid-manifest';
 const RESOLVED_VIRTUAL_MANIFEST_ID = '\0' + VIRTUAL_MANIFEST_ID;
+const VIRTUAL_MANIFEST_BRIDGE_ID = 'virtual:solid-manifest-bridge';
+const RESOLVED_VIRTUAL_MANIFEST_BRIDGE_ID = '\0' + VIRTUAL_MANIFEST_BRIDGE_ID;
 
 // In dev the virtual manifest exports a `{ resolve, resolveSync }` resolver:
 // lazy modules resolve to their dev URL plus transitively imported CSS as
@@ -112,16 +114,21 @@ const RESOLVED_VIRTUAL_MANIFEST_ID = '\0' + VIRTUAL_MANIFEST_ID;
 // (`bridgeUrl` — null outside a live dev server, e.g. the manifest-less SSR
 // build fallback, where js-only resolution remains). Bridge failures log
 // loudly and resolve to null so the runtime's own no-assets warning stays
-// the final catch-all.
+// the final catch-all. Generated before the server listens (#414), it has no
+// origin yet: `deferBridge` imports it from `virtual:solid-manifest-bridge`
+// on first lookup (waiting in `load` deadlocks environment `listen()`).
 //
 // The generated `moduleUrl` mirrors `devModuleUrl` (src/dev-manifest.ts) —
 // base-prefixed root-relative URLs, `/@fs/` for root-external keys — for the
 // degraded paths that can't reach the plugin-side resolver (no registry and
 // no bridge, or a resolveSync call before the bridge cache warms). Keep the
 // two in sync.
-const devManifestCode = (root: string, base: string, bridgeUrl: string | null) => `const registry = globalThis[Symbol.for(${JSON.stringify(
-  DEV_MANIFEST_REGISTRY_KEY,
-)})];
+const devManifestCode = (
+  root: string,
+  base: string,
+  bridgeUrl: string | null,
+  deferBridge: boolean,
+) => `const registry = globalThis[Symbol.for(${JSON.stringify(DEV_MANIFEST_REGISTRY_KEY)})];
 const projectRoot = ${JSON.stringify(root.split(path.sep).join('/'))};
 const base = ${JSON.stringify(base.startsWith('/') ? base.replace(/\/$/, '') : '')};
 function moduleUrl(key) {
@@ -139,7 +146,26 @@ function moduleUrl(key) {
   return base + "/@fs/" + resolved.join("/") + query;
 }
 const jsOnly = key => ({ js: [moduleUrl(key)], css: [] });
-const bridgeUrl = ${JSON.stringify(bridgeUrl)};
+let bridgeUrl = ${JSON.stringify(bridgeUrl)};
+const deferBridge = ${deferBridge};
+let bridgeLookup = null;
+let bridgeMissing = false;
+function lookupBridge() {
+  if (!bridgeLookup) {
+    bridgeLookup = import(${JSON.stringify(VIRTUAL_MANIFEST_BRIDGE_ID)}).then(
+      (mod) => {
+        bridgeLookup = null;
+        bridgeUrl = mod.default;
+        bridgeMissing = !bridgeUrl;
+      },
+      (error) => {
+        bridgeLookup = null;
+        throw error;
+      },
+    );
+  }
+  return bridgeLookup;
+}
 function createBridgeResolver() {
   // Lazy SSR retries need synchronous cache hits to converge. Failed bridge
   // requests stay retryable; concurrent lookups share one pending promise.
@@ -164,13 +190,18 @@ function createBridgeResolver() {
     resolve(key) {
       const cached = cache.get(key);
       if (cached) return cached;
+      if (bridgeMissing) {
+        // No origin yet: stay synchronous and retry the lookup.
+        lookupBridge().catch(() => {});
+        return jsOnly(key);
+      }
       let request = inFlight.get(key);
       if (!request) {
         const startedAt = generation;
         request = fetchAssets(key).then(
           (assets) => {
             if (generation === startedAt) {
-              if (assets) cache.set(key, assets);
+              if (assets && !bridgeMissing) cache.set(key, assets);
               inFlight.delete(key);
             }
             return assets;
@@ -188,6 +219,10 @@ function createBridgeResolver() {
   };
 }
 async function fetchAssets(key) {
+  if (!bridgeUrl) {
+    await lookupBridge();
+    if (!bridgeUrl) return jsOnly(key);
+  }
   const url = new URL(bridgeUrl);
   url.searchParams.set("key", key);
   let response;
@@ -215,7 +250,7 @@ async function fetchAssets(key) {
   return response.json();
 }
 export default (registry && registry[${JSON.stringify(root)}]) ||
-  (bridgeUrl ? createBridgeResolver() : { resolve: jsOnly, resolveSync: jsOnly });`;
+  (bridgeUrl || deferBridge ? createBridgeResolver() : { resolve: jsOnly, resolveSync: jsOnly });`;
 
 /** Possible options for the extensions property */
 export interface ExtensionOptions {
@@ -2162,6 +2197,7 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
       const tsrxCssId = resolveTsrxCssModule(id);
       if (tsrxCssId) return tsrxCssId;
       if (id === VIRTUAL_MANIFEST_ID) return RESOLVED_VIRTUAL_MANIFEST_ID;
+      if (id === VIRTUAL_MANIFEST_BRIDGE_ID) return RESOLVED_VIRTUAL_MANIFEST_BRIDGE_ID;
     },
 
     moduleParsed(info) {
@@ -2186,13 +2222,24 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
     load(id) {
       const tsrxSource = tsrxCssSourceId(id);
       if (tsrxSource) return tsrxCss.get(tsrxSource) ?? '';
+      if (id === RESOLVED_VIRTUAL_MANIFEST_BRIDGE_ID) {
+        const bridgeUrl = devServer ? devManifestBridgeUrl(devServer) : null;
+        const environment = devServer?.environments[this.environment.name];
+        if (!bridgeUrl && environment && devServer?.httpServer) {
+          // Drop the cached null once the server listens.
+          devServer.httpServer.once('listening', () => {
+            const node = environment.moduleGraph.getModuleById(id);
+            if (node) environment.moduleGraph.invalidateModule(node);
+          });
+        }
+        return `export default ${JSON.stringify(bridgeUrl)};`;
+      }
       if (id === RESOLVED_VIRTUAL_MANIFEST_ID) {
         if (!isBuild) {
-          return devManifestCode(
-            projectRoot,
-            base,
-            devServer ? devManifestBridgeUrl(devServer) : null,
-          );
+          const bridgeUrl = devServer ? devManifestBridgeUrl(devServer) : null;
+          // An own HTTP server that is not listening yet (#414).
+          const deferBridge = !bridgeUrl && !!devServer?.httpServer;
+          return devManifestCode(projectRoot, base, bridgeUrl, deferBridge);
         }
         const manifestPath = clientManifestPath();
         if (manifestPath) {
@@ -2238,7 +2285,7 @@ export default manifest;`;
         }
         // SSR build before the client build produced a manifest: bake in the
         // dev-shaped fallback (registry miss degrades to js-only resolution).
-        return devManifestCode(projectRoot, base, null);
+        return devManifestCode(projectRoot, base, null, false);
       }
     },
 
