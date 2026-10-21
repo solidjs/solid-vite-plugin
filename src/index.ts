@@ -1775,6 +1775,11 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
       }
       config.resolve.conditions = [
         'solid',
+        // A server build with `ssr.target: 'webworker'` starts from Vite's
+        // client conditions, which select the browser builds of `solid-js`
+        // and `@solidjs/web`. Their `worker` export points at the server
+        // build, so add it for that environment. #153
+        ...(opts.isSsrTargetWebworker ? ['worker'] : []),
         ...(replaceDev ? ['development'] : []),
         // `development` nests above `observe` in the runtime's exports, so
         // both may be present: dev serve keeps the dev build, builds get the
