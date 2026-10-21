@@ -530,7 +530,18 @@ export interface RefreshOptions {
 
 function getExtension(filename: string): string {
   const index = filename.lastIndexOf('.');
-  return index < 0 ? '' : filename.substring(index).replace(/\?.+$/, '');
+  return index < 0 ? '' : filename.substring(index);
+}
+
+/**
+ * The path the transform compiles for `id`. This is normally `id` without its
+ * query. Some plugins put the extension after the query instead, such as
+ * unplugin-icons' `~icons/mdi/folder?width=2em.tsx`. Then the full id is used,
+ * as it was before queries were stripped. #206
+ */
+function getTransformPath(id: string, isHandled: (path: string) => boolean): string {
+  const cleanId = id.replace(/\?.*$/, '');
+  return cleanId !== id && !isHandled(cleanId) && isHandled(id) ? id : cleanId;
 }
 // The packages whose dev/production server builds are selected by the
 // `development` export condition. A dependency on either means the package
@@ -2264,7 +2275,6 @@ export default manifest;`;
     async transform(source, id, transformOptions) {
       if (isTsrxCssModule(id)) return null;
       const isSsr = getEnvironmentConsumer(this.environment, transformOptions) === 'server';
-      const currentFileExtension = getExtension(id);
 
       const extensionsToWatch = options.extensions || [];
       const allExtensions = extensionsToWatch.map((extension) =>
@@ -2280,7 +2290,13 @@ export default manifest;`;
       // manifest key / dev URL); keep it for the `$$moduleUrl` injection
       // while the transform pipeline below works on the clean file path.
       const moduleId = id;
-      id = id.replace(/\?.*$/, '');
+      id = getTransformPath(
+        id,
+        (path) => /\.[mc]?[tj]sx$/i.test(path) || allExtensions.includes(getExtension(path)),
+      );
+      // Read the extension from the query-free path, so a dot inside the
+      // query (`a.mdx?x=1.5`) is not taken as the extension.
+      const currentFileExtension = getExtension(id);
       const isTsrx = isTsrxModule(id);
       const inNodeModules = /node_modules/.test(id);
       // Primitive names stop at node_modules: a dependency's internals
