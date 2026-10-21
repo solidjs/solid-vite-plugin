@@ -6671,6 +6671,80 @@ async function runVitestMode() {
           `empty root: ${JSON.stringify(emptySetupFiles)}, example root: ${JSON.stringify(exampleSetupFiles)}`,
   );
 
+  // A framework package (one with a `solid` export condition) that only the
+  // workspace root's package.json declares must still be inlined for a
+  // project in that workspace (#157). The crawl used to read only the
+  // project's own package.json, so vitest left the package external and
+  // Node failed on its `.jsx` files with `Unknown file extension ".jsx"`.
+  // The fixture is a workspace outside the repo: the root declares
+  // `fake-solid-lib`, and the project `packages/app` declares nothing.
+  const workspaceDir = path.join(os.tmpdir(), `solid-vite-plugin-workspace-${process.pid}`);
+  const appDir = path.join(workspaceDir, 'packages', 'app');
+  const libDir = path.join(workspaceDir, 'node_modules', 'fake-solid-lib');
+  const noExternalProbe = `
+    import { resolveConfig } from 'vite';
+    import solid from '@solidjs/vite-plugin';
+    const resolved = await resolveConfig(
+      { root: process.argv[1], mode: 'test', configFile: false, logLevel: 'silent', plugins: [solid()] },
+      'serve',
+    );
+    console.log(JSON.stringify(resolved.environments.ssr.resolve.noExternal));
+  `;
+  let workspaceNoExternal;
+  let workspaceError = '';
+  try {
+    rmSync(workspaceDir, { recursive: true, force: true });
+    mkdirSync(appDir, { recursive: true });
+    mkdirSync(libDir, { recursive: true });
+    writeFileSync(
+      path.join(workspaceDir, 'package.json'),
+      JSON.stringify({
+        name: 'workspace',
+        private: true,
+        workspaces: ['packages/*'],
+        dependencies: { 'fake-solid-lib': '1.0.0' },
+      }),
+    );
+    writeFileSync(path.join(appDir, 'package.json'), '{ "name": "app", "private": true }\n');
+    writeFileSync(
+      path.join(libDir, 'package.json'),
+      JSON.stringify({
+        name: 'fake-solid-lib',
+        version: '1.0.0',
+        type: 'module',
+        exports: { '.': { solid: './index.jsx', default: './index.js' } },
+      }),
+    );
+    writeFileSync(path.join(libDir, 'index.jsx'), 'export const Lib = () => <p>lib</p>;\n');
+    writeFileSync(path.join(libDir, 'index.js'), 'export const Lib = () => null;\n');
+    workspaceNoExternal = JSON.parse(
+      execFileSync(process.execPath, ['--input-type=module', '-e', noExternalProbe, '--', appDir], {
+        cwd: exampleDir,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: 60000,
+      })
+        .toString()
+        .trim(),
+    );
+  } catch (e) {
+    workspaceError = String(e.stderr || e);
+  } finally {
+    rmSync(workspaceDir, { recursive: true, force: true });
+  }
+  const workspacePass =
+    !workspaceError &&
+    Array.isArray(workspaceNoExternal) &&
+    workspaceNoExternal.includes('fake-solid-lib');
+  record(
+    mode,
+    'workspace-root-pkgs',
+    'framework packages declared only in the workspace root are inlined for a workspace project',
+    workspacePass,
+    workspacePass
+      ? undefined
+      : workspaceError || `noExternal: ${JSON.stringify(workspaceNoExternal)}`,
+  );
+
   // Vitest passes the `ssr` environment's conditions to Node as
   // `--conditions` for the packages it leaves external. A jsdom run used to
   // put `browser` there, so Node-only packages failed to load: `msw/node`
