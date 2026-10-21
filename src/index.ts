@@ -1536,10 +1536,7 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
       // `solid-js` fails with ERR_MODULE_NOT_FOUND as soon as anything
       // externalizes it (vitefu does, once a semi-framework package such as
       // `@solidjs/diagnostics` lists it under `dependencies`). With no root
-      // copy there is nothing to dedupe TO, so the gate loses nothing. Not
-      // added to `optimizeDeps.include`: the optimizer already reaches
-      // signals through `solid-js`, and an include entry that doesn't
-      // resolve from the root logs a warning on every start.
+      // copy there is nothing to dedupe TO, so the gate loses nothing.
       //
       // Dedupe applies to builds as well as dev. A dependency that ships its
       // own nested copy of `solid-js` would otherwise put a second runtime
@@ -1550,6 +1547,7 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
       const dedupe = ['solid-js', '@solidjs/web', '@solidjs/signals'].filter((name) =>
         findPackageDir(name, dedupeRoot),
       );
+      const rootSignals = dedupe.includes('@solidjs/signals');
 
       const userTest = (userConfig as any).test ?? {};
       const test = {} as any;
@@ -1702,6 +1700,14 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
             ...(command === 'serve'
               ? ['solid-js/attribution', '@solidjs/web/performance-tracks']
               : []),
+            // An app that depends on `@solidjs/signals` directly can import
+            // it from a module the scanner never reaches (a test file in
+            // Vitest browser mode, a non-literal dynamic import). The first
+            // pass bundled signals inside `solid-js`, so that import is a
+            // late discovery: re-optimize, full reload. Only when it resolves
+            // from the root: otherwise the app can't import it by name, and
+            // an include entry that doesn't resolve warns on every start.
+            ...(command === 'serve' && rootSignals ? ['@solidjs/signals'] : []),
             ...solidPkgsConfig.optimizeDeps.include,
           ],
           exclude: solidPkgsConfig.optimizeDeps.exclude,
