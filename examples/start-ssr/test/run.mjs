@@ -156,6 +156,12 @@
 //     everything else through handleRequest with `nativeEvent`, PORT/HOST,
 //     the `listener` export mountable — while server.js stays byte-identical
 //     and nothing is emitted without the option (see runNodeMode).
+//   - `start.clientSetup` (client-setup mode, SSR_CLIENT_SETUP=1): the
+//     generated client entry imports src/client-setup.ts ahead of the app
+//     in both start modes, and in dev and prod the browser runs it before
+//     the app graph and finishes its top-level await before hydrate(); an
+//     edit reloads the page; an authored entry-client with the option is a
+//     config error (see runClientSetupMode).
 //   - `performanceTracks` (on by default): under dev serve the generated and
 //     authored client entries import the plugin's virtual module ahead of
 //     everything else, the served module calls enablePerformanceTracks(),
@@ -167,7 +173,7 @@
 //
 // Requires the plugin built (pnpm build at the repo root) and Google Chrome.
 // Usage: node test/run.mjs
-// [dev|prod|document|css-filter|entries|endpoint|configure|no-middleware|middleware|preview|render-mode|nonce|base|builder-order|builder-prepare|extra-input|file-names|babel-hmr|frames|external|observe|perf-tracks|detect|vitest|node]
+// [dev|prod|document|css-filter|entries|endpoint|configure|no-middleware|middleware|preview|render-mode|nonce|base|builder-order|builder-prepare|extra-input|file-names|babel-hmr|frames|external|observe|perf-tracks|detect|vitest|node|client-setup]
 // (default: all)
 
 import { spawn, execSync, execFileSync } from 'node:child_process';
@@ -7065,6 +7071,273 @@ async function runNonceMode() {
   }
 }
 
+// `start.clientSetup` (SSR_CLIENT_SETUP=1, src/client-setup.ts wrapped by
+// src/ClientSetupApp.tsx): the generated client entry runs the setup module
+// before hydrate(), in dev and in a build. What must hold:
+// - codegen: the entry imports the module ahead of the app and of the
+//   hydrate()/render() call, in both start modes, and without the option
+//   the entry carries no such import,
+// - config: an authored entry-client together with the option is an error,
+//   and so is a missing file,
+// - browser (dev and prod): the setup module starts before the app graph
+//   evaluates, hydrate() waits for its top-level await, it runs once, and
+//   hydration stays clean and interactive,
+// - dev: editing the module reloads the page with the new code (it has no
+//   HMR accept boundary, and neither does the entry).
+async function runClientSetupMode() {
+  const mode = 'client-setup';
+  console.log(`\n=== ${mode.toUpperCase()} ===`);
+  const devPort = 3187;
+  const prodPort = 3188;
+  const setupFile = path.join(exampleDir, 'src/client-setup.ts');
+  const setupSource = readFileSync(setupFile, 'utf-8');
+  const env = { ...process.env, SSR_CLIENT_SETUP: '1', SSR_DEVTOOLS: '0' };
+  const ENTRY = 'virtual:solid-ssr-entry-client.tsx';
+  const loadEntry = async (server) => {
+    const loaded = await server.environments.client.pluginContainer.load(ENTRY);
+    return (typeof loaded === 'string' ? loaded : loaded?.code) || '';
+  };
+  const { default: solidPlugin } = await import('@solidjs/vite-plugin');
+  const inlineServer = (options) =>
+    createServer({
+      root: exampleDir,
+      configFile: false,
+      logLevel: 'silent',
+      plugins: [solidPlugin(options)],
+      server: { middlewareMode: true },
+    });
+
+  // ---- Codegen and config validation (in process, no browser) ----------
+  let probe;
+  try {
+    for (const ssr of [true, false]) {
+      const phase = ssr ? 'codegen-ssr' : 'codegen-client';
+      probe = await inlineServer({
+        ssr,
+        start: { clientSetup: './src/client-setup.ts', devtools: false },
+      });
+      const code = await loadEntry(probe);
+      const setupAt = code.indexOf('/src/client-setup.ts');
+      const appAt = code.indexOf('import App from');
+      const callAt = code.indexOf(ssr ? 'hydrate(() =>' : 'render(() =>');
+      record(
+        mode,
+        phase,
+        `generated entry imports the setup module before the app and ${ssr ? 'hydrate' : 'render'}()`,
+        setupAt !== -1 && appAt !== -1 && callAt !== -1 && setupAt < appAt && setupAt < callAt,
+        code.slice(0, 600),
+      );
+      record(
+        mode,
+        phase,
+        'the setup module is a static side-effect import (no dynamic import)',
+        /^import\s+"[^"]*\/src\/client-setup\.ts";$/m.test(code) && !code.includes('import('),
+        code.slice(0, 600),
+      );
+      await probe.close();
+      probe = await inlineServer({ ssr, start: { devtools: false } });
+      const plain = await loadEntry(probe);
+      record(
+        mode,
+        phase,
+        'without the option the entry has no setup import',
+        plain.length > 0 && !plain.includes('client-setup'),
+        plain.slice(0, 400),
+      );
+      await probe.close();
+      probe = undefined;
+    }
+
+    const configError = async (start) => {
+      try {
+        const server = await inlineServer({ ssr: true, start });
+        await server.close();
+        return '';
+      } catch (e) {
+        return String(e?.message ?? e);
+      }
+    };
+    const authored = await configError({
+      clientSetup: './src/client-setup.ts',
+      entryServer: './src/api.ts',
+      entryClient: './src/api.ts',
+    });
+    record(
+      mode,
+      'config',
+      'an authored entry-client together with clientSetup is an error',
+      authored.includes('start.clientSetup only applies to a generated client entry'),
+      authored || 'no error',
+    );
+    const missing = await configError({ clientSetup: './src/no-such-setup.ts' });
+    record(
+      mode,
+      'config',
+      'a missing clientSetup file is an error',
+      missing.includes('start.clientSetup does not exist'),
+      missing || 'no error',
+    );
+  } catch (e) {
+    record(mode, 'codegen', 'codegen checks completed', false, String(e?.stack ?? e));
+  } finally {
+    await probe?.close();
+  }
+
+  // ---- Browser: dev, then the build -------------------------------------
+  const browserChecks = async (phase, cdp, origin) => {
+    cdp.exceptions.length = 0;
+    await cdp.send('Page.navigate', { url: origin + '/' });
+    await cdp.waitFor('document.readyState === "complete"');
+    await cdp.waitFor('window.__solidClientSetup?.order.some((s) => s.startsWith("app:render"))');
+    await new Promise((r) => setTimeout(r, 500));
+    const state = await cdp.evalJs('JSON.stringify(window.__solidClientSetup ?? null)');
+    const parsed = state ? JSON.parse(state) : null;
+    const order = parsed?.order ?? [];
+    record(
+      mode,
+      phase,
+      'setup module starts before the app graph evaluates',
+      order[0] === 'setup:start(before:0)' &&
+        order.indexOf('app:module') > order.indexOf('setup:start(before:0)'),
+      state,
+    );
+    const doneAt = order.indexOf('setup:done');
+    const renderAt = order.findIndex((s) => s.startsWith('app:render'));
+    record(
+      mode,
+      phase,
+      'hydrate() waits for the setup module (async top-level await settled first)',
+      doneAt !== -1 &&
+        renderAt > doneAt &&
+        order.every((s) => !s.startsWith('app:render') || s === 'app:render(setupDone:true)'),
+      state,
+    );
+    record(mode, phase, 'setup module evaluated once', parsed?.evaluations === 1, state);
+    const hydrationErrs = cdp.exceptions.filter((e) => /hydrat|mismatch/i.test(e));
+    record(
+      mode,
+      phase,
+      'clean hydration (no hydration console errors)',
+      hydrationErrs.length === 0,
+      hydrationErrs.join(' | '),
+    );
+    await cdp.evalJs('document.querySelector("#increment").click()');
+    record(
+      mode,
+      phase,
+      'hydrated app is interactive (counter)',
+      await cdp.waitFor('document.querySelector("#count")?.textContent === "1"'),
+    );
+  };
+
+  const withChrome = async (run) => {
+    const chrome = startProcess(CHROME, [
+      '--headless=new',
+      `--remote-debugging-port=${CDP_PORT}`,
+      `--user-data-dir=/tmp/start-ssr-chrome-${mode}`,
+      '--no-first-run',
+      '--disable-extensions',
+      'about:blank',
+    ]);
+    const cdp = await connectChrome();
+    try {
+      await run(cdp);
+    } finally {
+      cdp.close();
+      const exited = new Promise((r) => chrome.once('exit', r));
+      try {
+        process.kill(-chrome.pid, 'SIGTERM');
+      } catch {}
+      await Promise.race([exited, new Promise((r) => setTimeout(r, 3000))]);
+      try {
+        rmSync(`/tmp/start-ssr-chrome-${mode}`, { recursive: true, force: true, maxRetries: 5 });
+      } catch {}
+    }
+  };
+
+  let server;
+  let serverLog = '';
+  const captureLog = (child) => {
+    child.stdout.on('data', (d) => (serverLog += d));
+    child.stderr.on('data', (d) => (serverLog += d));
+  };
+  try {
+    const devOrigin = `http://localhost:${devPort}`;
+    server = startProcess('pnpm', ['exec', 'vite', '--port', String(devPort), '--strictPort'], {
+      cwd: exampleDir,
+      env,
+    });
+    captureLog(server);
+    await waitForHttp(devOrigin + '/src/api.ts', 30000);
+    await withChrome(async (cdp) => {
+      await browserChecks('dev', cdp, devOrigin);
+      // The module has no accept boundary and neither has the generated
+      // entry, so an edit must reload the page and run the new code.
+      writeFileSync(setupFile, setupSource.replace("'client-setup-v1'", "'client-setup-v2'"));
+      const reloaded = await cdp.waitFor(
+        'window.__solidClientSetup?.marker === "client-setup-v2" && window.__solidClientSetup.done',
+        15000,
+      );
+      const after = await cdp.evalJs('JSON.stringify(window.__solidClientSetup ?? null)');
+      record(
+        mode,
+        'dev',
+        'editing the setup module reloads the page with the new code (setup runs again first)',
+        // evaluations === 1: a fresh page, not a hot update into the old
+        // one (whose global register would count a second evaluation).
+        reloaded &&
+          JSON.parse(after)?.evaluations === 1 &&
+          JSON.parse(after)?.order[0] === 'setup:start(before:0)' &&
+          JSON.parse(after)?.order.includes('app:render(setupDone:true)'),
+        after,
+      );
+    });
+    writeFileSync(setupFile, setupSource);
+    try {
+      process.kill(-server.pid, 'SIGTERM');
+    } catch {}
+    server = undefined;
+
+    console.log('  building…');
+    execSync('pnpm run build', { cwd: exampleDir, stdio: 'pipe', env });
+    const prodOrigin = `http://localhost:${prodPort}`;
+    server = startProcess('node', ['server.js'], {
+      cwd: exampleDir,
+      env: { ...env, PORT: String(prodPort), NODE_ENV: 'production' },
+    });
+    captureLog(server);
+    await waitForHttp(prodOrigin + '/', 30000, { headers: { accept: 'text/html' } });
+    const { html } = await fetchStreamed(prodOrigin + '/');
+    record(
+      mode,
+      'prod',
+      "the app's stylesheet is still linked (the app stays in the entry's static graph)",
+      /<link[^>]+rel="stylesheet"[^>]+\.css"/.test(html),
+      html.slice(0, 800),
+    );
+    await withChrome((cdp) => browserChecks('prod', cdp, prodOrigin));
+  } catch (e) {
+    record(
+      mode,
+      'run',
+      'mode completed',
+      false,
+      String(e) + (serverLog ? `\nserver: ${serverLog.slice(-2000)}` : ''),
+    );
+  } finally {
+    writeFileSync(setupFile, setupSource);
+    if (server) {
+      try {
+        process.kill(-server.pid, 'SIGTERM');
+      } catch {}
+    }
+    // Leave dist in the standard state for anyone poking at it.
+    try {
+      execSync('pnpm run build', { cwd: exampleDir, stdio: 'pipe' });
+    } catch {}
+  }
+}
+
 const ALL_MODES = [
   'dev',
   'prod',
@@ -7091,6 +7364,7 @@ const ALL_MODES = [
   'detect',
   'vitest',
   'node',
+  'client-setup',
 ];
 const arg = process.argv[2];
 const modes = ALL_MODES.includes(arg) ? [arg] : ALL_MODES;
@@ -7119,6 +7393,7 @@ for (const mode of modes) {
   else if (mode === 'perf-tracks') await runPerfTracksMode();
   else if (mode === 'vitest') await runVitestMode();
   else if (mode === 'node') await runNodeMode();
+  else if (mode === 'client-setup') await runClientSetupMode();
   else await runDetectMode();
 }
 

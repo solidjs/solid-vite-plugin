@@ -234,7 +234,8 @@ same server functions.
 The object form carries the options (`start: true` is pure sugar for
 `start: {}` — both mean the identical start mode with defaults, and
 `false`/absent means off): `app`, `document`, `entryServer`, `entryClient`,
-`middleware`, `setup`, `renderMode`, `env`, `devtools`, `errorBoundary`,
+`middleware`, `setup`, `instrument`, `clientSetup`, `renderMode`, `env`,
+`devtools`, `errorBoundary`,
 `css`, `external`, `node`, all documented below.
 
 Install `@solidjs/start-devtools` as a development dependency to add the
@@ -564,6 +565,39 @@ the handler entry, and the `node` entry). This replaces the per-host `node --imp
 instrument.mjs` dance. The module may be async and needs no exports; the
 server build must keep code splitting on (the default), since inlining
 dynamic imports would hoist the handler graph back above the instrument.
+
+**`clientSetup`** points at a client module that the generated client entry
+runs before it hydrates (SSR mode) or mounts (client mode) the app. Use it
+for browser setup that must be in place before the first render:
+
+- a server-function transport wrapper or request-header hook,
+- a `vite:preloadError` listener,
+- an error reporter's `init()`.
+
+```ts
+// vite.config.ts
+solid({ start: { clientSetup: './src/client-setup.ts' }, ssr: true });
+
+// src/client-setup.ts
+window.addEventListener('vite:preloadError', () => window.location.reload());
+```
+
+How it runs:
+
+- The generated entry imports the module for its side effects, ahead of the
+  app. A synchronous module finishes before the app's modules evaluate.
+- The module may use top-level `await`. `hydrate()` / `render()` waits for
+  it to settle. The app's modules may evaluate while it waits, but nothing
+  renders.
+- Because it can wait, it can read a global that a classic `<script>` in
+  `<body>` defines: await `DOMContentLoaded` first.
+- It stays in the entry's static module graph, so the build preloads the
+  app's chunks and links its stylesheets as before.
+- Editing it in dev reloads the page.
+
+The module needs no exports. It only applies to a generated client entry.
+An authored `entry-client` can run its own code before `hydrate()`, so
+configuring both is an error.
 
 **`renderMode`** — how a page render becomes a response body: `'stream'`
 (the default) or `'async'`.

@@ -31,6 +31,9 @@ import solidPlugin from '@solidjs/vite-plugin';
 //   (middleware mode): the module awaited to completion before the handler
 //   graph loads — the APM/OpenTelemetry seam; middleware.ts reports what it
 //   saw at its own load in an `x-instrument` header.
+// - SSR_CLIENT_SETUP=1 wires src/client-setup.ts through `start.clientSetup`
+//   (client-setup mode) and wraps App in src/ClientSetupApp.tsx, which
+//   records whether the setup module settled before hydration rendered.
 // - SOLID_OBSERVE=1 (observe mode) turns on `observe`: the `observe` export
 //   condition everywhere and the compiler's `sourceNames` for both
 //   postures, so the built server AND client bundles carry component labels.
@@ -230,6 +233,12 @@ export default defineConfig({
               // component to render (the TanStack-style async router seam).
               ...(process.env.SSR_SETUP ? { setup: './src/setup.tsx' } : {}),
               ...(process.env.SSR_INSTRUMENT ? { instrument: './src/instrument.ts' } : {}),
+              // SSR_CLIENT_SETUP=1 (client-setup mode): src/client-setup.ts
+              // runs in the browser before the generated entry hydrates;
+              // src/ClientSetupApp.tsx wraps App to record the order.
+              ...(process.env.SSR_CLIENT_SETUP
+                ? { clientSetup: './src/client-setup.ts', app: './src/ClientSetupApp.tsx' }
+                : {}),
               // SSR_RENDER_MODE (render-mode mode): `middleware` → the
               // per-request policy in src/middleware.ts (`event.renderMode`);
               // anything else verbatim (`async`, or an invalid value / a

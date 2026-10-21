@@ -233,6 +233,31 @@ export interface StartOptions {
    */
   setup?: string;
   /**
+   * Path to a client module (resolved relative to the Vite root) that the
+   * generated client entry runs before it hydrates (SSR mode) or mounts
+   * (client mode) the app. The browser-side seam for setup that must be in
+   * place before the first render: a server-function transport wrapper or
+   * request-header hook, a `vite:preloadError` listener, an error reporter's
+   * `init()`.
+   *
+   * How: the generated entry imports the module for its side effects ahead
+   * of the app, so a synchronous module finishes before the app's own
+   * modules evaluate. The module may be async (top-level `await` is
+   * honored): `hydrate()` / `render()` waits for it to settle, which lets it
+   * wait for the DOM, for example for a global that a classic `<script>` in
+   * `<body>` defines. While it awaits, the app's modules may already
+   * evaluate, but nothing renders. No exports are needed. The module stays
+   * in the entry's static graph, so the build preloads it and the app's
+   * chunks and stylesheets as before. Editing it reloads the page.
+   *
+   * Only meaningful with a generated client entry: an authored
+   * `entry-client` runs its own code before `hydrate()` already, so
+   * configuring both is an error. Applies to both start modes.
+   *
+   * @default undefined
+   */
+  clientSetup?: string;
+  /**
    * How the generated handler turns a page render into a response body.
    *
    * - `'stream'` (default): the document shell flushes as soon as it is
@@ -739,6 +764,8 @@ export function startServe(
   let instrumentPath: string | null = null;
   /** Absolute path of the per-request setup module, when configured (server mode). */
   let setupPath: string | null = null;
+  /** Absolute path of the client setup module run before hydrate/render, when configured. */
+  let clientSetupPath: string | null = null;
   /**
    * `start.renderMode`, resolved at config time: the static mode baked into
    * the handler (server mode only — a documented no-op in client mode,
@@ -1036,6 +1063,15 @@ export function startServe(
       performanceTracks && !isBuild
         ? [`import ${JSON.stringify(PERFORMANCE_TRACKS_CLIENT_ID)};`]
         : [];
+    // `start.clientSetup`: imported for its side effects ahead of the app,
+    // after the dev-only tooling above so its failures reach the overlay.
+    // A static import, not `await import()` like `start.instrument`: a
+    // dynamic import would move the app into a separate chunk the server
+    // neither preloads nor links CSS for. The entry body (hydrate/render)
+    // still waits for an async module's top-level await to settle.
+    const clientSetupImport = clientSetupPath
+      ? [`import ${JSON.stringify(clientSetupPath)};`]
+      : [];
     if (clientMode) {
       // render(), not hydrate(): the shell's body is empty, the app mounts
       // fresh. Client code compiles non-hydratable in client mode, so the
@@ -1045,6 +1081,7 @@ export function startServe(
       return [
         ...performanceTracksImport,
         ...diagnosticsImport,
+        ...clientSetupImport,
         `import { render } from '@solidjs/web';`,
         ...errorBoundaryImport(),
         ...(toolbar ? [`import { DevToolbar } from ${JSON.stringify(DEVTOOLS_PACKAGE)};`] : []),
@@ -1062,6 +1099,7 @@ export function startServe(
     return [
       ...performanceTracksImport,
       ...diagnosticsImport,
+      ...clientSetupImport,
       `import { hydrate } from '@solidjs/web';`,
       ...(toolbar ? [`import { DevToolbar } from ${JSON.stringify(DEVTOOLS_PACKAGE)};`] : []),
       ...(serverComponents
@@ -1721,6 +1759,19 @@ export function startServe(
               `(remove start.setup or the authored entry): ${options.setup}`,
           );
         }
+        // Both modes: the generated client entry hydrates or mounts, and
+        // the setup module runs ahead of either.
+        clientSetupPath = options.clientSetup
+          ? path.resolve(root, normalizeUserPath(root, options.clientSetup, 'clientSetup'))
+          : null;
+        if (clientSetupPath && entries.entryClient !== ENTRY_CLIENT_ID) {
+          // An authored entry-client runs its own code before hydrate().
+          throw new Error(
+            '[@solidjs/vite-plugin] start.clientSetup only applies to a generated client entry: ' +
+              'your entry-client runs before hydrate() already, so import your setup module ' +
+              `there instead (remove start.clientSetup or the authored entry): ${options.clientSetup}`,
+          );
+        }
         // Server-mode only as well: the client-mode shell renders no app,
         // so there is nothing to settle. Validated in every mode though —
         // a typo should not hide behind the `ssr` boolean.
@@ -1769,7 +1820,13 @@ export function startServe(
         // even with an authored client entry; in SSR mode authored entries
         // own the whole graph.)
         const scanEntries = entries.generated
-          ? [entries.app!, ...(entries.document ? [entries.document] : [])]
+          ? [
+              entries.app!,
+              ...(entries.document ? [entries.document] : []),
+              // Its dependencies pre-bundle with the app's, so the first
+              // page load does not trigger a re-optimize and a reload.
+              ...(clientSetupPath ? [clientSetupPath] : []),
+            ]
           : [
               path.resolve(root, entries.entryClient),
               ...(clientMode && entries.document ? [entries.document] : []),
