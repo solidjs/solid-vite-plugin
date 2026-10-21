@@ -24,10 +24,13 @@ declare const SOLID_NODE_CONFIG: {
   base: string;
   /** Client start mode: HTML navigations without a file get index.html. */
   spa: boolean;
+  /** The program file whose run listens: node.js, beside this file. */
+  entry: string;
 };
 
-const { clientDir, assetsDir, base, spa } = SOLID_NODE_CONFIG;
-const clientRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), clientDir);
+const { clientDir, assetsDir, base, spa, entry } = SOLID_NODE_CONFIG;
+const here = path.dirname(fileURLToPath(import.meta.url));
+const clientRoot = path.resolve(here, clientDir);
 const assetsRoot = assetsDir ? path.join(clientRoot, assetsDir) + path.sep : null;
 // Only a root-relative base prefixes same-origin paths (cf. joinBase).
 const basePrefix = base.startsWith('/') ? base.replace(/\/$/, '') : '';
@@ -182,6 +185,5 @@ export function serve({
   return server;
 }
 
-// Listen only when this file is the program (`node dist/server/node.js`),
-// not when imported for its exports.
-if (process.argv[1] && path.resolve(process.argv[1]) === import.meta.filename) serve();
+// Listen only when node.js is the program, not when imported for its exports.
+if (process.argv[1] && path.resolve(process.argv[1]) === path.join(here, entry)) serve();
