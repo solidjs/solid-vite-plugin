@@ -347,8 +347,13 @@ function invalidateModules(
   manifest: string,
 ): void {
   if (server?.environments && result.invalidPreload) {
-    invalidateModule(server.environments.client.moduleGraph, manifest);
-    invalidateModule(server.environments.ssr.moduleGraph, manifest);
+    // Every environment, not just `client` and `ssr`: a host can load the
+    // manifest from a server environment of its own (`void_worker`, a
+    // Cloudflare worker), and one with no `ssr` environment at all would
+    // otherwise throw here.
+    for (const environment of Object.values(server.environments)) {
+      invalidateModule(environment.moduleGraph, manifest);
+    }
   }
 }
 
