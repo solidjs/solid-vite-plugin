@@ -191,6 +191,9 @@ importers:
         specifier: 'catalog:'
         version: 2.0.0-rc.14
     devDependencies:
+      '@solidjs/testing-library':
+        specifier: ^1.0.0-beta.2
+        version: 1.0.0-beta.2(@solidjs/web@2.0.0-rc.14(solid-js@2.0.0-rc.14))(solid-js@2.0.0-rc.14)
       '@solidjs/vite-plugin':
         specifier: workspace:*
         version: link:../..
