@@ -352,6 +352,13 @@ function invalidateModules(
   }
 }
 
+function removeManifestRecord(
+  source: Set<string>,
+  target: string,
+): ReturnType<typeof mergeManifestRecord> {
+  return { invalidPreload: source.delete(target), invalidated: [...source] };
+}
+
 /**
  * The second parameter is internal wiring for the main plugin's
  * `serverFunctions` option: the built-in dev middleware is only installed
@@ -567,6 +574,19 @@ export function serverFunctions(
     return hashIndex.get(functionId.split('-')[1]!);
   }
 
+  // Dev only: drops a module that was deleted or no longer declares server
+  // functions, so the manifest stops importing it. A build transforms each
+  // module once, so its manifest never needs this.
+  function forgetModule(id: string): void {
+    if (isBuild || !manifest.modules.server.has(id)) return;
+    for (const [functionId, record] of manifest.clientFunctions) {
+      if (record.module === id) manifest.clientFunctions.delete(functionId);
+    }
+    hashIndexSize = -1;
+    const result = removeManifestRecord(manifest.modules.server, id);
+    invalidateModules(currentServer, result, manifestId);
+  }
+
   function moduleDevUrl(entry: string): string {
     const relative = path.relative(root, entry).split(path.sep).join('/');
     return relative.startsWith('..') ? '/@fs/' + entry : '/' + relative;
@@ -703,7 +723,10 @@ export function serverFunctions(
 
     // The directive has to appear literally, so anything without the
     // substring can skip the native parse entirely.
-    if (!code.includes(directive)) return null;
+    if (!code.includes(directive)) {
+      forgetModule(id);
+      return null;
+    }
 
     const result = await compile(id, code, {
       ...(mode === 'server' ? serverOptions : clientOptions),
@@ -713,7 +736,10 @@ export function serverFunctions(
       sourceMap: !tsrx || !!internal.tsrxSourceMap,
     });
 
-    if (!result.valid) return null;
+    if (!result.valid) {
+      forgetModule(id);
+      return null;
+    }
 
     // The client compile is the authority on what the browser can dispatch:
     // record every reference it emitted, by wire id, for the persisted
@@ -796,6 +822,9 @@ export function serverFunctions(
       configureServer(server) {
         currentServer = server;
       },
+      watchChange(id, change) {
+        if (change.event === 'delete') forgetModule(id);
+      },
       writeBundle() {
         // Same client-build detection as the main plugin: builder-mode builds
         // run both environments in one process, so prefer the per-environment
@@ -830,9 +859,16 @@ export function serverFunctions(
               manifest.modules.server.add(entry);
             }
           }
-          const current = new Debouncer(() =>
-            [...manifest.modules[mode]].map((entry) => `import ${JSON.stringify(entry)};`).join('\n'),
-          );
+          const source = () =>
+            [...manifest.modules[mode]]
+              .map((entry) => `import ${JSON.stringify(entry)};`)
+              .join('\n');
+          // In dev, each transform that registers a new module invalidates
+          // the manifest, and a function's module is always transformed
+          // before anything can call it. So the current list is enough, and
+          // waiting would only delay every load.
+          if (!isBuild) return source();
+          const current = new Debouncer(source);
           preload[mode] = current;
           const result = await current.promise.reference;
           return result;
