@@ -1535,10 +1535,16 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
       // added to `optimizeDeps.include`: the optimizer already reaches
       // signals through `solid-js`, and an include entry that doesn't
       // resolve from the root logs a warning on every start.
-      const dedupe =
-        replaceDev && findPackageDir('@solidjs/signals', path.resolve(projectRoot || process.cwd()))
-          ? [...nestedDeps, '@solidjs/signals']
-          : nestedDeps;
+      //
+      // Dedupe applies to builds as well as dev. A dependency that ships its
+      // own nested copy of `solid-js` would otherwise put a second runtime
+      // in the production bundle, with its own owner tree and contexts. #112
+      // Each package is only listed when the root can resolve it, for the
+      // reason given above for `@solidjs/signals`.
+      const dedupeRoot = path.resolve(projectRoot || process.cwd());
+      const dedupe = ['solid-js', '@solidjs/web', '@solidjs/signals'].filter((name) =>
+        findPackageDir(name, dedupeRoot),
+      );
 
       const userTest = (userConfig as any).test ?? {};
       const test = {} as any;
