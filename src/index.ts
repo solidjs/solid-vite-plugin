@@ -1435,14 +1435,14 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
       domTestRuntimeInlined = false;
       forceProduction = options.dev === false && command === 'serve' && !isTestMode;
       // Per-vitest-project posture: the client posture (browser conditions,
-      // dom codegen, jsdom default) is right for DOM component tests but
+      // dom codegen) is right for DOM component tests but
       // wrong for server-runtime unit tests. A project that explicitly opts
       // into a server runtime — `test: { environment: 'node' }` (or
       // 'edge-runtime') — gets the server posture end to end: no browser
       // condition injection, so the framework resolves its real server
       // build (isServer true) with no inline/alias workarounds. DOM
-      // environments (the jsdom default, happy-dom, browser mode) keep the
-      // client posture. Each vitest project resolves its own config, so the
+      // environments (jsdom, happy-dom, browser mode) and an unset
+      // environment keep the client posture. Each vitest project resolves its own config, so the
       // hooks below see the posture of the project they serve.
       serverTestPosture =
         isTestMode &&
@@ -1554,30 +1554,10 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
             ? [userTest.setupFiles]
             : userTest.setupFiles || [];
 
-        // Regardless of the app's `ssr` flag: tests run with the client
-        // posture (DOM component tests are the norm), so the default test
-        // environment is a DOM. Node-environment tests opt in explicitly.
-        // Browser-mode projects get the real browser DOM, so don't default
-        // them to jsdom — vitest probes for the environment's package at
-        // startup and fails the run if jsdom isn't installed. They fall
-        // back to vitest's own node default (no package probe).
-        // A root config that defines `test.projects` (or the pre-vitest-4
-        // `test.workspace`) doesn't run tests itself: each project controls
-        // its own environment, so the root gets no jsdom default either —
-        // otherwise vitest probes for jsdom at the root on startup even when
-        // every project runs under node or in the browser. Note that an
-        // inline project with `extends: true` inherits the root file's
-        // `test.projects` and opts out too: projects declare their
-        // environment explicitly, as in vitest's own projects guide.
-        // https://github.com/solidjs/solid-vite-plugin/issues/205
-        if (
-          !userTest.environment &&
-          !userTest.browser?.enabled &&
-          !userTest.workspace &&
-          !userTest.projects
-        ) {
-          test.environment = 'jsdom';
-        }
+        // No `test.environment` is injected: the project picks its own
+        // (`jsdom` or `happy-dom` for DOM component tests). A default here
+        // also applied to every Node-only test suite that happened to load
+        // the plugin, which then ran under a DOM it never asked for.
 
         // Vitest 5 defaults `test.sharedViteServer` to true: inline projects
         // then reuse the root Vite server and take their `test` options from

@@ -6318,7 +6318,7 @@ async function runNodeMode() {
 
 // Vitest posture: even though this app is `ssr: true`, tests compile and
 // resolve with the client posture — dom codegen, non-hydratable, browser
-// conditions, jsdom default — with no `test` block and no
+// conditions — with only `environment: 'jsdom'` and no
 // `ssr: mode !== 'test'` workaround in the config. src/posture.test.tsx
 // carries the actual assertions (isServer false, non-hydratable codegen, a
 // DOM component rendering and updating under jsdom); this mode just runs it.
@@ -6424,17 +6424,15 @@ async function runVitestMode() {
     projectsPass ? undefined : projectsOut.slice(-2000),
   );
 
-  // Browser-mode projects must NOT get the jsdom default: vitest 4 probes
-  // for the environment's package at startup (getEnvPackageName →
-  // ensureInstalled) and sets a failing exit code when jsdom isn't
-  // installed — even though the suite itself runs (and passes) in the real
-  // browser. The gate mirrors the plugin's jest-dom one (`browser.enabled`
-  // skips the injection); everything else keeps the jsdom default. Asserted
-  // at the config-resolution level: jsdom IS installed in this example, so
-  // a full browser run couldn't reproduce the missing-package probe.
+  // The plugin injects no `test.environment`, in any project shape: a
+  // default applied to Node-only suites that loaded the plugin too, and in
+  // browser mode or a projects root vitest probes for the environment's
+  // package at startup and fails the run when it isn't installed (#205).
+  // Resolved without the example's config file, which sets jsdom itself.
+  const { default: solid } = await import('@solidjs/vite-plugin');
   const resolveTestEnvironment = async (testBlock) => {
     const resolved = await resolveConfig(
-      { root: exampleDir, mode: 'test', test: testBlock },
+      { root: exampleDir, mode: 'test', configFile: false, plugins: [solid()], test: testBlock },
       'serve',
     );
     return resolved.test?.environment;
@@ -6450,20 +6448,17 @@ async function runVitestMode() {
   } catch (e) {
     envError = String(e);
   }
-  const browserEnvPass = !envError && browserEnv === undefined && defaultEnv === 'jsdom';
+  const browserEnvPass = !envError && browserEnv === undefined && defaultEnv === undefined;
   record(
     mode,
     'browser-env',
-    'browser-mode project gets no injected jsdom environment (non-browser keeps the jsdom default)',
+    'no injected test environment (browser mode or a plain test block)',
     browserEnvPass,
     browserEnvPass ? undefined : envError || `browser: ${browserEnv}, default: ${defaultEnv}`,
   );
 
-  // A root config that defines `test.projects` runs no tests itself — each
-  // project controls its own environment — so it must NOT get the jsdom
-  // default either: vitest probes for the root environment's package at
-  // startup and prompts for jsdom even when every project runs under node
-  // or in the browser (solidjs/solid-vite-plugin#205, forward-port of #323).
+  // A root config that defines `test.projects` runs no tests itself; it
+  // gets no environment either (solidjs/solid-vite-plugin#205).
   let projectsEnv;
   let projectsEnvError = '';
   try {
