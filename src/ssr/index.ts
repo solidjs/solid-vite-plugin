@@ -1170,8 +1170,7 @@ export function startServe(
     const composeServerFunctions = internal.serverFunctions;
 
     const lines = [
-      `import { createRequestEvent, createSSRResponse, commitEventResponse, isResponseEnvelope } from '@solidjs/web';`,
-      ...(isBuild ? [`import { reportServerError } from 'solid-js/internal';`] : []),
+      `import { createRequestEvent, createSSRResponse, commitEventResponse, isResponseEnvelope${isBuild ? ', reportRequestFailure' : ''} } from '@solidjs/web';`,
       `import { provideRequestEvent } from ${JSON.stringify(STORAGE_SOURCE)};`,
       `import * as entry from ${JSON.stringify(entryServerSpec())};`,
       ...(middlewarePath
@@ -1586,14 +1585,13 @@ export function startServe(
     // failure, an invalid event.renderMode or event.nonce, a render that
     // throws before renderToStream returns) must not leave handleRequest: each host would
     // answer it its own way and the configured error policy would never see
-    // it. It is reported the way `failRender` reports a failed render,
-    // through the runtime's `reportServerError` (from solid-js/internal, as
-    // @solidjs/web does; there is no public entry point for request
-    // failures) with the site `{ kind: 'render', handling: 'failed' }` and
-    // the event, and to console.error when no `configureServerErrors` hook
-    // is registered. The runtime's ledger calls the hook once per error
-    // object, so a failure it already reported (an uncaught in-process
-    // server-function call, heard as `server-function`/`thrown`) is not
+    // it. It is reported through @solidjs/web's `reportRequestFailure`
+    // (`{ kind: 'request', handling: 'failed' }` with the event, and to
+    // console.error when no `configureServerErrors` hook is registered).
+    // The runtime hears a request failure only for an error object it has
+    // not reported yet, so one it already reported (a render failure, or an
+    // uncaught in-process server-function call, heard as
+    // `server-function`/`thrown`) is not
     // heard twice. The answer is a bodyless 500 like the endpoint's. The
     // edge fold below adds the stub's headers and cookies while the
     // response head is still open; once next() returned a rendered page,
@@ -1602,16 +1600,12 @@ export function startServe(
     lines.push(
       ...(isBuild
         ? [
-            `const SERVER_ERRORS = Symbol.for('solid-js/server/errors');`,
-            ``,
             `function containFailure(error, event) {`,
             `  try {`,
             `    const thrown = isResponseEnvelope(error) ? error.response : error;`,
             `    if (thrown instanceof Response && thrown.status !== 0) return thrown;`,
             `  } catch {}`,
-            `  reportServerError(error, { kind: 'render', handling: 'failed', event });`,
-            `  const slot = globalThis[SERVER_ERRORS];`,
-            `  if (!(slot && slot.hook)) console.error(error);`,
+            `  reportRequestFailure(error, event);`,
             `  return new Response(null, { status: 500 });`,
             `}`,
           ]

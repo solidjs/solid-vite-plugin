@@ -317,7 +317,10 @@ describe('the plugin under vite dev', () => {
     expect(result?.code).toContain('"Home"');
     expect(result?.code).toContain('name: "count"');
     if (supportsLocations) {
+      // Authored positions, though the prelude passes reprinted the module
+      // before the JSX transform saw it.
       expect(result?.code).toContain('"Home", "src/App.tsx:6:26"');
+      expect(result?.code).toContain('loc: "src/App.tsx:4:56"');
       expect(result?.code).toContain('loc: "src/App.tsx:3:29"');
     } else {
       // (The refresh pass's own cwd-relative `location` metadata is not a
@@ -334,6 +337,11 @@ describe('the plugin under vite dev', () => {
     const result = await server.environments.client.transformRequest('/src/App.tsx');
     expect(result?.code).toContain('"Home"');
     expect(result?.code).toContain('name: "count"');
+    // @solidjs/babel-plugin takes `locations` whatever the native compiler
+    // does; the primitives pass is native, so its `loc` follows the probe.
+    expect(result?.code).toContain('"Home", "src/App.tsx:6:26"');
+    expect(result?.code).toContain('loc: "src/App.tsx:4:56"');
+    if (supportsLocations) expect(result?.code).toContain('loc: "src/App.tsx:3:29"');
     expect(warnings.filter((message) => message.includes('locations'))).toEqual([]);
     await server.close();
   });

@@ -3798,7 +3798,7 @@ async function runContainmentChecks(
       const failures = heardFor(secret);
       return (
         failures.length === 1 &&
-        failures[0].kind === 'render' &&
+        failures[0].kind === 'request' &&
         failures[0].handling === 'failed' &&
         failures[0].event === true
       );
@@ -3806,7 +3806,7 @@ async function runContainmentChecks(
     record(
       mode,
       'contain',
-      'configureServerErrors hook hears the failure once (render/failed, with the event)',
+      'configureServerErrors hook hears the failure once (request/failed, with the event)',
       failedOnce('mw-throw-secret') && failedOnce('late-throw-secret'),
       JSON.stringify(heard),
     );
@@ -3814,7 +3814,7 @@ async function runContainmentChecks(
       record(
         mode,
         'contain',
-        'a start.setup failure reaches the hook once (render/failed, with the event)',
+        'a start.setup failure reaches the hook once (request/failed, with the event)',
         failedOnce('setup-throw-secret'),
         JSON.stringify(heard),
       );
@@ -3954,16 +3954,15 @@ async function runMiddlewareMode() {
       );
       // Dev containment is the thrown-Response half only: the catch answers
       // a thrown Response or envelope and rethrows everything else to
-      // Vite's error middleware. Reporting (reportServerError from
-      // solid-js/internal) and the bodyless 500 are build-only.
+      // Vite's error middleware. Reporting (reportRequestFailure) and the
+      // bodyless 500 are build-only.
       record(
         'mw-codegen',
         'gen',
-        'dev handler catch rethrows failures (no reportServerError, no synthesized 500)',
+        'dev handler catch rethrows failures (no reportRequestFailure, no synthesized 500)',
         code.includes('function containFailure') &&
           code.includes('throw error') &&
-          !code.includes('reportServerError') &&
-          !code.includes('solid-js/internal'),
+          !code.includes('reportRequestFailure'),
       );
       // The generated entry-server threads start.setup: awaited with the
       // request event before renderToStream, its result (or App) rendered.
