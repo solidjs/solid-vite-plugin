@@ -1692,17 +1692,32 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
             // can't trigger a re-optimize + full reload, and both entries
             // share one instance of the transport config module (the
             // server-components runtime installs its response policy there).
+            // `@solidjs/web/frames` imports that runtime as
+            // `@solidjs/web/server-functions/client`, so list that subpath
+            // too: when the app excludes `@solidjs/web`, the frames bundle
+            // would otherwise load it raw from node_modules, a second
+            // instance the response policy never reaches.
             ...(command === 'serve' && serverComponents
-              ? ['@solidjs/web/frames', '@solidjs/web/server-functions']
+              ? [
+                  '@solidjs/web/frames',
+                  '@solidjs/web/server-functions',
+                  '@solidjs/web/server-functions/client',
+                ]
               : []),
             // Plain `serverFunctions` needs the runtime too: the scanner never
             // runs the transform that adds its import, so the first "use server"
             // module forces the same re-optimize + full reload (in Vitest
             // browser mode, "Vite unexpectedly reloaded a test").
+            // `@solidjs/web/server-functions/rich-args`, which the app imports
+            // itself, also reaches the default runtime by the `/client`
+            // subpath, so that is listed as well for the same reason as
+            // frames above.
             ...(command === 'serve' &&
             serverFunctionsClientDep &&
             !(serverComponents && serverFunctionsClientDep === '@solidjs/web/server-functions')
-              ? [serverFunctionsClientDep]
+              ? serverFunctionsClientDep === '@solidjs/web/server-functions'
+                ? [serverFunctionsClientDep, '@solidjs/web/server-functions/client']
+                : [serverFunctionsClientDep]
               : []),
             // The attribution engine and the Chrome performance-tracks
             // recorder are subpaths the scanner only sees when the app's own
