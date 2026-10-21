@@ -33,6 +33,7 @@ import {
   getJsxSourceNamesOptions,
   getPrimitiveNamesOptions,
   getSourceNames,
+  remapJsxLocations,
   requestedLocations,
   type LocationTarget,
   type ResolvedSourceNames,
@@ -2699,6 +2700,18 @@ export default manifest;`;
         },
       };
 
+      // The prelude above reprinted the module, so the JSX transform's
+      // locations are positions in `code`: map them back to `source`.
+      const remapLocations = (output: string, filename: string) =>
+        sourceNames.locations && code !== source
+          ? remapJsxLocations(
+              output,
+              code,
+              combineSourcemaps(maps),
+              toPosixPath(path.relative(projectRoot, filename)),
+            )
+          : output;
+
       if (options.compiler !== 'babel') {
         if (options.babel) {
           // Custom babel options reintroduce a Babel support pass hosting
@@ -2720,10 +2733,11 @@ export default manifest;`;
           filename: nativeFilename,
           sourceMap: true,
         });
+        const jsxCode = remapLocations(result.code || '', nativeFilename);
         maps.push(result.map);
 
         const finalCode = injectSsrModuleId(
-          await resolveLazyModuleUrls(this, result.code || '', id),
+          await resolveLazyModuleUrls(this, jsxCode, id),
           moduleId,
           !!isSsr,
         );
@@ -2748,10 +2762,11 @@ export default manifest;`;
       if (!result) {
         return undefined;
       }
+      const jsxCode = remapLocations(result.code || '', id);
       maps.push(result.map);
 
       const finalCode = injectSsrModuleId(
-        await resolveLazyModuleUrls(this, result.code || '', id),
+        await resolveLazyModuleUrls(this, jsxCode, id),
         moduleId,
         !!isSsr,
       );

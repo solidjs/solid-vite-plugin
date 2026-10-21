@@ -6,6 +6,8 @@
  * plugin's transform hooks (src/index.ts) decide when to call it.
  */
 
+import { SourceMap } from 'module';
+
 /**
  * Which source names are carried into output for the dev and observe
  * runtimes to label the reactive graph with (see
@@ -191,4 +193,35 @@ export function getPrimitiveNamesOptions(
     locations: names.locations,
     ...(names.locations ? { root: target.root } : {}),
   };
+}
+
+/**
+ * Point the JSX transform's locations back at the authored source. The JSX
+ * transform runs after the native prelude (primitive names, `lazy()`,
+ * refresh), which reprints the module, so the `file:line:col` it writes is a
+ * position in that intermediate code. `map` is the prelude's combined
+ * sourcemap and `input` the code the JSX transform received: a location
+ * already in `input` is the primitives pass's, written against the authored
+ * source, and is kept. `file` is the root-relative path the compilers write.
+ */
+export function remapJsxLocations(
+  code: string,
+  input: string,
+  map: object | null,
+  file: string,
+): string {
+  if (!map || !code.includes(`"${file}:`)) return code;
+  const escaped = file.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const pattern = new RegExp(`"${escaped}:(\\d+):(\\d+)"`, 'g');
+  const prelude = new Set(input.match(pattern));
+  const consumer = new SourceMap(map as ConstructorParameters<typeof SourceMap>[0]);
+  return code.replace(pattern, (loc, line: string, column: string) => {
+    if (prelude.has(loc)) return loc;
+    // Nearest mapping at or before the position, on the same line: the
+    // offset past it carries over (one token's mapping covers its text).
+    const entry = consumer.findEntry(+line - 1, +column - 1);
+    if (!('originalLine' in entry) || entry.generatedLine !== +line - 1) return loc;
+    const original = entry.originalColumn + +column - entry.generatedColumn;
+    return `"${file}:${entry.originalLine + 1}:${original}"`;
+  });
 }

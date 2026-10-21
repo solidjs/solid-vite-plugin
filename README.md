@@ -486,9 +486,10 @@ Whatever escapes the chain is settled at the handler edge. A thrown
 counts as a failure. In a production build any other failure (a middleware
 throw, a `setup` failure, or an invalid `event.renderMode` / `event.nonce`) is contained by the
 handler instead of rejecting to the host. It is reported once to the hook
-registered with `configureServerErrors` from `@solidjs/web`, with the site
-a failed render reports (`{ kind: 'render', handling: 'failed' }` and the
-request `event`), or logged with `console.error` when no hook is
+registered with `configureServerErrors` from `@solidjs/web` (through its
+`reportRequestFailure`: `{ kind: 'request', handling: 'failed' }` and the
+request `event`; an error the runtime already reported is not heard
+again), or logged with `console.error` when no hook is
 registered, and the client gets a bodyless 500. That 500 carries the
 headers and cookies written to the request event only while the response
 head is still open: once `next()` has returned a rendered page, the head
