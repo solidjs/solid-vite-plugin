@@ -6352,6 +6352,44 @@ async function runVitestMode() {
     testPass ? undefined : out.slice(-2000),
   );
 
+  // Runtime-consuming packages in the client posture (#369). An externalized
+  // package's own imports are resolved by the host runtime, not by Vite.
+  // Node gets the `browser` condition from vitest's worker `--conditions`;
+  // Deno does not, and `@solidjs/testing-library` then loaded the server
+  // build of `@solidjs/web`. test/deno-conditions.mjs makes the workers
+  // resolve the way Deno does, so this fails unless the plugin inlines the
+  // runtime and its consumers.
+  let consumersOut = '';
+  let consumersOk = false;
+  try {
+    consumersOut = execSync('pnpm exec vitest run src/testing-library.test.tsx --pool=forks', {
+      cwd: exampleDir,
+      stdio: 'pipe',
+      timeout: 180000,
+      env: {
+        ...process.env,
+        NO_COLOR: '1',
+        NODE_OPTIONS: [
+          process.env.NODE_OPTIONS,
+          `--import=${pathToFileURL(path.join(exampleDir, 'test', 'deno-conditions.mjs')).href}`,
+        ]
+          .filter(Boolean)
+          .join(' '),
+      },
+    }).toString();
+    consumersOk = true;
+  } catch (e) {
+    consumersOut = String(e.stdout || '') + String(e.stderr || '');
+  }
+  const consumersPass = consumersOk && /2 passed/.test(consumersOut);
+  record(
+    mode,
+    'runtime-consumers',
+    '@solidjs/testing-library renders with the browser build when the host runtime ignores `browser`',
+    consumersPass,
+    consumersPass ? undefined : consumersOut.slice(-2000),
+  );
+
   // Both postures in ONE workspace (VITEST_PROJECTS=1 adds test.projects to
   // the config): the jsdom project keeps the client posture while the node
   // project gets the server posture end to end just by writing

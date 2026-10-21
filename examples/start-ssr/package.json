@@ -9,6 +9,7 @@
     "test": "node test/run.mjs && node test/http-bridge.mjs && node test/components-warning.mjs && node test/webworker-warning.mjs && node test/dedupe.mjs && node test/ssr-inline.mjs"
   },
   "devDependencies": {
+    "@solidjs/testing-library": "^1.0.0-beta.2",
     "jsdom": "^26.1.0",
     "vite": "^8.2.1",
     "@solidjs/vite-plugin": "workspace:*",

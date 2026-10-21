@@ -1152,7 +1152,7 @@ For other breaking changes, check [the migration guide of vite](https://vitejs.d
 
 If you are using [vitest](https://vitest.dev/), this plugin already injects the necessary configuration for you. It even automatically detects if you have `@testing-library/jest-dom` installed in your project and automatically adds it to the `setupFiles`. All you need to add (if you want) is `globals`, `coverage`, and other testing configuration of your choice. If you can live without those, enjoy using vitest without the need to configure it yourself.
 
-Tests default to the client posture, regardless of the app's `ssr` flag: DOM codegen, non-hydratable (nothing hydrates in a test), browser export conditions, and a `jsdom` default `test.environment`. A server-rendered app needs no `ssr: mode !== 'test'` workaround — DOM component tests just work.
+Tests default to the client posture, regardless of the app's `ssr` flag: DOM codegen, non-hydratable (nothing hydrates in a test), browser export conditions, and a `jsdom` default `test.environment`. `solid-js`, `@solidjs/web` and the packages that import them (such as `@solidjs/testing-library`) are inlined, so their imports resolve the browser build through Vite on any host runtime, Deno included. A server-rendered app needs no `ssr: mode !== 'test'` workaround — DOM component tests just work.
 
 Server-runtime unit tests (server functions, sessions, `renderToString` — anything that needs `isServer` to be `true` and the real server build of the framework) opt out per [vitest project](https://vitest.dev/guide/projects) by setting `test.environment: 'node'` (or `'edge-runtime'`) explicitly. That project gets the server posture end to end: server export conditions, ssr codegen, and the framework inlined so the whole graph — request-event storage included — resolves into one server-build instance. No inline/alias configuration needed. Both postures coexist in one workspace:
 
@@ -1172,7 +1172,7 @@ test: {
 },
 ```
 
-The posture is chosen while each project resolves its own Vite config. Vitest 5 lets inline projects reuse the root Vite server instead (`test.sharedViteServer`, on by default), which skips that step, so the plugin sets `sharedViteServer: false` when the root config declares `test.projects` — trading Vitest 5's shared-server optimization for the per-project resolution Vitest 4 always did. Setting the option yourself overrides this; with `true`, every shared project runs with the root config's posture, without the injected `jest-dom` setup file, and without the plugin's `server.deps` handling (the framework inlined for the server posture, externalized for the client one).
+The posture is chosen while each project resolves its own Vite config. Vitest 5 lets inline projects reuse the root Vite server instead (`test.sharedViteServer`, on by default), which skips that step, so the plugin sets `sharedViteServer: false` when the root config declares `test.projects` — trading Vitest 5's shared-server optimization for the per-project resolution Vitest 4 always did. Setting the option yourself overrides this; with `true`, every shared project runs with the root config's posture, without the injected `jest-dom` setup file, and without the plugin's `server.deps` handling (the framework inlined in both postures, together with its consumers such as `@solidjs/testing-library` in the client one).
 
 # Credits
 

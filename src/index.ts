@@ -1260,6 +1260,10 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
   // Names of the packages `isSemiFrameworkPkgByJson` classified, so their
   // dependencies can be taken back out of `optimizeDeps.include` (see below).
   const semiFrameworkPkgs = new Set<string>();
+  // Packages that import the Solid runtime without a `solid` export
+  // condition, found by the same crawl in the vitest client posture. They are
+  // inlined there with the runtime (see `test.server.deps` below).
+  const testRuntimeConsumers = new Set<string>();
   const tsrxCss = new Map<string, string>();
 
   // The client build's manifest, read back by SSR builds. In builder-mode
@@ -1469,10 +1473,20 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
           // the same way `development` does, and an externalized consumer
           // would split it just the same), never vitest (it manages inlining
           // via test.server.deps).
-          if (!(replaceDev || observe) || isTestMode) return false;
           const semi = SOLID_RUNTIME_PKGS.some(
             (name) => pkgJson.dependencies?.[name] || pkgJson.peerDependencies?.[name],
           );
+          if (isTestMode) {
+            // Client test posture: record the runtime consumers so
+            // `test.server.deps.inline` below can inline them, without
+            // handing them to vitefu (its `ssr.external` for their
+            // dependencies would reach vitest's `server.deps.external`).
+            if (semi && !serverTestPosture && typeof pkgJson.name === 'string') {
+              testRuntimeConsumers.add(pkgJson.name);
+            }
+            return false;
+          }
+          if (!(replaceDev || observe)) return false;
           if (semi && typeof pkgJson.name === 'string') semiFrameworkPkgs.add(pkgJson.name);
           return semi;
         },
@@ -1581,11 +1595,36 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
             test.server = { deps: { inline: [/solid-js/, /@solidjs[+/]web/] } };
           }
         } else if (
+          // `inline: true` inlines everything already (and Vite's config
+          // merge would turn it into `[true, ...]`, which vitest can't read).
+          // A user list is merged with this one; a user who externalizes
+          // solid-js keeps it external.
+          userTest.server?.deps?.inline !== true &&
           !userTest.server?.deps?.external?.find((item: string | RegExp) =>
             /solid-js/.test(item.toString()),
           )
         ) {
-          test.server = { deps: { external: [/solid-js/] } };
+          // An externalized package is imported natively, and its own imports
+          // are resolved by the host runtime, not by Vite. Node gets the
+          // `browser` condition from vitest's worker `--conditions`, but Deno
+          // does not apply them in worker threads. It resolves `deno`/`node`
+          // and lands on the server build (`isServer` true inside
+          // `@solidjs/testing-library`'s `render`, #369). Inline the runtime and the packages that consume it, so
+          // every import of `solid-js` and `@solidjs/web` goes through Vite's
+          // `browser` condition and loads one client-build instance. A
+          // consumer left external would load a second, native copy, so the
+          // consumers found by the crawl are inlined with the runtime.
+          // Packages with a `solid` export condition are inlined already
+          // through vitefu's `ssr.noExternal`.
+          test.server = {
+            deps: {
+              inline: [
+                /[\\/]node_modules[\\/]solid-js[\\/]/,
+                /[\\/]node_modules[\\/]@solidjs[\\/]web[\\/]/,
+                ...testRuntimeConsumers,
+              ],
+            },
+          };
         }
         // jest-dom's DOM matchers have no place in a server-posture project;
         // vitest browser mode already has bundled jest-dom assertions
