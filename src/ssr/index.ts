@@ -343,6 +343,27 @@ export interface StartOptions {
    */
   errorBoundary?: boolean;
   /**
+   * Reload the page once when a code-split chunk fails to load, as it does
+   * when a deploy replaced the chunk while the page was open. The generated
+   * client entry listens for Vite's `vite:preloadError` event, which fires
+   * when a dynamic import or its preloaded files fail.
+   *
+   * - A second failure within 10 seconds of the reload does not reload
+   *   again, so a chunk that is still missing shows the normal error
+   *   instead of reloading in a loop. The time of the last reload is kept
+   *   in `sessionStorage`. Without storage the page never reloads.
+   * - A listener that calls `event.preventDefault()` turns the reload off
+   *   for that failure. A listener added in `start.clientSetup` runs first.
+   * - The failed import still rejects, so the app's own error handling
+   *   runs until the page reloads.
+   *
+   * Applies to production builds and generated client entries only. An
+   * authored `entry-client` can add the listener itself.
+   *
+   * @default true
+   */
+  reloadOnChunkError?: boolean;
+  /**
    * Let a host integration own the server environment — build wiring and
    * HTTP serving alike. The plugin skips its start-mode server-build config and
    * stands its dev middlewares down (SSR serving and the server-function
@@ -434,6 +455,11 @@ const ENTRY_SERVER_ID = 'virtual:solid-ssr-entry-server.tsx';
 const ENTRY_CLIENT_ID = 'virtual:solid-ssr-entry-client.tsx';
 const DOCUMENT_ID = 'virtual:solid-ssr-document.tsx';
 const ERROR_BOUNDARY_ID = 'virtual:solid-ssr-error-boundary.tsx';
+
+// `start.reloadOnChunkError`: the sessionStorage key holding the time of the
+// last reload, and how long after it a failure does not reload again.
+const CHUNK_RELOAD_KEY = 'solid:chunk-reload';
+const CHUNK_RELOAD_WINDOW_MS = 10_000;
 
 const MANIFEST_ID = 'virtual:solid-manifest';
 const SERVER_FUNCTION_HANDLER_ID = 'virtual:solid-server-function-handler';
@@ -719,6 +745,7 @@ export function startServe(
   // codegen: with the option off, none of these imports exist anywhere.
   const serverComponents = !!internal.serverComponents;
   const errorBoundary = options.errorBoundary !== false;
+  const reloadOnChunkError = options.reloadOnChunkError !== false;
   const styleFilter = internal.styleFilter;
   // `'auto'` resolves against the project root in configResolved, before
   // any of the (lazy) uses in entry codegen and the entry transform.
@@ -930,6 +957,32 @@ export function startServe(
       : [];
   }
 
+  // `start.reloadOnChunkError`: added to the generated client entry body, so
+  // a listener from `start.clientSetup` (imported earlier) runs first and
+  // can call preventDefault() to keep the page from reloading. The listener
+  // never calls preventDefault() itself: the failed import still rejects.
+  function chunkReloadListener(): string[] {
+    if (!isBuild || !reloadOnChunkError) return [];
+    return [
+      `window.addEventListener('vite:preloadError', (event) => {`,
+      `  if (event.defaultPrevented) return;`,
+      `  try {`,
+      `    const now = Date.now();`,
+      `    const last = Number(sessionStorage.getItem(${JSON.stringify(CHUNK_RELOAD_KEY)}));`,
+      `    if (last && now - last < ${CHUNK_RELOAD_WINDOW_MS}) return;`,
+      `    sessionStorage.setItem(${JSON.stringify(CHUNK_RELOAD_KEY)}, String(now));`,
+      `  } catch {`,
+      // Without storage a repeated failure looks like a first one, which
+      // could reload forever.
+      `    return;`,
+      `  }`,
+      `  console.warn('[@solidjs/vite-plugin] A chunk failed to load, reloading the page.', event.payload);`,
+      `  location.reload();`,
+      `});`,
+      ``,
+    ];
+  }
+
   function documentTree(root: string, wrapper?: string): string[] {
     const content = wrapper ? `<${wrapper}><${root} /></${wrapper}>` : `<${root} />`;
     return isBuild && errorBoundary
@@ -1087,6 +1140,7 @@ export function startServe(
         ...(toolbar ? [`import { DevToolbar } from ${JSON.stringify(DEVTOOLS_PACKAGE)};`] : []),
         `import App from ${JSON.stringify(app)};`,
         ``,
+        ...chunkReloadListener(),
         `render(() => ${
           isBuild && errorBoundary
             ? '<DefaultErrorBoundary><App /></DefaultErrorBoundary>'
@@ -1109,6 +1163,7 @@ export function startServe(
       `import Document from ${JSON.stringify(documentSpec())};`,
       `import App from ${JSON.stringify(app)};`,
       ``,
+      ...chunkReloadListener(),
       ...(serverComponents
         ? [
             // Installs the t=0 document-adoption registry and the transport

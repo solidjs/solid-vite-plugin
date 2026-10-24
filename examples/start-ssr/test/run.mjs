@@ -162,6 +162,10 @@
 //     the app graph and finishes its top-level await before hydrate(); an
 //     edit reloads the page; an authored entry-client with the option is a
 //     config error (see runClientSetupMode).
+//   - `start.reloadOnChunkError` (chunk-reload mode, SSR_CHUNK_RELOAD): in a
+//     production build a failed chunk load reloads the page once, a second
+//     failure within 10 seconds does not, and `false` leaves the listener
+//     out (see runChunkReloadMode).
 //   - `performanceTracks` (on by default): under dev serve the generated and
 //     authored client entries import the plugin's virtual module ahead of
 //     everything else, the served module calls enablePerformanceTracks(),
@@ -173,7 +177,7 @@
 //
 // Requires the plugin built (pnpm build at the repo root) and Google Chrome.
 // Usage: node test/run.mjs
-// [dev|prod|document|css-filter|entries|endpoint|configure|no-middleware|middleware|preview|render-mode|nonce|base|builder-order|builder-prepare|extra-input|file-names|babel-hmr|frames|external|observe|perf-tracks|detect|vitest|node|client-setup]
+// [dev|prod|document|css-filter|entries|endpoint|configure|no-middleware|middleware|preview|render-mode|nonce|base|builder-order|builder-prepare|extra-input|file-names|babel-hmr|frames|external|observe|perf-tracks|detect|vitest|node|client-setup|chunk-reload]
 // (default: all)
 
 import { spawn, execSync, execFileSync } from 'node:child_process';
@@ -186,6 +190,7 @@ import {
   rmSync,
   existsSync,
   readdirSync,
+  renameSync,
   readFileSync,
   writeFileSync,
 } from 'node:fs';
@@ -7338,6 +7343,260 @@ async function runClientSetupMode() {
   }
 }
 
+// `start.reloadOnChunkError`: the generated client entry of a production
+// build reloads the page once when a code-split chunk fails to load. The
+// test deletes the chunk src/ChunkReloadApp.tsx loads on click, the way a
+// deploy replaces it while a page is open, then asserts in the browser:
+// - the first failure reloads the page,
+// - a second failure within the 10-second window does not reload again,
+// - with the chunk back, the import works and nothing reloads,
+// - `reloadOnChunkError: false` leaves the listener out entirely.
+async function runChunkReloadMode() {
+  const mode = 'chunk-reload';
+  console.log(`\n=== ${mode.toUpperCase()} ===`);
+  const port = 3189;
+  const origin = `http://localhost:${port}`;
+  const assetsDir = path.join(exampleDir, 'dist/client/assets');
+  const LISTENER_MARKER = 'solid:chunk-reload';
+  const findAssets = (marker) =>
+    readdirSync(assetsDir).filter(
+      (f) => f.endsWith('.js') && readFileSync(path.join(assetsDir, f), 'utf-8').includes(marker),
+    );
+
+  // Polls an expression that may throw while the page is reloading.
+  const waitForSafe = async (cdp, expression, timeoutMs = 10000) => {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      try {
+        if (await cdp.evalJs(expression)) return true;
+      } catch {}
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    return false;
+  };
+  // Clicks the counter until it moves, which proves the page hydrated.
+  const waitHydrated = async (cdp) => {
+    await waitForSafe(
+      cdp,
+      'document.readyState === "complete" && !!document.querySelector("#increment")',
+    );
+    return waitForSafe(
+      cdp,
+      '(document.querySelector("#increment").click(), document.querySelector("#count")?.textContent !== "0")',
+    );
+  };
+
+  const withChrome = async (run) => {
+    const chrome = startProcess(CHROME, [
+      '--headless=new',
+      `--remote-debugging-port=${CDP_PORT}`,
+      `--user-data-dir=/tmp/start-ssr-chrome-${mode}`,
+      '--no-first-run',
+      '--disable-extensions',
+      'about:blank',
+    ]);
+    const cdp = await connectChrome();
+    try {
+      await run(cdp);
+    } finally {
+      cdp.close();
+      const exited = new Promise((r) => chrome.once('exit', r));
+      try {
+        process.kill(-chrome.pid, 'SIGTERM');
+      } catch {}
+      await Promise.race([exited, new Promise((r) => setTimeout(r, 3000))]);
+      try {
+        rmSync(`/tmp/start-ssr-chrome-${mode}`, { recursive: true, force: true, maxRetries: 5 });
+      } catch {}
+    }
+  };
+
+  let server;
+  let serverLog = '';
+  const startServer = (env) => {
+    server = startProcess('node', ['server.js'], {
+      cwd: exampleDir,
+      env: { ...env, PORT: String(port), NODE_ENV: 'production' },
+    });
+    server.stdout.on('data', (d) => (serverLog += d));
+    server.stderr.on('data', (d) => (serverLog += d));
+    return waitForHttp(origin + '/', 30000, { headers: { accept: 'text/html' } });
+  };
+  const stopServer = () => {
+    try {
+      process.kill(-server.pid, 'SIGTERM');
+    } catch {}
+    server = undefined;
+  };
+  // Moves the lazy chunk out of the build and returns a function that puts
+  // it back.
+  const hideChunk = () => {
+    const [chunk] = findAssets('CHUNK-RELOAD-LAZY');
+    if (!chunk) throw new Error('lazy chunk not found in dist/client/assets');
+    const file = path.join(assetsDir, chunk);
+    renameSync(file, file + '.hidden');
+    return () => renameSync(file + '.hidden', file);
+  };
+  let restoreChunk;
+
+  try {
+    // ---- Dev: no listener ---------------------------------------------
+    const { default: solidPlugin } = await import('@solidjs/vite-plugin');
+    const probe = await createServer({
+      root: exampleDir,
+      configFile: false,
+      logLevel: 'silent',
+      plugins: [solidPlugin({ ssr: true, start: { devtools: false } })],
+      server: { middlewareMode: true },
+    });
+    try {
+      const loaded = await probe.environments.client.pluginContainer.load(
+        'virtual:solid-ssr-entry-client.tsx',
+      );
+      const code = (typeof loaded === 'string' ? loaded : loaded?.code) || '';
+      record(
+        mode,
+        'dev',
+        'the dev client entry has no reload listener',
+        code.includes('hydrate(') && !code.includes(LISTENER_MARKER),
+        code.slice(0, 600),
+      );
+    } finally {
+      await probe.close();
+    }
+
+    // ---- Prod: default on ---------------------------------------------
+    const env = { ...process.env, SSR_CHUNK_RELOAD: '1', SSR_DEVTOOLS: '0' };
+    console.log('  building…');
+    execSync('pnpm run build', { cwd: exampleDir, stdio: 'pipe', env });
+    const withListener = findAssets(LISTENER_MARKER);
+    record(
+      mode,
+      'build',
+      'only the client entry chunk carries the reload listener',
+      withListener.length === 1 && withListener[0].includes('entry-client'),
+      withListener.join(', '),
+    );
+    await startServer(env);
+    await withChrome(async (cdp) => {
+      await cdp.send('Page.navigate', { url: origin + '/' });
+      record(mode, 'prod', 'page hydrated', await waitHydrated(cdp));
+
+      restoreChunk = hideChunk();
+      await cdp.evalJs('window.__beforeReload = true');
+      await cdp.evalJs('document.querySelector("#load-chunk").click()');
+      const reloaded = await waitForSafe(
+        cdp,
+        'window.__beforeReload === undefined && document.readyState === "complete"',
+      );
+      record(
+        mode,
+        'prod',
+        'a failed chunk load reloads the page',
+        reloaded,
+        reloaded
+          ? ''
+          : `status: ${await cdp.evalJs('document.querySelector("#chunk-status")?.textContent').catch(() => '?')}; ` +
+              `requests: ${cdp.requests.filter((u) => u.includes('ChunkReload')).join(', ')}; ` +
+              `errors: ${cdp.exceptions.join(' | ')}`,
+      );
+      const stamp = await waitForSafe(
+        cdp,
+        `Number(sessionStorage.getItem(${JSON.stringify(LISTENER_MARKER)})) > 0`,
+      );
+      record(mode, 'prod', 'the reload time is kept in sessionStorage', stamp);
+
+      await waitHydrated(cdp);
+      await cdp.evalJs('window.__beforeReload = true');
+      await cdp.evalJs('document.querySelector("#load-chunk").click()');
+      const failed = await waitForSafe(
+        cdp,
+        'document.querySelector("#chunk-status")?.textContent === "failed"',
+      );
+      await new Promise((r) => setTimeout(r, 1500));
+      const stayed = await cdp.evalJs('window.__beforeReload === true').catch(() => false);
+      record(
+        mode,
+        'prod',
+        'a second failure within the window does not reload again (the import rejects)',
+        failed && stayed,
+        `failed: ${failed}, stayed: ${stayed}`,
+      );
+
+      restoreChunk();
+      restoreChunk = undefined;
+      await cdp.evalJs('sessionStorage.clear()');
+      await cdp.send('Page.navigate', { url: origin + '/' });
+      await waitHydrated(cdp);
+      await cdp.evalJs('window.__beforeReload = true');
+      await cdp.evalJs('document.querySelector("#load-chunk").click()');
+      const loaded = await waitForSafe(
+        cdp,
+        'document.querySelector("#chunk-status")?.textContent === "CHUNK-RELOAD-LAZY-loaded"',
+      );
+      const noReload = await cdp.evalJs('window.__beforeReload === true').catch(() => false);
+      record(
+        mode,
+        'prod',
+        'with the chunk present the import works and nothing reloads',
+        loaded && noReload,
+        `loaded: ${loaded}, noReload: ${noReload}`,
+      );
+    });
+    stopServer();
+
+    // ---- Prod: reloadOnChunkError: false ------------------------------
+    const offEnv = { ...env, SSR_CHUNK_RELOAD: 'off' };
+    console.log('  building (reloadOnChunkError: false)…');
+    execSync('pnpm run build', { cwd: exampleDir, stdio: 'pipe', env: offEnv });
+    record(
+      mode,
+      'build-off',
+      'no chunk carries the reload listener',
+      findAssets(LISTENER_MARKER).length === 0,
+      findAssets(LISTENER_MARKER).join(', '),
+    );
+    await startServer(offEnv);
+    await withChrome(async (cdp) => {
+      await cdp.send('Page.navigate', { url: origin + '/' });
+      await waitHydrated(cdp);
+      restoreChunk = hideChunk();
+      await cdp.evalJs('window.__beforeReload = true');
+      await cdp.evalJs('document.querySelector("#load-chunk").click()');
+      const failed = await waitForSafe(
+        cdp,
+        'document.querySelector("#chunk-status")?.textContent === "failed"',
+      );
+      await new Promise((r) => setTimeout(r, 1500));
+      const stayed = await cdp.evalJs('window.__beforeReload === true').catch(() => false);
+      record(
+        mode,
+        'prod-off',
+        'a failed chunk load does not reload the page',
+        failed && stayed,
+        `failed: ${failed}, stayed: ${stayed}`,
+      );
+      restoreChunk();
+      restoreChunk = undefined;
+    });
+  } catch (e) {
+    record(
+      mode,
+      'run',
+      'mode completed',
+      false,
+      String(e?.stack ?? e) + (serverLog ? `\nserver: ${serverLog.slice(-2000)}` : ''),
+    );
+  } finally {
+    restoreChunk?.();
+    if (server) stopServer();
+    // Leave dist in the standard state for anyone poking at it.
+    try {
+      execSync('pnpm run build', { cwd: exampleDir, stdio: 'pipe' });
+    } catch {}
+  }
+}
+
 const ALL_MODES = [
   'dev',
   'prod',
@@ -7365,6 +7624,7 @@ const ALL_MODES = [
   'vitest',
   'node',
   'client-setup',
+  'chunk-reload',
 ];
 const arg = process.argv[2];
 const modes = ALL_MODES.includes(arg) ? [arg] : ALL_MODES;
@@ -7394,6 +7654,7 @@ for (const mode of modes) {
   else if (mode === 'vitest') await runVitestMode();
   else if (mode === 'node') await runNodeMode();
   else if (mode === 'client-setup') await runClientSetupMode();
+  else if (mode === 'chunk-reload') await runChunkReloadMode();
   else await runDetectMode();
 }
 

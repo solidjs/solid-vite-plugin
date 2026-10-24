@@ -235,7 +235,7 @@ The object form carries the options (`start: true` is pure sugar for
 `start: {}` — both mean the identical start mode with defaults, and
 `false`/absent means off): `app`, `document`, `entryServer`, `entryClient`,
 `middleware`, `setup`, `instrument`, `clientSetup`, `renderMode`, `env`,
-`devtools`, `errorBoundary`,
+`devtools`, `errorBoundary`, `reloadOnChunkError`,
 `css`, `external`, `node`, all documented below.
 
 Install `@solidjs/start-devtools` as a development dependency to add the
@@ -571,7 +571,7 @@ runs before it hydrates (SSR mode) or mounts (client mode) the app. Use it
 for browser setup that must be in place before the first render:
 
 - a server-function transport wrapper or request-header hook,
-- a `vite:preloadError` listener,
+- a `vite:preloadError` listener of your own (see `reloadOnChunkError`),
 - an error reporter's `init()`.
 
 ```ts
@@ -579,7 +579,8 @@ for browser setup that must be in place before the first render:
 solid({ start: { clientSetup: './src/client-setup.ts' }, ssr: true });
 
 // src/client-setup.ts
-window.addEventListener('vite:preloadError', () => window.location.reload());
+import { initErrorReporter } from './error-reporter';
+initErrorReporter();
 ```
 
 How it runs:
@@ -750,6 +751,24 @@ error overlay owns dev errors), as are authored entries — the boundary is
 generated-entry codegen. Disable it with `start: { errorBoundary: false }`
 when application middleware owns error handling (an error middleware only
 sees the throw when no boundary catches it first). Default: `true`.
+
+**`reloadOnChunkError`** reloads the page once when a code-split chunk fails
+to load. This happens when a deploy replaced the chunk while the page was
+open. The generated client entry listens for Vite's `vite:preloadError`
+event, which fires when a dynamic import or its preloaded files fail.
+
+- A second failure within 10 seconds of the reload does not reload again.
+  A chunk that is still missing shows the normal error instead of reloading
+  in a loop. The time of the last reload is kept in `sessionStorage`, and
+  without storage the page never reloads.
+- A listener that calls `event.preventDefault()` turns the reload off for
+  that failure. A listener added in `clientSetup` runs first.
+- The failed import still rejects, so the app's own error handling runs
+  until the page reloads.
+- It applies to production builds with a generated client entry. An
+  authored `entry-client` can add the listener itself.
+
+Disable it with `start: { reloadOnChunkError: false }`. Default: `true`.
 
 **`css.filter`** — include/exclude patterns
 ([picomatch](https://github.com/micromatch/picomatch) globs or regexes;
