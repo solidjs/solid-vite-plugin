@@ -162,6 +162,10 @@
 //     the app graph and finishes its top-level await before hydrate(); an
 //     edit reloads the page; an authored entry-client with the option is a
 //     config error (see runClientSetupMode).
+//   - `start.earlyHints` (early-hints mode, START_EARLY_HINTS=1): the Node
+//     entry and `vite preview` send a 103 with the client entry's scripts
+//     and stylesheets, a host without the callback gets Link headers, and
+//     nothing is hinted without the option (see runEarlyHintsMode).
 //   - `performanceTracks` (on by default): under dev serve the generated and
 //     authored client entries import the plugin's virtual module ahead of
 //     everything else, the served module calls enablePerformanceTracks(),
@@ -173,7 +177,7 @@
 //
 // Requires the plugin built (pnpm build at the repo root) and Google Chrome.
 // Usage: node test/run.mjs
-// [dev|prod|document|css-filter|entries|endpoint|configure|no-middleware|middleware|preview|render-mode|nonce|base|builder-order|builder-prepare|extra-input|file-names|babel-hmr|frames|external|observe|perf-tracks|detect|vitest|node|client-setup]
+// [dev|prod|document|css-filter|entries|endpoint|configure|no-middleware|middleware|preview|render-mode|nonce|base|builder-order|builder-prepare|extra-input|file-names|babel-hmr|frames|external|observe|perf-tracks|detect|vitest|node|client-setup|early-hints]
 // (default: all)
 
 import { spawn, execSync, execFileSync } from 'node:child_process';
@@ -7338,6 +7342,198 @@ async function runClientSetupMode() {
   }
 }
 
+// `start.earlyHints`: a production SSR build hints the client entry's
+// scripts and stylesheets before the page renders.
+// - The `start.node` entry and `vite preview` send a real 103 response.
+// - server.js calls handleRequest without an `earlyHints` callback, so the
+//   links land as Link headers on the page response instead.
+// - Hinted URLs are the entry script the page loads and its stylesheets,
+//   and each one exists.
+// - Requests that never reach the page render get no hints.
+// - Without the option nothing is hinted.
+async function runEarlyHintsMode() {
+  const mode = 'early-hints';
+  console.log(`\n=== ${mode.toUpperCase()} ===`);
+  const nodePort = 3190;
+  const serverPort = 3191;
+  const previewPort = 3192;
+
+  const splitLinks = (value) =>
+    value ? (Array.isArray(value) ? value : [value]).flatMap((v) => v.split(/,\s*(?=<)/)) : [];
+  const targetOf = (link) => /^<([^>]+)>/.exec(link)?.[1];
+  // Requests a URL with node:http to see 1xx responses, which fetch() hides.
+  const requestWithHints = (url, { method = 'GET', accept = 'text/html' } = {}) =>
+    new Promise((resolve, reject) => {
+      const hints = [];
+      const req = http.request(url, { method, headers: { accept } }, (res) => {
+        let body = '';
+        res.setEncoding('utf-8');
+        res.on('data', (d) => (body += d));
+        res.on('end', () =>
+          resolve({ status: res.statusCode, hints, link: res.headers.link ?? null, body }),
+        );
+      });
+      req.on('information', (info) => {
+        if (info.statusCode === 103) hints.push(...splitLinks(info.headers.link));
+      });
+      req.on('error', reject);
+      req.end();
+    });
+
+  // What the page itself loads: its module entry script and stylesheets.
+  const pageAssets = (html) => ({
+    entry: /<script type="module"[^>]*src="([^"]+)"/.exec(html)?.[1],
+    styles: [...html.matchAll(/<link[^>]+rel="stylesheet"[^>]+href="([^"]+)"/g)].map((m) => m[1]),
+  });
+
+  const checkHints = async (phase, origin, links, html) => {
+    const { entry, styles } = pageAssets(html);
+    const scripts = links.filter((l) => l.endsWith('; rel=modulepreload')).map(targetOf);
+    const hintedStyles = links.filter((l) => l.endsWith('; rel=preload; as=style')).map(targetOf);
+    record(
+      mode,
+      phase,
+      'the entry script the page loads is hinted as modulepreload',
+      !!entry && scripts.includes(entry),
+      `entry: ${entry}; hints: ${links.join(' | ')}`,
+    );
+    record(
+      mode,
+      phase,
+      'the entry stylesheets are hinted as style preloads',
+      hintedStyles.length > 0 && hintedStyles.every((href) => styles.includes(href)),
+      `styles: ${styles.join(', ')}; hinted: ${hintedStyles.join(', ')}`,
+    );
+    const missing = [];
+    for (const href of [...scripts, ...hintedStyles]) {
+      const res = await fetch(origin + href);
+      if (res.status !== 200) missing.push(`${href} (${res.status})`);
+    }
+    record(mode, phase, 'every hinted URL exists', missing.length === 0, missing.join(', '));
+  };
+
+  let server;
+  let serverLog = '';
+  const start = (cmd, args, env, origin) => {
+    server = startProcess(cmd, args, { cwd: exampleDir, env });
+    server.stdout.on('data', (d) => (serverLog += d));
+    server.stderr.on('data', (d) => (serverLog += d));
+    return waitForHttp(origin + '/', 30000, { headers: { accept: 'text/html' } });
+  };
+  const stop = () => {
+    try {
+      process.kill(-server.pid, 'SIGTERM');
+    } catch {}
+    server = undefined;
+  };
+
+  try {
+    const env = { ...process.env, START_EARLY_HINTS: '1', START_NODE: '1', SSR_DEVTOOLS: '0' };
+    console.log('  building…');
+    execSync('pnpm run build', { cwd: exampleDir, stdio: 'pipe', env });
+
+    // ---- start.node: a real 103 -----------------------------------------
+    let origin = `http://localhost:${nodePort}`;
+    await start('node', ['dist/server/node.js'], { ...env, PORT: String(nodePort) }, origin);
+    const page = await requestWithHints(origin + '/');
+    record(
+      mode,
+      'node',
+      'a page request gets a 103 with Link values',
+      page.status === 200 && page.hints.length > 0,
+      `status: ${page.status}; hints: ${page.hints.length}`,
+    );
+    await checkHints('node', origin, page.hints, page.body);
+    record(
+      mode,
+      'node',
+      'the page response carries no Link header (the 103 replaced it)',
+      page.link === null,
+      String(page.link),
+    );
+    const endpoint = await requestWithHints(origin + '/_server/missing', {
+      method: 'POST',
+      accept: '*/*',
+    });
+    record(
+      mode,
+      'node',
+      'a server-function request gets no hints',
+      endpoint.hints.length === 0 && endpoint.link === null,
+      `status: ${endpoint.status}; hints: ${endpoint.hints.join(' | ')}; link: ${endpoint.link}`,
+    );
+    stop();
+
+    // ---- server.js: no callback, Link headers ----------------------------
+    origin = `http://localhost:${serverPort}`;
+    await start(
+      'node',
+      ['server.js'],
+      { ...env, PORT: String(serverPort), NODE_ENV: 'production' },
+      origin,
+    );
+    const fallback = await requestWithHints(origin + '/');
+    const headerLinks = splitLinks(fallback.link);
+    record(
+      mode,
+      'link-header',
+      'without a callback the links are Link headers on the page, with no 103',
+      fallback.hints.length === 0 && headerLinks.length > 0,
+      `hints: ${fallback.hints.length}; link: ${fallback.link}`,
+    );
+    await checkHints('link-header', origin, headerLinks, fallback.body);
+    stop();
+
+    // ---- vite preview: a real 103 ----------------------------------------
+    origin = `http://localhost:${previewPort}`;
+    await start(
+      'pnpm',
+      ['exec', 'vite', 'preview', '--port', String(previewPort), '--strictPort'],
+      env,
+      origin,
+    );
+    const preview = await requestWithHints(origin + '/');
+    record(
+      mode,
+      'preview',
+      'vite preview sends a 103 for a page request',
+      preview.status === 200 && preview.hints.length > 0 && preview.link === null,
+      `status: ${preview.status}; hints: ${preview.hints.length}; link: ${preview.link}`,
+    );
+    stop();
+
+    // ---- off --------------------------------------------------------------
+    const offEnv = { ...process.env, START_NODE: '1', SSR_DEVTOOLS: '0' };
+    console.log('  building (earlyHints off)…');
+    execSync('pnpm run build', { cwd: exampleDir, stdio: 'pipe', env: offEnv });
+    origin = `http://localhost:${nodePort}`;
+    await start('node', ['dist/server/node.js'], { ...offEnv, PORT: String(nodePort) }, origin);
+    const off = await requestWithHints(origin + '/');
+    record(
+      mode,
+      'off',
+      'without the option there is no 103 and no Link header',
+      off.status === 200 && off.hints.length === 0 && off.link === null,
+      `status: ${off.status}; hints: ${off.hints.length}; link: ${off.link}`,
+    );
+    stop();
+  } catch (e) {
+    record(
+      mode,
+      'run',
+      'mode completed',
+      false,
+      String(e?.stack ?? e) + (serverLog ? `\nserver: ${serverLog.slice(-2000)}` : ''),
+    );
+  } finally {
+    if (server) stop();
+    // Leave dist in the standard state for anyone poking at it.
+    try {
+      execSync('pnpm run build', { cwd: exampleDir, stdio: 'pipe' });
+    } catch {}
+  }
+}
+
 const ALL_MODES = [
   'dev',
   'prod',
@@ -7365,6 +7561,7 @@ const ALL_MODES = [
   'vitest',
   'node',
   'client-setup',
+  'early-hints',
 ];
 const arg = process.argv[2];
 const modes = ALL_MODES.includes(arg) ? [arg] : ALL_MODES;
@@ -7394,6 +7591,7 @@ for (const mode of modes) {
   else if (mode === 'vitest') await runVitestMode();
   else if (mode === 'node') await runNodeMode();
   else if (mode === 'client-setup') await runClientSetupMode();
+  else if (mode === 'early-hints') await runEarlyHintsMode();
   else await runDetectMode();
 }
 

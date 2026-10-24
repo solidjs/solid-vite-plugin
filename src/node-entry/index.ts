@@ -11,7 +11,7 @@ import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { fileURLToPath } from 'node:url';
 import { handleRequest } from './server.js';
-import { sendWebResponse, webRequestFromNode } from '../http.js';
+import { nodeEarlyHints, sendWebResponse, webRequestFromNode } from '../http.js';
 
 // Baked in at build time by the plugin (the generated header above this
 // module's code).
@@ -152,6 +152,7 @@ export function createListener({
       // `nativeEvent` is the raw Node request, readable via getRequestEvent().
       const response = await handleRequest(webRequestFromNode(req, undefined, res), {
         event: { nativeEvent: req, ...event?.(req) },
+        earlyHints: nodeEarlyHints(res),
       });
       await sendWebResponse(res, response);
     } catch (error) {
