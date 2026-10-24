@@ -891,7 +891,8 @@ between the modes), and `examples/ssr` for the manual `ssr: true` wiring.
 Enables `"use server"` server function compilation (experimental). Pass
 `true` for the defaults (runtime from `@solidjs/web/server-functions`,
 endpoint `/_server`) or an options object (`runtime`, `endpoint`, `filter`,
-`directive`, `manifest`, `devMiddleware`, `configure`) to customize.
+`directive`, `manifest`, `devMiddleware`, `configure`, `serialization`) to
+customize.
 
 The setup is zero-config: in dev a middleware on the Vite server handles the
 endpoint end to end — no server-function code needed in your server entry.
@@ -948,6 +949,51 @@ configureServerFunctionsServer({
 ```
 
 Set `csrf: false` only when another trusted layer protects the endpoint.
+
+**`serialization: './src/serialization.ts'`** sets the codec for
+server-function payloads. Use it to send values the default codec does not
+handle, such as ORM id types, decimals, or your own classes. The module's
+default export is the `JSONCodecOptions` object from
+`@solidjs/web/serialization`:
+
+```ts
+// src/serialization.ts
+import { createPlugin } from '@solidjs/web/serialization';
+import { Feature } from 'seroval';
+import { ObjectId } from 'mongodb';
+
+const ObjectIdPlugin = createPlugin<ObjectId, { hex: any }>({
+  tag: 'app/ObjectId',
+  test: (value) => value instanceof ObjectId,
+  parse: {
+    sync: (value, ctx) => ({ hex: ctx.parse(value.toHexString()) }),
+    async: async (value, ctx) => ({ hex: await ctx.parse(value.toHexString()) }),
+    stream: (value, ctx) => ({ hex: ctx.parse(value.toHexString()) }),
+  },
+  serialize: () => {
+    throw new Error('unused by the JSON codec');
+  },
+  deserialize: (node, ctx) => new ObjectId(ctx.deserialize(node.hex) as string),
+});
+
+export default {
+  plugins: [ObjectIdPlugin],
+  // Optional. The default disables `RegExp`; an override replaces it.
+  disabledFeatures: Feature.RegExp,
+};
+```
+
+- Both ends of the wire must use the same codec. The plugin bundles the module
+  into the client and the server and configures the runtime on both sides, so
+  they cannot drift apart.
+- The module ships to the browser, so it must not import server-only code.
+- A bare array of plugins (`export default [ObjectIdPlugin]`) is shorthand for
+  `{ plugins: [...] }`. This is the shape of SolidStart's
+  `serialization.plugins` module, so that file works unchanged.
+- The option owns the runtime's `codec` setting. Do not also pass `codec` to
+  `configureServerFunctionsServer` or `configureServerFunctionsClient`.
+- Only server-function payloads use it. The SSR hydration payload is written
+  by `renderToStream`, which takes its own `plugins` option.
 
 Meta-frameworks that need to control plugin ordering and dispatch requests
 through their own server should use the standalone `serverFunctions()`

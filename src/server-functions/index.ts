@@ -129,6 +129,33 @@ export interface ServerFunctionsOptions {
    */
   configure?: string;
   /**
+   * Path to a module (resolved relative to the Vite root, like `configure`)
+   * whose default export sets the codec server-function payloads are
+   * serialized with: the `JSONCodecOptions` from `@solidjs/web/serialization`
+   * (`plugins`, `disabledFeatures`, `depthLimit`, `serializeErrorStacks`). A
+   * bare array of plugins is accepted too, as shorthand for `{ plugins }`
+   * (SolidStart's `serialization.plugins` shape).
+   *
+   * ```ts
+   * // src/serialization.ts
+   * import { createPlugin } from '@solidjs/web/serialization';
+   * export default { plugins: [ObjectIdPlugin] };
+   * ```
+   *
+   * The codec must match on both ends of the wire, so the plugin bundles
+   * the module into both the client and the server and passes it as
+   * `codec` to `configureServerFunctions{Client,Server}` from every compiled
+   * module and from the generated `virtual:solid-server-function-handler`.
+   * It must not import server-only code. The option owns the runtime's
+   * `codec` config: a `codec` set elsewhere is replaced, not merged.
+   *
+   * Only server-function payloads use it. The SSR hydration payload is
+   * serialized by `renderToStream`, which takes its own `plugins` option.
+   *
+   * @default undefined
+   */
+  serialization?: string;
+  /**
    * Enable server components (experimental): `"use server"` functions that
    * return a component. Responses for them are served over the
    * server-function endpoint as streamed HTML that the client runtime
@@ -171,6 +198,10 @@ const DEFAULT_RUNTIME = '@solidjs/web/server-functions';
 // equals it, no configure calls need to be emitted at all.
 const DEFAULT_ENDPOINT = '/_server';
 const STORAGE_SOURCE = '@solidjs/web/storage';
+// The `serialization` module's default export, as imported by generated code,
+// and the codec it becomes (a bare plugin array is shorthand for `{ plugins }`).
+const SERIALIZATION_BINDING = '$$serialization';
+const CODEC_EXPRESSION = `Array.isArray(${SERIALIZATION_BINDING}) ? { plugins: ${SERIALIZATION_BINDING} } : ${SERIALIZATION_BINDING}`;
 
 /**
  * The endpoint mount as the runtime is configured with it — the option (or
@@ -183,6 +214,21 @@ export function normalizeServerFunctionsEndpoint(endpoint?: string): string {
   const option = endpoint || DEFAULT_ENDPOINT;
   return option.startsWith('/') ? option : '/' + option;
 }
+// Resolves a module-path option against the Vite root and checks it exists,
+// so a typo fails at config time rather than as an unresolved import.
+function resolveModuleOption(
+  name: 'configure' | 'serialization',
+  value: string | undefined,
+  root: string,
+): string | null {
+  if (!value) return null;
+  const absolute = path.isAbsolute(value) ? value : path.resolve(root, value);
+  if (!existsSync(absolute)) {
+    throw new Error(`[@solidjs/vite-plugin] serverFunctions.${name} does not exist: ${value}`);
+  }
+  return absolute;
+}
+
 // Server-only handler: importing it wires the endpoint in one line
 // (registrations via the manifest, request-event scoping, endpoint config).
 const HANDLER_ID = 'virtual:solid-server-function-handler';
@@ -409,6 +455,8 @@ export function serverFunctions(
   // Absolute path of the user's `configure` module; resolved (and existence-
   // checked) in configResolved, before any handler load can read it.
   let configureModulePath: string | null = null;
+  // Absolute path of the user's `serialization` module, resolved the same way.
+  let serializationModulePath: string | null = null;
 
   const manifest = createManifest();
 
@@ -473,15 +521,29 @@ export function serverFunctions(
   // configure call to each guarantees it runs before any reference is used.
   // The default endpoint appends nothing, keeping compiled output byte-
   // identical for setups that wire the runtime themselves.
-  function endpointConfigureSnippet(mode: CompileOptions['mode']): string {
-    if (resolvedEndpoint === DEFAULT_ENDPOINT) return '';
+  // The `serialization` codec rides the same calls: it has to be in place
+  // before a reference encodes arguments or decodes a result, on both sides.
+  function runtimeConfigureSnippet(mode: CompileOptions['mode']): string {
+    const config: string[] = [];
+    if (resolvedEndpoint !== DEFAULT_ENDPOINT) {
+      config.push(`endpoint: ${JSON.stringify(resolvedEndpoint)}`);
+    }
+    if (serializationModulePath) config.push(`codec: ${CODEC_EXPRESSION}`);
+    if (config.length === 0) return '';
     const name =
       mode === 'server' ? 'configureServerFunctionsServer' : 'configureServerFunctionsClient';
     const source = mode === 'server' ? runtime.server : runtime.client;
     return (
+      serializationImport() +
       `\nimport { ${name} as $$configureServerFunctions } from ${JSON.stringify(source)};` +
-      `\n$$configureServerFunctions({ endpoint: ${JSON.stringify(resolvedEndpoint)} });\n`
+      `\n$$configureServerFunctions({ ${config.join(', ')} });\n`
     );
+  }
+
+  function serializationImport(): string {
+    return serializationModulePath
+      ? `\nimport ${SERIALIZATION_BINDING} from ${JSON.stringify(serializationModulePath)};`
+      : '';
   }
 
   // Dev omits the manifest import: the middleware loads the referenced
@@ -513,6 +575,7 @@ export function serverFunctions(
       // below doesn't actually matter — runtime config merges per key —
       // import-first is just the cleaner shape.
       ...(configureModulePath ? [`import ${JSON.stringify(configureModulePath)};`] : []),
+      ...(serializationModulePath ? [serializationImport().trim()] : []),
       ...(includeManifest ? [`import ${JSON.stringify(manifestId)};`] : []),
       `import { handleServerFunctionRequest as handle, configureServerFunctionsServer } from ${JSON.stringify(runtime.server)};`,
       `import { provideRequestEvent } from ${JSON.stringify(STORAGE_SOURCE)};`,
@@ -537,6 +600,8 @@ export function serverFunctions(
       // depend on that: in dev, a mutation from an already-open page can be
       // the first request after a server restart.
       `configureServerFunctionsServer({ provideEvent: provideRequestEvent, endpoint: ${JSON.stringify(resolvedEndpoint)}${
+        serializationModulePath ? `, codec: ${CODEC_EXPRESSION}` : ''
+      }${
         components
           ? ', transformResult: frameTransformResult, transformFlightResult: frameTransformFlightResult, transformDirectResult: frameTransformDirectResult'
           : ''
@@ -770,7 +835,7 @@ export function serverFunctions(
     return {
       // Appended (not prepended) so the source map for the compiled module
       // stays valid; imports hoist and the endpoint is only read at call time.
-      code: (result.code || '') + endpointConfigureSnippet(mode),
+      code: (result.code || '') + runtimeConfigureSnippet(mode),
       map: result.map,
     };
   }
@@ -804,17 +869,8 @@ export function serverFunctions(
         isSsrBuild = !!config.build.ssr;
         outDir = config.build.outDir;
         resolvedEndpoint = joinBase(config.base, endpoint);
-        if (options.configure) {
-          const absolute = path.isAbsolute(options.configure)
-            ? options.configure
-            : path.resolve(root, options.configure);
-          if (!existsSync(absolute)) {
-            throw new Error(
-              `[@solidjs/vite-plugin] serverFunctions.configure does not exist: ${options.configure}`,
-            );
-          }
-          configureModulePath = absolute;
-        }
+        configureModulePath = resolveModuleOption('configure', options.configure, root);
+        serializationModulePath = resolveModuleOption('serialization', options.serialization, root);
         if (isBuild && isSsrBuild) {
           // Classic two-invocation build: pick up the modules the client
           // build discovered so the server manifest registers them even when
