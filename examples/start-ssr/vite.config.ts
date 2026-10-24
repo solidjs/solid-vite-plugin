@@ -34,6 +34,9 @@ import solidPlugin from '@solidjs/vite-plugin';
 // - SSR_CLIENT_SETUP=1 wires src/client-setup.ts through `start.clientSetup`
 //   (client-setup mode) and wraps App in src/ClientSetupApp.tsx, which
 //   records whether the setup module settled before hydration rendered.
+// - SSR_CHUNK_RELOAD=1 swaps in src/ChunkReloadApp.tsx (chunk-reload mode),
+//   whose button loads a code-split chunk. `off` also sets
+//   `start.reloadOnChunkError: false`.
 // - SOLID_OBSERVE=1 (observe mode) turns on `observe`: the `observe` export
 //   condition everywhere and the compiler's `sourceNames` for both
 //   postures, so the built server AND client bundles carry component labels.
@@ -238,6 +241,17 @@ export default defineConfig({
               // src/ClientSetupApp.tsx wraps App to record the order.
               ...(process.env.SSR_CLIENT_SETUP
                 ? { clientSetup: './src/client-setup.ts', app: './src/ClientSetupApp.tsx' }
+                : {}),
+              // SSR_CHUNK_RELOAD (chunk-reload mode): src/ChunkReloadApp.tsx
+              // adds a button that loads a code-split chunk. `off` also sets
+              // `start.reloadOnChunkError: false`.
+              ...(process.env.SSR_CHUNK_RELOAD
+                ? {
+                    app: './src/ChunkReloadApp.tsx',
+                    ...(process.env.SSR_CHUNK_RELOAD === 'off'
+                      ? { reloadOnChunkError: false }
+                      : {}),
+                  }
                 : {}),
               // SSR_RENDER_MODE (render-mode mode): `middleware` → the
               // per-request policy in src/middleware.ts (`event.renderMode`);
