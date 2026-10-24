@@ -139,6 +139,16 @@ export async function sendWebResponse(res: ServerResponse, response: Response): 
   }
 }
 
+// The `earlyHints` callback the Node bridges pass to `handleRequest`: sends
+// the links as a `103 Early Hints` response. Hints only help before the
+// response head is sent, so it does nothing after that.
+export function nodeEarlyHints(res: ServerResponse): (links: string[]) => void {
+  return (links) => {
+    if (res.headersSent || typeof res.writeEarlyHints !== 'function') return;
+    res.writeEarlyHints({ link: links });
+  };
+}
+
 export function joinBase(base: string, pathname: string): string {
   // Absolute-URL or relative bases (CDN deploys, './') don't prefix
   // same-origin server paths.

@@ -3,5 +3,5 @@
 // The import stays external in the runtime artifact — see rollup.config.js.
 export function handleRequest(
   request: Request,
-  options?: { event?: Record<string, unknown> },
+  options?: { event?: Record<string, unknown>; earlyHints?: (links: string[]) => void },
 ): Promise<Response>;

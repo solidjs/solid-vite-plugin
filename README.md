@@ -235,7 +235,7 @@ The object form carries the options (`start: true` is pure sugar for
 `start: {}` — both mean the identical start mode with defaults, and
 `false`/absent means off): `app`, `document`, `entryServer`, `entryClient`,
 `middleware`, `setup`, `instrument`, `clientSetup`, `renderMode`, `env`,
-`devtools`, `errorBoundary`,
+`devtools`, `errorBoundary`, `earlyHints`,
 `css`, `external`, `node`, all documented below.
 
 Install `@solidjs/start-devtools` as a development dependency to add the
@@ -750,6 +750,34 @@ error overlay owns dev errors), as are authored entries — the boundary is
 generated-entry codegen. Disable it with `start: { errorBoundary: false }`
 when application middleware owns error handling (an error middleware only
 sees the throw when no boundary catches it first). Default: `true`.
+
+**`earlyHints`** sends the client entry's scripts and stylesheets as
+`103 Early Hints` before a page renders. The browser starts downloading
+them while the server is still running middleware, `setup` and the render.
+
+```ts
+solid({ start: { earlyHints: true }, ssr: true });
+```
+
+- The hints go out once the middleware chain reaches the page render.
+  Requests that middleware answers, and server-function calls, get none.
+- The built-in Node servers (`node` and `vite preview`) send a real `103`.
+- Another host can do the same by passing a callback to `handleRequest`.
+  Each link is a `Link` header value:
+
+  ```js
+  handleRequest(request, {
+    earlyHints: (links) => res.writeEarlyHints({ link: links }),
+  });
+  ```
+
+- Without a callback, the links are added as `Link` headers on the page
+  response. CDNs such as Cloudflare turn those into `103` responses.
+- Stylesheets are hinted as `rel=preload; as=style` and scripts as
+  `rel=modulepreload`.
+
+It applies to production builds in SSR mode. It is off by default, because
+some proxies and clients mishandle `1xx` responses. Default: `false`.
 
 **`css.filter`** — include/exclude patterns
 ([picomatch](https://github.com/micromatch/picomatch) globs or regexes;

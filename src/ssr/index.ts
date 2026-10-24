@@ -79,7 +79,7 @@ import {
   devStylePatch,
   renderDevStyleTag,
 } from '../dev-manifest.js';
-import { joinBase, sendWebResponse, webRequestFromNode } from '../http.js';
+import { joinBase, nodeEarlyHints, sendWebResponse, webRequestFromNode } from '../http.js';
 
 /**
  * Options for the main plugin's `start` option (`start: true` is
@@ -342,6 +342,28 @@ export interface StartOptions {
    * @default true
    */
   errorBoundary?: boolean;
+  /**
+   * Send the client entry's scripts and stylesheets as `103 Early Hints`
+   * before a page renders, so the browser starts downloading them while the
+   * server is still working: middleware, `start.setup` and the render
+   * itself. Hints go out after the middleware chain reaches the page render.
+   *
+   * - The built-in Node servers (`start.node` and `vite preview`) send a
+   *   real `103` response.
+   * - A host can do the same by passing an `earlyHints(links)` callback to
+   *   `handleRequest(request, { earlyHints })`. Each link is a `Link` header
+   *   value.
+   * - Without a callback, the links are added as `Link` headers on the page
+   *   response. CDNs such as Cloudflare turn those into `103` responses.
+   *
+   * Stylesheets are hinted as `rel=preload; as=style` and scripts as
+   * `rel=modulepreload`. Applies to production builds in SSR mode only.
+   * Off by default, because some proxies and clients mishandle `1xx`
+   * responses.
+   *
+   * @default false
+   */
+  earlyHints?: boolean;
   /**
    * Let a host integration own the server environment — build wiring and
    * HTTP serving alike. The plugin skips its start-mode server-build config and
@@ -719,6 +741,7 @@ export function startServe(
   // codegen: with the option off, none of these imports exist anywhere.
   const serverComponents = !!internal.serverComponents;
   const errorBoundary = options.errorBoundary !== false;
+  const earlyHints = !!options.earlyHints;
   const styleFilter = internal.styleFilter;
   // `'auto'` resolves against the project root in configResolved, before
   // any of the (lazy) uses in entry codegen and the entry transform.
@@ -1232,10 +1255,8 @@ export function startServe(
         `  return base + (file[0] === '/' ? file.slice(1) : file);`,
         `}`,
         ``,
-        `let clientEntryUrl;`,
-        `function resolveClientEntry() {`,
-        `  if (clientEntryUrl !== undefined) return clientEntryUrl;`,
-        `  clientEntryUrl = null;`,
+        // The manifest key of the client entry.
+        `function clientEntryKey() {`,
         // The plugin's manifest module names the client entry it injected
         // into the build (`_entry`): every configured input is a genuine
         // `isEntry` record (a filesystem router's `buildInputs` lists every
@@ -1243,19 +1264,64 @@ export function startServe(
         // whichever sorts first (#353). The scan stays as the fallback for
         // hand-rolled manifests without the stamp.
         `  const stamped = manifest._entry && manifest[manifest._entry];`,
-        `  if (stamped && stamped.file) {`,
-        `    return (clientEntryUrl = joinAssetPath(manifest._base, stamped.file));`,
-        `  }`,
+        `  if (stamped && stamped.file) return manifest._entry;`,
         `  for (const key in manifest) {`,
         `    const chunk = manifest[key];`,
-        `    if (chunk && chunk.isEntry && chunk.file) {`,
-        `      clientEntryUrl = joinAssetPath(manifest._base, chunk.file);`,
-        `      break;`,
-        `    }`,
+        `    if (chunk && chunk.isEntry && chunk.file) return key;`,
         `  }`,
+        `}`,
+        ``,
+        `let clientEntryUrl;`,
+        `function resolveClientEntry() {`,
+        `  if (clientEntryUrl !== undefined) return clientEntryUrl;`,
+        `  const key = clientEntryKey();`,
+        `  clientEntryUrl = key ? joinAssetPath(manifest._base, manifest[key].file) : null;`,
         `  return clientEntryUrl;`,
         `}`,
       );
+      if (earlyHints && !clientMode) {
+        // `start.earlyHints`: the client entry and its static imports as
+        // modulepreload links, and their stylesheets as style preloads.
+        lines.push(
+          ``,
+          `let earlyHintLinks;`,
+          `function resolveEarlyHintLinks() {`,
+          `  if (earlyHintLinks !== undefined) return earlyHintLinks;`,
+          `  const scripts = [];`,
+          `  const styles = new Set();`,
+          `  const seen = new Set();`,
+          `  const visit = (key) => {`,
+          `    if (seen.has(key)) return;`,
+          `    seen.add(key);`,
+          `    const chunk = manifest[key];`,
+          `    if (!chunk || !chunk.file) return;`,
+          `    scripts.push(chunk.file);`,
+          `    for (const file of chunk.css || []) styles.add(file);`,
+          `    for (const imported of chunk.imports || []) visit(imported);`,
+          `  };`,
+          `  const key = clientEntryKey();`,
+          `  if (key) visit(key);`,
+          // Header values must be ASCII, and a chunk name can contain any
+          // character a source file name can.
+          `  const target = (file) => '<' + encodeURI(joinAssetPath(manifest._base, file)) + '>';`,
+          `  earlyHintLinks = [`,
+          `    ...[...styles].map((file) => target(file) + '; rel=preload; as=style'),`,
+          `    ...scripts.map((file) => target(file) + '; rel=modulepreload'),`,
+          `  ];`,
+          `  return earlyHintLinks;`,
+          `}`,
+          ``,
+          // Sent once per request, right before the page render. A host
+          // callback (the Node bridges send a real 103) wins. Otherwise the
+          // links go on the response stub as Link headers.
+          `function sendEarlyHints(event, options) {`,
+          `  const links = resolveEarlyHintLinks();`,
+          `  if (links.length === 0) return;`,
+          `  if (options.earlyHints) return options.earlyHints(links);`,
+          `  for (const link of links) event.response.headers.append('link', link);`,
+          `}`,
+        );
+      }
     } else {
       // Built per request from the nonce attributes: under a nonce-based CSP
       // the two scripts carry the script nonce (`'strict-dynamic'` then
@@ -1359,6 +1425,9 @@ export function startServe(
       `function assertHostOptions(options) {`,
       `  if (options.renderMode !== undefined) assertRenderMode(options.renderMode, 'handleRequest options.renderMode');`,
       `  assertNonce(options.nonce, 'handleRequest options.nonce');`,
+      `  if (options.earlyHints !== undefined && typeof options.earlyHints !== 'function') {`,
+      `    throw new TypeError('[@solidjs/vite-plugin] handleRequest options.earlyHints must be a function');`,
+      `  }`,
       `}`,
     );
 
@@ -1561,6 +1630,7 @@ export function startServe(
       // event) goes out as context.nonce; with none, a nonce the host
       // already put on options.context is left alone. Generated entries
       // read event.nonce themselves.
+      ...(isBuild && earlyHints && !clientMode ? [`  sendEarlyHints(event, options);`] : []),
       `  const renderContext = { clientEntry, ...options.context };`,
       `  if (nonce !== undefined) renderContext.nonce = nonce;`,
       `  let result = entry.render(request, renderContext);`,
@@ -2183,7 +2253,10 @@ export function startServe(
           let handlerPromise: Promise<{
             handleRequest: (
               request: Request,
-              options?: { event?: Record<string, unknown> },
+              options?: {
+                event?: Record<string, unknown>;
+                earlyHints?: (links: string[]) => void;
+              },
             ) => Promise<Response>;
           }> | null = null;
           server.middlewares.use((req, res, next) => {
@@ -2203,7 +2276,7 @@ export function startServe(
                 webRequestFromNode(req, requestUrl, res),
                 // Same event extension the dev middleware and a production
                 // Node entry pass: the raw Node request as `nativeEvent`.
-                { event: { nativeEvent: req } },
+                { event: { nativeEvent: req }, earlyHints: nodeEarlyHints(res) },
               );
               // Preview's compression middleware (@polka/compression) sizes
               // a response up on its first write and, past the threshold,
