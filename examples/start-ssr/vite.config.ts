@@ -212,6 +212,18 @@ export default defineConfig({
                 ? { css: { filter: { include: /App\.tsx$/, exclude: /App\.tsx$/ } } }
                 : {}),
               ...(process.env.CSS_FILTER === 'default' ? { app: 'src/CssLibApp.tsx' } : {}),
+              // CSS_INLINE (css-inline mode) exercises `start.css.inline`:
+              // `true`, or a byte count used as `maxSize`.
+              ...(process.env.CSS_INLINE
+                ? {
+                    css: {
+                      inline:
+                        process.env.CSS_INLINE === 'true'
+                          ? true
+                          : { maxSize: Number(process.env.CSS_INLINE) },
+                    },
+                  }
+                : {}),
               // SSR_DEVTOOLS=0 (dev-mode sub-run) opts out of the development
               // toolbar via `start.devtools`. Without the knob the workspace's
               // @solidjs/start-devtools install is auto-detected, so plain dev

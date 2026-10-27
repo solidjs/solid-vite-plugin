@@ -108,6 +108,9 @@
 //   - `vite preview` serves the production artifact with no server file:
 //     dist/client statically, everything else (pages, /_server, middleware,
 //     the lifecycle) through the built handler,
+//   - `start.css.inline` (css-inline mode, CSS_INLINE=true|<maxSize>): the
+//     entry CSS arrives as a <style> in <head>, lazy route CSS stays linked
+//     after it, and a small maxSize keeps the link.
 //   - `start.renderMode` (render-mode mode, SSR_RENDER_MODE): 'async' sends
 //     one settled document — no Loading fallback markup, no swap scripts,
 //     boundary content in place, hydration data intact (the streamed page's
@@ -173,7 +176,7 @@
 //
 // Requires the plugin built (pnpm build at the repo root) and Google Chrome.
 // Usage: node test/run.mjs
-// [dev|prod|document|css-filter|entries|endpoint|configure|no-middleware|middleware|preview|render-mode|nonce|base|builder-order|builder-prepare|extra-input|file-names|babel-hmr|frames|external|observe|perf-tracks|detect|vitest|node|client-setup]
+// [dev|prod|document|css-filter|css-inline|entries|endpoint|configure|no-middleware|middleware|preview|render-mode|nonce|base|builder-order|builder-prepare|extra-input|file-names|babel-hmr|frames|external|observe|perf-tracks|detect|vitest|node|client-setup]
 // (default: all)
 
 import { spawn, execSync, execFileSync } from 'node:child_process';
@@ -2603,6 +2606,181 @@ async function runExtraInputMode() {
   } catch (e) {
     record(mode, 'run', 'mode completed', false, String(e));
   } finally {
+    // Leave dist in the standard state for anyone poking at it.
+    try {
+      execSync('pnpm run build', { cwd: exampleDir, stdio: 'pipe' });
+    } catch {}
+  }
+}
+
+// `start.css.inline` (css-inline mode): CSS_INLINE=true rebuilds with the
+// option on (and SSR_NONCE=1 for the middleware that sets `event.nonce`).
+// The baked manifest carries the entry CSS text while its records keep their
+// `css` lists, and the handler swaps the entry link for one `<style
+// data-asset>` holding the built file's text, in the link's place: after the
+// charset meta, before the catch-all route's lazy stylesheet link, and with
+// the request's style nonce. CSS_INLINE=1 (`maxSize` of one byte) keeps
+// every file a link. Two temporary fixtures cover the edge cases: App.css
+// gains a rule whose text holds `</head>` (the client entry script must
+// still land in the real head), and InlineShared.ts with its own stylesheet
+// is imported by both App.tsx and the lazy catch-all route, so Vite's
+// preload list for that route names the shared stylesheet, which therefore
+// has to stay a link (Vite's preload helper only dedupes against links).
+async function runCssInlineMode() {
+  const mode = 'css-inline';
+  console.log(`\n=== ${mode.toUpperCase()} ===`);
+  const appCssPath = path.join(exampleDir, 'src/App.css');
+  const appPath = path.join(exampleDir, 'src/App.tsx');
+  const routePath = path.join(exampleDir, 'src/routes/[...rest].tsx');
+  const sharedPath = path.join(exampleDir, 'src/InlineShared.ts');
+  const sharedCssPath = path.join(exampleDir, 'src/inline-shared.css');
+  const originals = new Map(
+    [appCssPath, appPath, routePath].map((file) => [file, readFileSync(file, 'utf-8')]),
+  );
+  writeFileSync(appCssPath, originals.get(appCssPath) + "\n.css-inline-probe::after { content: '</head>'; }\n");
+  writeFileSync(sharedCssPath, '.css-inline-shared { color: rgb(1, 2, 3); }\n');
+  writeFileSync(sharedPath, "import './inline-shared.css';\nexport const inlineShared = 'css-inline-shared';\n");
+  writeFileSync(appPath, "import './InlineShared';\n" + originals.get(appPath));
+  writeFileSync(routePath, "import '../InlineShared';\n" + originals.get(routePath));
+  const entryKey = 'virtual:solid-ssr-entry-client.tsx';
+  const routeKey = 'src/routes/[...rest].tsx';
+  const build = async (value) => {
+    rmSync(path.join(exampleDir, 'dist'), { recursive: true, force: true });
+    execSync('pnpm run build', {
+      cwd: exampleDir,
+      stdio: 'pipe',
+      env: { ...process.env, CSS_INLINE: value, SSR_NONCE: '1' },
+    });
+    const clientManifest = JSON.parse(
+      readFileSync(path.join(exampleDir, 'dist/client/.vite/manifest.json'), 'utf-8'),
+    );
+    const serverPath = path.join(exampleDir, 'dist/server/server.js');
+    const handler = await import(pathToFileURL(serverPath).href + `?css-inline=${value}-${Date.now()}`);
+    const render = async (url, headers) =>
+      (await handler.handleRequest(new Request('http://localhost' + url, { headers }))).text();
+    return { clientManifest, serverBundle: readFileSync(serverPath, 'utf-8'), render };
+  };
+  const linked = (html) =>
+    [...html.matchAll(/<link rel="stylesheet" href="([^"]+)"/g)].map((m) => m[1]);
+
+  try {
+    console.log('  building (inline: true)…');
+    const { clientManifest, serverBundle, render } = await build('true');
+    const builtCss = (file) => readFileSync(path.join(exampleDir, 'dist/client', file), 'utf-8');
+    const entryCss = clientManifest[entryKey]?.css?.find((file) => builtCss(file).includes('css-inline-probe'));
+    const routeCss = clientManifest[routeKey]?.css?.find((file) => !builtCss(file).includes('css-inline-shared'));
+    record(mode, 'build', 'entry and catch-all route each emit a stylesheet', !!entryCss && !!routeCss);
+    const css = builtCss(entryCss);
+    const sharedKey = 'src/InlineShared.ts';
+    const sharedCss = Object.values(clientManifest)
+      .flatMap((record) => record.css ?? [])
+      .find((file) => builtCss(file).includes('css-inline-shared'));
+    // The preload list Vite writes for the lazy route: its static closure,
+    // minus the importing entry chunk.
+    const routeClosure = new Set();
+    const visit = (key) => {
+      if (key === entryKey || routeClosure.has(key)) return;
+      routeClosure.add(key);
+      for (const next of clientManifest[key]?.imports ?? []) visit(next);
+    };
+    visit(routeKey);
+    const sharedPreloaded = [...routeClosure].some((key) => clientManifest[key]?.css?.includes(sharedCss));
+    record(
+      mode,
+      'build',
+      'baked manifest carries the entry CSS as _inlineCss and keeps the css lists',
+      serverBundle.includes('"_inlineCss"') &&
+        (serverBundle.match(new RegExp(`"${entryCss.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"`, 'g')) ?? [])
+          .length >= 2,
+    );
+
+    // The head ends at the first `</head>` outside a <style> (the probe rule
+    // carries one inside).
+    const headOf = (page) => {
+      const masked = page.replace(/<style[^>]*>[\s\S]*?<\/style>/g, (m) => ' '.repeat(m.length));
+      return page.slice(0, masked.indexOf('</head>'));
+    };
+    const html = await render('/');
+    const head = headOf(html);
+    const style = head.match(new RegExp(`<style data-asset="/${entryCss}">([\\s\\S]*?)<\\/style>`));
+    record(mode, 'prod', 'app server-rendered', html.includes('SSR Start Mode'));
+    record(
+      mode,
+      'prod',
+      'entry CSS inlined in <head> as <style data-asset> with the built file text',
+      style?.[1] === css,
+      `length ${style?.[1]?.length} vs ${css.length}`,
+    );
+    record(
+      mode,
+      'prod',
+      'no stylesheet link for the inlined entry CSS',
+      !linked(html).includes(`/${entryCss}`),
+      `links: ${linked(html).join(', ')}`,
+    );
+    record(
+      mode,
+      'prod',
+      'inlined CSS follows the charset meta',
+      head.indexOf('<meta charset') !== -1 && head.indexOf('<meta charset') < head.indexOf('<style data-asset'),
+    );
+
+    const routeHtml = await render('/catch-all');
+    const routeHead = headOf(routeHtml);
+    const routeLink = routeHead.indexOf(`<link rel="stylesheet" href="/${routeCss}"`);
+    const routeStyle = routeHead.indexOf(`<style data-asset="/${entryCss}">`);
+    record(
+      mode,
+      'prod',
+      "lazy route's stylesheet stays a link after the inlined entry CSS",
+      routeHtml.includes('catch-all') && routeLink !== -1 && routeStyle !== -1 && routeStyle < routeLink,
+      `style at ${routeStyle}, link at ${routeLink}; links: ${linked(routeHtml).join(', ')}`,
+    );
+
+    record(
+      mode,
+      'prod',
+      'CSS text holding </head> does not capture the client entry script',
+      head.includes(`<script type="module" src="/${clientManifest[entryKey].file}" async></script>`) &&
+        !(style?.[1] ?? '').includes('<script'),
+    );
+    record(
+      mode,
+      'prod',
+      "a stylesheet in a lazy route's preload list stays a link",
+      !!sharedCss &&
+        (sharedPreloaded
+          ? linked(html).includes(`/${sharedCss}`) && !html.includes(`data-asset="/${sharedCss}"`)
+          : html.includes(`data-asset="/${sharedCss}"`)),
+      `shared ${sharedCss} (${sharedKey}), preloaded by the route: ${sharedPreloaded}; links: ${linked(html).join(', ')}`,
+    );
+
+    const nonceHtml = await render('/', { 'x-csp-nonce': 'n0nce' });
+    record(
+      mode,
+      'prod',
+      'inlined <style> carries the request style nonce',
+      nonceHtml.includes(`<style nonce="n0nce" data-asset="/${entryCss}">`),
+      nonceHtml.match(/<style[^>]*data-asset[^>]*>/)?.[0] ?? 'no inline style',
+    );
+
+    console.log('  building (inline: { maxSize: 1 })…');
+    const small = await build('1');
+    const smallHtml = await small.render('/');
+    const smallCss = small.clientManifest[entryKey]?.css?.[0];
+    record(
+      mode,
+      'prod',
+      'maxSize below the file size keeps the entry stylesheet a link',
+      !!smallCss && linked(smallHtml).includes(`/${smallCss}`) && !smallHtml.includes('<style data-asset'),
+      `links: ${linked(smallHtml).join(', ')}`,
+    );
+  } catch (e) {
+    record(mode, 'run', 'mode completed', false, String(e));
+  } finally {
+    for (const [file, text] of originals) writeFileSync(file, text);
+    rmSync(sharedPath, { force: true });
+    rmSync(sharedCssPath, { force: true });
     // Leave dist in the standard state for anyone poking at it.
     try {
       execSync('pnpm run build', { cwd: exampleDir, stdio: 'pipe' });
@@ -7343,6 +7521,7 @@ const ALL_MODES = [
   'prod',
   'document',
   'css-filter',
+  'css-inline',
   'entries',
   'endpoint',
   'configure',
@@ -7373,6 +7552,7 @@ for (const mode of modes) {
   else if (mode === 'prod') await runProdMode();
   else if (mode === 'document') await runDocumentMode();
   else if (mode === 'css-filter') await runCssFilterMode();
+  else if (mode === 'css-inline') await runCssInlineMode();
   else if (mode === 'entries') await runEntriesMode();
   else if (mode === 'endpoint') await runEndpointMode();
   else if (mode === 'configure') await runConfigureMode();

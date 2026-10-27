@@ -98,7 +98,7 @@ export interface StartOptions {
    * @default "src/App.{tsx,jsx,ts,js,tsrx}" (also probes lowercase "src/app.*")
    */
   app?: string;
-  /** Options for development CSS crawling. */
+  /** CSS collection in development and inlining in production. */
   css?: {
     /**
      * Filter for the modules traversed while collecting the CSS that dev
@@ -120,6 +120,16 @@ export interface StartOptions {
       include?: FilterPattern;
       exclude?: FilterPattern;
     };
+    /**
+     * Production only: write the client entry's stylesheets into `<head>`
+     * as `<style>` tags instead of `<link rel="stylesheet">`, so the first
+     * paint does not wait for a CSS request. `maxSize` (bytes, per file)
+     * keeps larger files as links. Inlined CSS is not cached separately
+     * from the HTML.
+     *
+     * @default false
+     */
+    inline?: boolean | { maxSize?: number };
   };
   /**
    * Server entry module. Must export `render(request?, context?)` returning
@@ -1255,6 +1265,25 @@ export function startServe(
         `  }`,
         `  return clientEntryUrl;`,
         `}`,
+        ``,
+        // Each entry stylesheet link @solidjs/web writes (with or without a
+        // nonce) is swapped for its text, in the link's place.
+        `const INLINE_CSS = new Map((manifest._inlineCss || []).map((style) => [`,
+        `  '<link rel="stylesheet" href="' + joinAssetPath(manifest._base, style.id) + '"',`,
+        `  [joinAssetPath(manifest._base, style.id).replace(/&/g, '&amp;').replace(/"/g, '&quot;'), style.content.replace(/<\\/(style)/gi, '<\\\\/$1')],`,
+        `]));`,
+        `function inlineStyles(chunk, styleAttr, pending) {`,
+        `  for (const link of pending) {`,
+        `    const start = chunk.indexOf(link);`,
+        `    if (start === -1) continue;`,
+        `    const end = chunk.indexOf('>', start + link.length);`,
+        `    if (end === -1) continue;`,
+        `    const [id, content] = INLINE_CSS.get(link);`,
+        `    chunk = chunk.slice(0, start) + '<style' + styleAttr + ' data-asset="' + id + '">' + content + '</style>' + chunk.slice(end + 1);`,
+        `    pending.delete(link);`,
+        `  }`,
+        `  return chunk;`,
+        `}`,
       );
     } else {
       // Built per request from the nonce attributes: under a nonce-based CSP
@@ -1395,8 +1424,10 @@ export function startServe(
       `  const styleAttr = nonceAttribute(destinationNonce(nonce, 'style'));`,
       `  let first = true;`,
       `  let injected = false;`,
+      ...(isBuild ? [`  const pendingStyles = new Set(INLINE_CSS.keys());`] : []),
       `  return (chunk) => {`,
     );
+
     if (!generated) {
       // Authored entries reference the client entry by its dev path (the
       // `<script src="/src/entry-client.tsx">` convention); rewrite it to
@@ -1462,6 +1493,10 @@ export function startServe(
         `      chunk = chunk.replace(/<script(?:\\s[^>]*)?>_\\$HY\\.s\\[[\\s\\S]*?<\\/script>/, '');`,
         `    }`,
       );
+    }
+    // Last, so no earlier edit of the head can match text inside the CSS.
+    if (isBuild) {
+      lines.push(`    if (pendingStyles.size) chunk = inlineStyles(chunk, styleAttr, pendingStyles);`);
     }
     lines.push(
       `    if (first) { first = false; chunk = '<!DOCTYPE html>' + chunk; }`,

@@ -1142,6 +1142,65 @@ function stampClientEntry(
   return ordered;
 }
 
+/**
+ * `start.css.inline`: records the text of the client entry graph's
+ * stylesheets as `_inlineCss`. The manifest's `css` lists stay as they are,
+ * so `@solidjs/web` still links them and the production handler swaps each
+ * link for its `<style>` in place; a consumer that bypasses the handler
+ * keeps working links. A stylesheet some lazy import preloads stays linked:
+ * Vite's preload helper only recognizes `<link>`s, so it would fetch and
+ * append the file again, after the CSS that follows it.
+ */
+function inlineEntryCss(
+  manifest: Record<string, any>,
+  outDir: string,
+  inline: true | { maxSize?: number },
+): void {
+  const entryKey = manifest._entry;
+  if (!entryKey || !manifest[entryKey]) return;
+  const maxSize = inline === true ? Infinity : (inline.maxSize ?? Infinity);
+  const files = new Set<string>();
+  const visited = new Set<string>();
+  const walk = (key: string) => {
+    if (visited.has(key)) return;
+    visited.add(key);
+    const record = manifest[key];
+    if (!record) return;
+    if (record.css) for (const file of record.css) files.add(file);
+    if (record.imports) for (const next of record.imports) walk(next);
+  };
+  walk(entryKey);
+  // Vite's preload list for a dynamic import: the target's static import
+  // closure and its CSS, minus the importing chunk itself.
+  const preloaded = new Set<string>();
+  for (const owner in manifest) {
+    const dynamicImports = manifest[owner]?.dynamicImports;
+    if (!Array.isArray(dynamicImports)) continue;
+    for (const target of dynamicImports) {
+      const reached = new Set<string>([owner]);
+      const visit = (key: string) => {
+        if (reached.has(key)) return;
+        reached.add(key);
+        const record = manifest[key];
+        if (!record) return;
+        if (record.css) for (const file of record.css) preloaded.add(file);
+        if (record.imports) for (const next of record.imports) visit(next);
+      };
+      visit(target);
+    }
+  }
+  const inlined: { id: string; content: string }[] = [];
+  for (const file of files) {
+    if (preloaded.has(file)) continue;
+    const filePath = path.resolve(outDir, file);
+    if (!existsSync(filePath)) continue;
+    const content = readFileSync(filePath, 'utf-8');
+    if (Buffer.byteLength(content) > maxSize) continue;
+    inlined.push({ id: file, content });
+  }
+  if (inlined.length) manifest._inlineCss = inlined;
+}
+
 // The bundler's default `output.sanitizeFileName`: characters outside the
 // URL-safe set become `_`, except the `:` of a leading Windows drive letter.
 // Rolldown ports Rollup's rule natively and exports no JS copy, so a
@@ -2272,6 +2331,17 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
             resolveClientEntryKey(manifest, startClientEntryId, clientBuildConfig, projectRoot),
             base,
           );
+          // A relative base makes built CSS `url()`s relative to the
+          // stylesheet, which inlining would re-anchor to the page URL.
+          if (startOptions?.css?.inline && (base === '' || base.startsWith('.'))) {
+            this.warn('start.css.inline is ignored with a relative base: inlined CSS would resolve its url()s against the page.');
+          } else if (startOptions?.css?.inline) {
+            inlineEntryCss(
+              stamped,
+              path.dirname(path.dirname(manifestPath)),
+              startOptions.css.inline,
+            );
+          }
           // The runtime looks records up as `manifest[moduleUrl]`, so a
           // hand-written slash-prefixed key (`/src/Page.tsx`, #390) needs
           // its own property. The aliases are non-enumerable: `for…in`,

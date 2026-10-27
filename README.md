@@ -777,6 +777,27 @@ conflict rule). Development only: excluding a graph does not remove its
 CSS from the production build, where CSS always comes from the built
 assets.
 
+**`css.inline`** — in a production build, the client entry's stylesheets
+are written into `<head>` as `<style data-asset="…">` tags instead of
+`<link rel="stylesheet">`, so the first paint does not wait for a CSS
+request. It pays off for small, atomic CSS (Tailwind) and first-time
+visitors on slow connections; inlined CSS is downloaded again with every
+HTML response instead of being cached separately. `{ maxSize }` (bytes, per
+file) keeps larger files as links. Each entry `<link>` is replaced in place,
+so lazy routes' stylesheets stay links in the same cascade order; responses
+that do not pass through the generated handler keep the links. A stylesheet
+a lazy import also preloads stays a link, since Vite's preload helper only
+recognizes `<link>`s and would fetch it again. Ignored, with
+a warning, under a relative `base` (inlined `url()`s would resolve against
+the page). Development already inlines CSS. Default: `false`.
+
+```ts
+solid({
+  start: { css: { inline: { maxSize: 50_000 } } },
+  ssr: true,
+});
+```
+
 **Entry resolution** (all paths relative to the Vite root):
 
 1. Explicit `start.entryServer` / `start.entryClient` options.
