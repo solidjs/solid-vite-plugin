@@ -1122,6 +1122,46 @@ By default, the plugin transforms `jsx`, `tsx`, and experimental `tsrx` files.
 TSRX is always recognized and does not need to be added here.
 This is useful if you want to transform `mdx` files for example.
 
+#### options.frontends
+
+- Type: `Record<string, Frontend>`
+- Default: `{}` (plus the built-in `.rx`, below)
+
+Front ends for languages that lower to Solid themselves, keyed by file
+extension (`{ ".x": x() }`). Unlike `extensions`, whose files are parsed as
+JSX text, a front end's module is handed to its `compile` function, which
+returns the module's code, source map and stylesheet:
+
+```ts
+interface Frontend {
+  compile(
+    source: string,
+    context: {
+      id: string; // the module's file path
+      moduleId: string; // its full id, query included (`./x.rx?dep`)
+      ssr: boolean; // compiled for a server environment
+      root: string; // Vite's resolved root
+      solid: SolidOptions; // what this plugin would pass @solidjs/compiler for a JSX module here
+      addWatchFile(file: string): void; // recompile this module when `file` changes
+    },
+  ): { code: string; map?: string | object | null; css?: string } | null;
+}
+```
+
+A front end usually ends in `@solidjs/compiler` with `context.solid`, so its
+output matches this environment's `generate`, `hydratable` and `moduleName`.
+From there the module takes the route a lowered `.tsrx` module takes: the
+lazy and HMR refresh passes, server functions (IDs from the module's own
+path), and `css` as a CSS module the module imports. Solid's own extensions
+(`.jsx`, `.tsx`, `.tsrx`, ...) can't be claimed. Return `null` to leave a
+module to the rest of the pipeline.
+
+`.rx` ([ReactiveScript](https://github.com/ryansolid/reactivescript)) is
+built in: install `@reactivescript/compiler` in the project and `.rx`
+modules compile with no option. The plugin loads the package's `/vite`
+front end the first time it meets an `.rx` module, so a project without
+`.rx` files never loads it. A `.rx` entry in `frontends` replaces it.
+
 ## `server-only` and `client-only` boundary markers
 
 The plugin always claims the bare specifiers `server-only` and `client-only`

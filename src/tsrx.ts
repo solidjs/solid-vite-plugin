@@ -16,10 +16,10 @@ export function isTsrxCssModule(id: string): boolean {
     : id.startsWith(NULL_BYTE_PLACEHOLDER)
       ? id.slice(NULL_BYTE_PLACEHOLDER.length)
       : id;
+  // The query alone names the stylesheet module: `.tsrx` and other front
+  // ends' modules (`Options.frontends`) take it alike.
   const queryIndex = unwrapped.indexOf('?');
-  if (queryIndex === -1 || !unwrapped.slice(0, queryIndex).toLowerCase().endsWith('.tsrx')) {
-    return false;
-  }
+  if (queryIndex === -1) return false;
   const params = unwrapped.slice(queryIndex + 1).split('&');
   return params.includes('solid-tsrx-css') && params.includes('lang.css');
 }

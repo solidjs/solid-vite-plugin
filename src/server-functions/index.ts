@@ -380,10 +380,23 @@ export function serverFunctions(
     ssrHandler?: string;
     tsrxAfterSolid?: boolean;
     tsrxSourceMap?: boolean;
+    /**
+     * Other front ends' extensions (`Options.frontends`): their modules are
+     * in the default filter and, like `.tsrx`, compiled after Solid's.
+     */
+    frontendExtensions?: string[];
   } = {},
 ): Plugin[] {
-  const filterInclude = options.filter?.include || DEFAULT_INCLUDE;
-  const filterExclude = options.filter?.exclude || DEFAULT_EXCLUDE;
+  const frontendExtensions = internal.frontendExtensions ?? [];
+  const withFrontends = (pattern: string) =>
+    frontendExtensions.length
+      ? pattern.replace('tsrx,', `tsrx,${frontendExtensions.map((e) => e.slice(1)).join(',')},`)
+      : pattern;
+  const filterInclude = options.filter?.include || withFrontends(DEFAULT_INCLUDE);
+  const filterExclude = options.filter?.exclude || withFrontends(DEFAULT_EXCLUDE);
+  // Lowered before this pass sees it: `.tsrx`, or another front end's module.
+  const isLowered = (id: string) =>
+    isTsrxModule(id) || frontendExtensions.some((e) => id.toLowerCase().endsWith(e));
   // Recreated in configResolved: relative patterns (the defaults included)
   // must resolve against the Vite root, not process.cwd() — running `vite`
   // from outside the project would otherwise silently skip every module.
@@ -724,7 +737,7 @@ export function serverFunctions(
   ) {
     const mode = getEnvironmentConsumer(ctx.environment, opts);
     const [id] = fileId.split('?');
-    if (!id || !filter(id) || isTsrxModule(id) !== tsrx) return null;
+    if (!id || !filter(id) || isLowered(id) !== tsrx) return null;
 
     // The directive has to appear literally, so anything without the
     // substring can skip the native parse entirely.
@@ -738,7 +751,8 @@ export function serverFunctions(
       mode,
       env,
       root,
-      sourceMap: !tsrx || !!internal.tsrxSourceMap,
+      // A front end's module arrives with its map (native `.tsrx` does not).
+      sourceMap: !tsrx || !!internal.tsrxSourceMap || !isTsrxModule(id),
     });
 
     if (!result.valid) {
