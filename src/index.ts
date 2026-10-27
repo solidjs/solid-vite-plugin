@@ -261,6 +261,52 @@ export interface ExtensionOptions {
 export type Compiler = 'babel' | 'native';
 export type { SourceNamesOptions };
 
+/**
+ * Another front end for Solid (see `Options.frontends`): a language whose
+ * modules it compiles itself, to what `@solidjs/compiler` emits for a JSX
+ * module — Solid's output, no JSX left. The plugin then treats the module
+ * the way it treats lowered `.tsrx`: primitive names, `lazy()` module URLs,
+ * the HMR refresh pass, server functions, and the stylesheet as a CSS module.
+ */
+export interface Frontend {
+  /**
+   * Compiles one module for one environment. `null` leaves the module to
+   * the rest of the pipeline untouched.
+   */
+  compile(
+    source: string,
+    context: FrontendContext,
+  ): FrontendResult | null | Promise<FrontendResult | null>;
+}
+
+export interface FrontendContext {
+  /** The module's file path. */
+  id: string;
+  /** Whether the module is compiled for a server environment. */
+  ssr: boolean;
+  /** Vite's resolved project root. */
+  root: string;
+  /**
+   * The options this plugin would hand `@solidjs/compiler` for a JSX module
+   * in this environment (`generate`, `hydratable`, `moduleName`, `dev`, …),
+   * so a front end that ends in Solid's compiler compiles alike.
+   */
+  solid: SolidOptions & { root?: string };
+  /**
+   * Marks a file the front end read for this module (an imported module's
+   * declarations, say): a change to it recompiles this module.
+   */
+  addWatchFile(file: string): void;
+}
+
+export interface FrontendResult {
+  code: string;
+  /** A source map from `code` back to the module's source. */
+  map?: string | object | null;
+  /** The module's stylesheet; the module imports it as a CSS module. */
+  css?: string;
+}
+
 // `root` (the project root `sourceNames.locations` paths are relative to)
 // is not a user option: the plugin passes Vite's resolved `config.root`.
 export type SolidOptions = Omit<
@@ -495,6 +541,16 @@ export interface Options {
    * @default undefined
    */
   extensions?: (string | [string, ExtensionOptions])[];
+  /**
+   * Other front ends, by file extension (`{ ".rx": rx }`): a module of that
+   * extension is compiled by the front end instead of Solid's JSX compiler,
+   * then takes the route lowered `.tsrx` takes (see `Frontend`). Its
+   * extension joins the default server-functions filter and the dependency
+   * scan.
+   *
+   * @default undefined
+   */
+  frontends?: Record<string, Frontend>;
   /**
    * Pass any additional babel transform options. They will be merged with
    * the transformations required by Solid.
@@ -1203,6 +1259,23 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
   // resolve against the Vite root, not process.cwd() — running `vite` from
   // outside the project would otherwise change what the filter matches.
   let filter = createFilter(options.include, options.exclude);
+  const frontends = Object.entries(options.frontends ?? {}).map(([extension, frontend]) => {
+    if (!/^\.[\w.-]+$/.test(extension) || /^\.(?:[mc]?[jt]sx?|tsrx)$/i.test(extension)) {
+      throw new Error(
+        `[@solidjs/vite-plugin] \`frontends\` takes file extensions other than Solid's own, such as ".rx"; got ${JSON.stringify(extension)}.`,
+      );
+    }
+    return [extension.toLowerCase(), frontend] as const;
+  });
+  const frontendFor = (id: string): Frontend | undefined => {
+    if (frontends.length === 0) return undefined;
+    const path = cleanModuleId(id).toLowerCase();
+    return frontends.find(([extension]) => path.endsWith(extension))?.[1];
+  };
+  // A module that reaches Solid's pipeline already lowered: `.tsrx` (lowered
+  // here, first) or another front end's.
+  const isLoweredModule = (id: string) => isTsrxModule(id) || !!frontendFor(id);
+  const scanExtensions = ['.tsrx', ...frontends.map(([extension]) => extension)];
   const serverComponentsOption =
     typeof options.serverFunctions === 'object' ? options.serverFunctions.components : undefined;
   const serverComponents = !!serverComponentsOption;
@@ -1293,8 +1366,27 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
   const tsrxDepScanPlugin = {
     name: 'solid:tsrx-dep-scan',
     async transform(source: string, id: string) {
-      if (!isTsrxModule(id) || isTsrxCssModule(id)) return null;
+      if (!isLoweredModule(id) || isTsrxCssModule(id)) return null;
       const compiler = await loadNativeCompiler();
+      const frontend = frontendFor(id);
+      if (frontend) {
+        const result = await frontend.compile(source, {
+          id: cleanModuleId(id),
+          ssr: false,
+          root: projectRoot,
+          solid: getSolidOptions(
+            options,
+            false,
+            replaceDev,
+            observe,
+            isTestMode,
+            'native',
+            projectRoot,
+          ),
+          addWatchFile: () => {},
+        });
+        return result ? { code: result.code, map: null } : null;
+      }
       const result = await compiler.transformAsync(source, {
         ...getSolidOptions(options, false, replaceDev, observe, isTestMode, 'native', projectRoot),
         filename: cleanModuleId(id),
@@ -1452,6 +1544,29 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
   function babelTsrxCss(result: babel.BabelFileResult): string {
     const css = (result.metadata as { css?: unknown } | undefined)?.css;
     return typeof css === 'string' ? css : '';
+  }
+
+  async function compileLoweredCss(source: string, id: string): Promise<string> {
+    const frontend = frontendFor(id);
+    if (frontend) {
+      const result = await frontend.compile(source, {
+        id,
+        ssr: false,
+        root: projectRoot,
+        solid: getSolidOptions(
+          options,
+          false,
+          replaceDev,
+          observe,
+          isTestMode,
+          'native',
+          projectRoot,
+        ),
+        addWatchFile: () => {},
+      });
+      return result?.css ?? '';
+    }
+    return compileTsrxCss(source, id);
   }
 
   async function compileTsrxCss(source: string, id: string): Promise<string> {
@@ -1769,7 +1884,7 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
           dedupe,
         },
         optimizeDeps: {
-          extensions: ['.tsrx'],
+          extensions: scanExtensions,
           include: [
             ...nestedDeps,
             // Dev refresh wrappers import the solid-js/refresh runtime in
@@ -1918,8 +2033,11 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
       // outside Node turn discovery back on (@cloudflare/vite-plugin), #387.
       if (name !== 'client') {
         const optimizeDeps = (config.optimizeDeps ??= {});
-        if (!optimizeDeps.extensions?.includes('.tsrx')) {
-          optimizeDeps.extensions = [...(optimizeDeps.extensions ?? []), '.tsrx'];
+        const missing = scanExtensions.filter(
+          (extension) => !optimizeDeps.extensions?.includes(extension),
+        );
+        if (missing.length) {
+          optimizeDeps.extensions = [...(optimizeDeps.extensions ?? []), ...missing];
         }
         const rolldownOptions = (optimizeDeps.rolldownOptions ??= {});
         const transform = (rolldownOptions.transform ??= {});
@@ -2152,8 +2270,8 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
         devAssetResolver.invalidate();
         this.environment.hot.send({ type: 'custom', event: DEV_MANIFEST_INVALIDATE_EVENT });
       }
-      if (isTsrxModule(file) && this.environment.name === 'client') {
-        updateTsrxCss(tsrxCss, file, await compileTsrxCss(await read(), file));
+      if (isLoweredModule(file) && this.environment.name === 'client') {
+        updateTsrxCss(tsrxCss, file, await compileLoweredCss(await read(), file));
         const cssModule = this.environment.moduleGraph.getModuleById(resolvedTsrxCssModuleId(file));
         if (cssModule) {
           this.environment.moduleGraph.invalidateModule(cssModule);
@@ -2211,7 +2329,7 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
       for (const depId of info.dynamicallyImportedIds || []) {
         const cleanId = depId.split('?')[0];
         if (/node_modules/.test(cleanId) || cleanId.startsWith('\0')) continue;
-        if (!(/\.[mc]?[tj]sx?$/i.test(cleanId) || isTsrxModule(cleanId))) continue;
+        if (!(/\.[mc]?[tj]sx?$/i.test(cleanId) || isLoweredModule(cleanId))) continue;
         if (emittedLazyChunks.has(depId)) continue;
         emittedLazyChunks.add(depId);
         emittedLazyChunkRefs.push(
@@ -2392,12 +2510,16 @@ export default manifest;`;
       const moduleId = id;
       id = getTransformPath(
         id,
-        (path) => /\.[mc]?[tj]sx$/i.test(path) || allExtensions.includes(getExtension(path)),
+        (path) =>
+          /\.[mc]?[tj]sx$/i.test(path) ||
+          allExtensions.includes(getExtension(path)) ||
+          !!frontendFor(path),
       );
       // Read the extension from the query-free path, so a dot inside the
       // query (`a.mdx?x=1.5`) is not taken as the extension.
       const currentFileExtension = getExtension(id);
       const isTsrx = isTsrxModule(id);
+      const frontend = frontendFor(id);
       const inNodeModules = /node_modules/.test(id);
       // Primitive names stop at node_modules: a dependency's internals
       // (Solid's own flow controls included) name what they mean to name,
@@ -2406,7 +2528,12 @@ export default manifest;`;
       const sourceNames = getSourceNames(options.solid?.sourceNames, replaceDev, observe);
       const namePrimitives = !inNodeModules && sourceNames.primitives;
 
-      if (!(/\.[mc]?[tj]sx$/i.test(id) || isTsrx || allExtensions.includes(currentFileExtension))) {
+      if (!(
+        /\.[mc]?[tj]sx$/i.test(id) ||
+        isTsrx ||
+        frontend ||
+        allExtensions.includes(currentFileExtension)
+      )) {
         // Not a JSX module. Primitive naming stays gated as before
         // (`createSignal` lives in `.ts`/`.js` as much as in components).
         // The lazy module-URL pipeline also runs, and it is not gated on
@@ -2525,9 +2652,10 @@ export default manifest;`;
       let code = source;
       const maps: ChainableMap[] = [];
 
-      // Authored TSRX cannot be parsed by a standalone pass; its primitives
-      // are named after Solid lowering, on the generated module, below.
-      if (namePrimitives && !isTsrx) {
+      // Authored TSRX (or another front end's source) cannot be parsed by a
+      // standalone pass; its primitives are named after Solid lowering, on
+      // the generated module, below.
+      if (namePrimitives && !isTsrx && !frontend) {
         const named = await transformPrimitiveNames(
           this,
           compiler,
@@ -2542,7 +2670,7 @@ export default manifest;`;
         }
       }
 
-      if (isTsrx) {
+      if (isTsrx || frontend) {
         // Solid lowering preserves authored TypeScript annotations; secondary
         // passes therefore parse the generated module as TSX even though no
         // template syntax remains.
@@ -2561,7 +2689,29 @@ export default manifest;`;
         };
         let css = '';
 
-        if (options.compiler !== 'babel') {
+        if (frontend) {
+          // Another front end lowers the module itself, through the options
+          // a JSX module of this environment would get from this plugin.
+          const result = await frontend.compile(code, {
+            id,
+            ssr: !!isSsr,
+            root: projectRoot,
+            solid: getSolidOptions(
+              options,
+              !!isSsr,
+              replaceDev,
+              observe,
+              isTestMode,
+              'native',
+              projectRoot,
+            ),
+            addWatchFile: (file) => this.addWatchFile(file),
+          });
+          if (!result) return null;
+          code = result.code;
+          css = result.css ?? '';
+          maps.push(result.map as ChainableMap);
+        } else if (options.compiler !== 'babel') {
           const result = await compiler.transformAsync(code, {
             ...solidOptions,
             filename: id,
@@ -2637,7 +2787,7 @@ export default manifest;`;
         }
 
         code = injectSsrModuleId(await resolveLazyModuleUrls(this, code, id), moduleId, !!isSsr);
-        let map = options.compiler === 'babel' ? combineSourcemaps(maps) : null;
+        let map = options.compiler === 'babel' || frontend ? combineSourcemaps(maps) : null;
         updateTsrxCss(tsrxCss, id, css);
         if (css) {
           code = prependTsrxCssImport(code, id);
@@ -2788,6 +2938,7 @@ export default manifest;`;
         externalDevServer,
         tsrxAfterSolid: true,
         tsrxSourceMap: options.compiler === 'babel',
+        frontendExtensions: frontends.map(([extension]) => extension),
         // With start mode on (either variant), the dev middleware dispatches
         // the endpoint through the SSR handler so user middleware and the
         // stub-backed request event front it exactly like page SSR.
