@@ -135,3 +135,66 @@ describe('frontends', () => {
     expect(() => solidPlugin({ frontends: { '.tsx': fe } })).toThrow(/frontends/);
   });
 });
+
+// `.rx` is built in: its front end is `@reactivescript/compiler/vite`, resolved from the
+// project the first time an `.rx` module is compiled.
+describe('built-in .rx', () => {
+  let rxRoot: string;
+  let rxServer: ViteDevServer;
+  const start = (dir: string) =>
+    createServer({
+      root: dir,
+      configFile: false,
+      appType: 'custom',
+      logLevel: 'silent',
+      server: { middlewareMode: true, hmr: false, watch: null },
+      optimizeDeps: { noDiscovery: true, include: [] },
+      plugins: [solidPlugin()],
+    });
+
+  beforeAll(async () => {
+    rxRoot = await realpath(await mkdtemp(path.join(tmpdir(), 'solid-rx-')));
+    const pkg = path.join(rxRoot, 'node_modules/@reactivescript/compiler');
+    await mkdir(pkg, { recursive: true });
+    await writeFile(
+      path.join(pkg, 'package.json'),
+      JSON.stringify({
+        name: '@reactivescript/compiler',
+        type: 'module',
+        exports: { './vite': './vite.js' },
+      }),
+    );
+    await writeFile(
+      path.join(pkg, 'vite.js'),
+      'export default () => ({ compile: (source, { id, moduleId }) => ({ code: `export default ${JSON.stringify(moduleId)};` }) });\n',
+    );
+    await mkdir(path.join(rxRoot, 'src'));
+    await writeFile(path.join(rxRoot, 'src/main.rx'), 'export default component App() {}\n');
+    rxServer = await start(rxRoot);
+  });
+
+  afterAll(async () => {
+    await rxServer?.close();
+    await rm(rxRoot, { recursive: true, force: true });
+  });
+
+  it('compiles .rx with the @reactivescript/compiler package the project installed', async () => {
+    const result = await rxServer.environments.client.transformRequest('/src/main.rx');
+    expect(result?.code).toContain('main.rx');
+  });
+
+  it('asks for the package when the project has none', async () => {
+    const bare = await realpath(await mkdtemp(path.join(tmpdir(), 'solid-rx-bare-')));
+    await mkdir(path.join(bare, 'src'));
+    await writeFile(path.join(bare, 'src/main.rx'), 'export default component App() {}\n');
+    const server = await start(bare);
+    try {
+      await expect(server.environments.client.transformRequest('/src/main.rx')).rejects.toThrow(
+        /needs the `@reactivescript\/compiler` package/,
+      );
+    } finally {
+      await server.close();
+      await rm(bare, { recursive: true, force: true });
+    }
+  });
+});

@@ -1125,10 +1125,10 @@ This is useful if you want to transform `mdx` files for example.
 #### options.frontends
 
 - Type: `Record<string, Frontend>`
-- Default: `{}`
+- Default: `{}` (plus the built-in `.rx`, below)
 
 Front ends for languages that lower to Solid themselves, keyed by file
-extension (`{ ".rx": rx() }`). Unlike `extensions`, whose files are parsed as
+extension (`{ ".x": x() }`). Unlike `extensions`, whose files are parsed as
 JSX text, a front end's module is handed to its `compile` function, which
 returns the module's code, source map and stylesheet:
 
@@ -1155,6 +1155,12 @@ lazy and HMR refresh passes, server functions (IDs from the module's own
 path), and `css` as a CSS module the module imports. Solid's own extensions
 (`.jsx`, `.tsx`, `.tsrx`, ...) can't be claimed. Return `null` to leave a
 module to the rest of the pipeline.
+
+`.rx` ([ReactiveScript](https://github.com/ryansolid/reactivescript)) is
+built in: install `@reactivescript/compiler` in the project and `.rx`
+modules compile with no option. The plugin loads the package's `/vite`
+front end the first time it meets an `.rx` module, so a project without
+`.rx` files never loads it. A `.rx` entry in `frontends` replaces it.
 
 ## `server-only` and `client-only` boundary markers
 

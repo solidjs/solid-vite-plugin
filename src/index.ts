@@ -5,6 +5,7 @@ import solid from '@solidjs/babel-plugin';
 import { existsSync, readFileSync, realpathSync } from 'fs';
 import { mergeAndConcat } from 'merge-anything';
 import { createRequire } from 'module';
+import { pathToFileURL } from 'url';
 import {
   createDevAssetResolver,
   registerDevAssetResolver,
@@ -547,11 +548,12 @@ export interface Options {
    */
   extensions?: (string | [string, ExtensionOptions])[];
   /**
-   * Other front ends, by file extension (`{ ".rx": rx }`): a module of that
+   * Other front ends, by file extension (`{ ".x": x() }`): a module of that
    * extension is compiled by the front end instead of Solid's JSX compiler,
    * then takes the route lowered `.tsrx` takes (see `Frontend`). Its
    * extension joins the default server-functions filter and the dependency
-   * scan.
+   * scan. `.rx` (ReactiveScript) is built in, from the
+   * `@reactivescript/compiler` package; an entry for `.rx` here replaces it.
    *
    * @default undefined
    */
@@ -1252,6 +1254,38 @@ function collapseDotRuns(
  */
 const SERVER_COMPONENTS_DEFINE = '__SOLID_SERVER_COMPONENTS__';
 
+/**
+ * `.rx` out of the box: ReactiveScript's front end, the default export of
+ * `@reactivescript/compiler/vite`, resolved from the project root the first
+ * time an `.rx` module is compiled. A project without `.rx` files never loads
+ * it.
+ */
+function lazyFrontend(pkg: string, extension: string): Frontend {
+  let loaded: Promise<Frontend> | undefined;
+  return {
+    async compile(source, context) {
+      loaded ??= (async () => {
+        let entry: string;
+        try {
+          entry = createRequire(path.join(context.root, 'package.json')).resolve(`${pkg}/vite`);
+        } catch {
+          throw new Error(
+            `[@solidjs/vite-plugin] compiling ${extension} needs the \`${pkg}\` package: install it in the project.`,
+          );
+        }
+        const mod = await import(pathToFileURL(entry).href);
+        return (mod.default ?? mod)() as Frontend;
+      })();
+      // a failed load is retried, so installing the package fixes a running server
+      const frontend = await loaded.catch((error) => {
+        loaded = undefined;
+        throw error;
+      });
+      return frontend.compile(source, context);
+    },
+  };
+}
+
 export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
   if (typeof options.ssr === 'object') {
     throw new Error(
@@ -1264,7 +1298,10 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
   // resolve against the Vite root, not process.cwd() — running `vite` from
   // outside the project would otherwise change what the filter matches.
   let filter = createFilter(options.include, options.exclude);
-  const frontends = Object.entries(options.frontends ?? {}).map(([extension, frontend]) => {
+  const frontends = Object.entries({
+    '.rx': lazyFrontend('@reactivescript/compiler', '.rx'),
+    ...options.frontends,
+  }).map(([extension, frontend]) => {
     if (!/^\.[\w.-]+$/.test(extension) || /^\.(?:[mc]?[jt]sx?|tsrx)$/i.test(extension)) {
       throw new Error(
         `[@solidjs/vite-plugin] \`frontends\` takes file extensions other than Solid's own, such as ".rx"; got ${JSON.stringify(extension)}.`,
