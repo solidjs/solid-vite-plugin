@@ -871,6 +871,8 @@ function locationTarget(compiler: Compiler, root: string): LocationTarget {
  */
 const PRIMITIVES_ONLY_MODULE = /\.[mc]?[jt]s$/i;
 const DECLARATION_MODULE = /\.d\.[mc]?ts$/i;
+// transformLazy only rewrites `lazy` from `solid-js` and fails on CommonJS it can't parse as ESM.
+const mayCallLazy = (code: string) => code.includes('lazy') && code.includes('solid-js');
 /**
  * Cheap pre-check ahead of the native call: the pass only names calls that
  * resolve to imports from these modules, so source without either string
@@ -2592,9 +2594,9 @@ export default manifest;`;
         let code = source;
         const maps: ChainableMap[] = [];
         // Same cheap pre-check as primitive naming: `transformLazy` only
-        // rewrites `lazy()` calls, so source without that identifier cannot
+        // rewrites `lazy` imported from `solid-js`, so other source cannot
         // change. SSR still appends `$$moduleUrl` below.
-        const needsCompiler = namePrimitives || code.includes('lazy');
+        const needsCompiler = namePrimitives || mayCallLazy(code);
         if (needsCompiler) {
           const compiler = await loadNativeCompiler();
 
@@ -2614,7 +2616,7 @@ export default manifest;`;
             }
           }
 
-          if (code.includes('lazy')) {
+          if (mayCallLazy(code)) {
             const lazyResult = await compiler.transformLazyAsync(code, {
               filename: id,
               sourceMap: true,
