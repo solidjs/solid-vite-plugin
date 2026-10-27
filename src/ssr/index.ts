@@ -341,7 +341,7 @@ export interface StartOptions {
    *
    * @default true
    */
-  errorBoundary?: boolean;
+  productionErrorBoundary?: boolean;
   /**
    * Let a host integration own the server environment — build wiring and
    * HTTP serving alike. The plugin skips its start-mode server-build config and
@@ -718,7 +718,14 @@ export function startServe(
   // the server-function handler module either way). Everything is gated
   // codegen: with the option off, none of these imports exist anywhere.
   const serverComponents = !!internal.serverComponents;
-  const errorBoundary = options.errorBoundary !== false;
+  if ('errorBoundary' in options) {
+    // Renamed before the stable release, without an alias.
+    throw new Error(
+      '[@solidjs/vite-plugin] `start.errorBoundary` has been renamed to ' +
+        '`start.productionErrorBoundary`.',
+    );
+  }
+  const productionErrorBoundary = options.productionErrorBoundary !== false;
   const styleFilter = internal.styleFilter;
   // `'auto'` resolves against the project root in configResolved, before
   // any of the (lazy) uses in entry codegen and the entry transform.
@@ -925,14 +932,14 @@ export function startServe(
   }
 
   function errorBoundaryImport(): string[] {
-    return isBuild && errorBoundary
+    return isBuild && productionErrorBoundary
       ? [`import { DefaultErrorBoundary } from ${JSON.stringify(ERROR_BOUNDARY_ID)};`]
       : [];
   }
 
   function documentTree(root: string, wrapper?: string): string[] {
     const content = wrapper ? `<${wrapper}><${root} /></${wrapper}>` : `<${root} />`;
-    return isBuild && errorBoundary
+    return isBuild && productionErrorBoundary
       ? [
           `  <DefaultErrorBoundary>`,
           `    <Document>`,
@@ -959,7 +966,7 @@ export function startServe(
         ``,
         `export function render(request, context) {`,
         `  return renderToStream(() => (`,
-        ...(isBuild && errorBoundary
+        ...(isBuild && productionErrorBoundary
           ? [
               `  <DefaultErrorBoundary>`,
               `    <Document />`,
@@ -1088,7 +1095,7 @@ export function startServe(
         `import App from ${JSON.stringify(app)};`,
         ``,
         `render(() => ${
-          isBuild && errorBoundary
+          isBuild && productionErrorBoundary
             ? '<DefaultErrorBoundary><App /></DefaultErrorBoundary>'
             : toolbar
               ? '<DevToolbar><App /></DevToolbar>'
