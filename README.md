@@ -120,11 +120,14 @@ A [picomatch](https://github.com/micromatch/picomatch) pattern, or array of patt
 #### options.dev
 
 - Type: Boolean
-- Default: true
+- Default: undefined (development builds under `vite dev`, production builds otherwise)
 
-Resolve Solid's development builds under `vite dev` — the `development` export condition of
-`solid-js` and `@solidjs/web`, which carry the extra checks, warnings and diagnostics. Has no
-effect on `vite build`. Set to `false` to serve the production builds in dev instead.
+Use Solid's development builds: the `development` export condition of `solid-js` and
+`@solidjs/web`, which carry the extra checks, warnings and diagnostics, plus the compiler's
+dev output. Left unset, they are used under `vite dev` (and vitest) only. `true` forces them in
+`vite build` too, for example to debug a production bundle with the dev warnings on. `false`
+serves the production builds under `vite dev` as well; HMR then falls back to full reloads,
+since the production refresh runtime is an inert stub.
 
 #### options.observe
 
@@ -137,6 +140,24 @@ monitoring, performance tracing). Adds the `observe` export condition to every e
 and turns on the compiler's source names (see `options.solid.sourceNames`), so graph labels
 (`<Home>`, `span.textContent`, `count`) survive minification. Under `vite dev` the dev build
 still wins.
+
+#### options.diagnostics
+
+- Type: Boolean
+- Default: undefined (on when the app declares `@solidjs/diagnostics`)
+
+Dev-serve only: expose Solid's diagnostic and attribution channels to out-of-process
+consumers (agents, tests, `curl`). The plugin injects a client module that installs the
+in-page bridge from the app's own `@solidjs/diagnostics`, and serves a `/__solid/diagnostics`
+endpoint on the dev server: `GET` reports status, and `POST { method, params }` forwards
+capture control (`begin`/`end`), `whyDidRun` and cost queries to the page over the Vite
+WebSocket. The dev server prints the endpoint at startup.
+
+Left unset, it turns on when the nearest `package.json` declares `@solidjs/diagnostics`, so
+adding the dev dependency is the whole setup. `true` forces it on (and errors if the package
+is missing), `false` opts out. Never active on `vite build`, preview or in test mode, and off
+with `dev: false` unless `observe` is on, since the channels only exist in the dev and
+observe builds.
 
 #### options.performanceTracks
 
@@ -1146,13 +1167,6 @@ the primitives pass; `{ locations: true }` ships locations in an observe build.
 the names keep coming without locations, with a one-time warning when it was asked for
 explicitly.
 
-#### options.typescript
-
-- Type: [@babel/preset-typescript](https://babeljs.io/docs/en/babel-preset-typescript)
-- Default: {}
-
-Pass any additional [@babel/preset-typescript](https://babeljs.io/docs/en/babel-preset-typescript).
-
 #### options.extensions
 
 - Type: (string, [string, { typescript: boolean }])[]
@@ -1349,8 +1363,6 @@ If a library ships only compiled code and fails during SSR, ask its author to ad
 - It appears that Webstorm generate some weird triggers when saving a file. In order to prevent that you can follow [this thread](https://intellij-support.jetbrains.com/hc/en-us/community/posts/360000154544-I-m-having-a-huge-problem-with-Webstorm-and-react-hot-loader-) and disable the **"Safe Write"** option in **"Settings | Appearance & Behavior | System Settings"**.
 
 - If one of your dependency spit out React code instead of Solid that means that they don't expose JSX properly. To get around it, you might want to manually exclude it from the [dependencies optimization](https://vitejs.dev/config/dep-optimization-options.html#optimizedeps-exclude)
-
-- If you are trying to make [directives](https://www.solidjs.com/docs/latest/api#use%3A___) work, and they somehow don't try setting the `options.typescript.onlyRemoveTypeImports` option to `true`
 
 ## Migration from v1
 
