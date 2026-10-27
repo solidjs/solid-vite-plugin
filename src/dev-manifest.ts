@@ -1,6 +1,6 @@
 import path from 'path';
 import type { DevEnvironment, EnvironmentModuleNode, ViteDevServer } from 'vite';
-import { joinBase } from './http.js';
+import { joinBase, parseRequestTarget } from './http.js';
 import { isTsrxCssModule } from './tsrx.js';
 
 /**
@@ -84,7 +84,7 @@ export function installDevManifestBridge(server: ViteDevServer): void {
   const base = (server.config.base || '/').replace(/\/$/, '');
   const basedEndpoint = base + DEV_MANIFEST_ENDPOINT;
   server.middlewares.use(async (req, res, next) => {
-    const url = new URL(req.url || '/', 'http://localhost');
+    const url = parseRequestTarget(req.url || '/', 'http://localhost');
     if (url.pathname !== DEV_MANIFEST_ENDPOINT && url.pathname !== basedEndpoint) return next();
 
     const key = url.searchParams.get('key');

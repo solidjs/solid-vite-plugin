@@ -19,7 +19,7 @@ import {
   type ViteDevServer,
 } from 'vite';
 import { getEnvironmentConsumer, isRunnableEnvironment } from '../environment.js';
-import { joinBase, sendWebResponse, webRequestFromNode } from '../http.js';
+import { joinBase, parseRequestTarget, sendWebResponse, webRequestFromNode } from '../http.js';
 import { isTsrxModule } from '../tsrx.js';
 import { compile, type CompileOptions } from './compile.js';
 import xxHash32 from './xxhash32.js';
@@ -643,7 +643,7 @@ export function serverFunctions(
         const underMount = (pathname: string, mount: string) =>
           pathname === mount || pathname.startsWith(mount + '/');
         server.middlewares.use((req, res, next) => {
-          const url = new URL(req.url || '/', 'http://localhost');
+          const url = parseRequestTarget(req.url || '/', 'http://localhost');
           // Match with and without `base` — middleware-mode hosts may mount
           // vite.middlewares below the base themselves.
           if (!underMount(url.pathname, resolvedEndpoint) && !underMount(url.pathname, endpoint)) {
