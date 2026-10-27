@@ -976,8 +976,11 @@ export function startServe(
     const { app } = requireEntries();
     // `event.nonce` was validated (and host-overridden) by the handler
     // before the render; @solidjs/web reads the nonce from the options only,
-    // so the entry hands it over explicitly.
-    const streamOptions = `{ manifest, nonce: getRequestEvent()?.nonce${serverComponents ? ', plugins: [ServerComponentPlugin]' : ''} }`;
+    // so the entry hands it over explicitly. The request's `signal` (aborted
+    // by the Node bridge on client disconnect) goes the same way, so a render
+    // still pending when the client leaves is disposed instead of waiting on
+    // its async reads (#467).
+    const streamOptions = `{ manifest, nonce: getRequestEvent()?.nonce, signal: getRequestEvent()?.request.signal${serverComponents ? ', plugins: [ServerComponentPlugin]' : ''} }`;
     return [
       `import { renderToStream, getRequestEvent } from '@solidjs/web';`,
       ...(serverComponents
