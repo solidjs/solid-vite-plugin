@@ -7159,8 +7159,7 @@ async function runClientSetupMode() {
     };
     const authored = await configError({
       clientSetup: './src/client-setup.ts',
-      entryServer: './src/api.ts',
-      entryClient: './src/api.ts',
+      entries: { server: './src/api.ts', client: './src/api.ts' },
     });
     record(
       mode,
