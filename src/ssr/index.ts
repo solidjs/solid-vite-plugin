@@ -85,7 +85,7 @@ import { joinBase, parseRequestTarget, sendWebResponse, webRequestFromNode } fro
  * sugar for the empty bag). One bag serves both modes — the plugin's `ssr`
  * boolean picks between them, so flipping a project between
  * client-rendered and server-rendered is toggling that boolean, never
- * reshaping this object. Server-only options (`entryServer`, `external`)
+ * reshaping this object. Server-only options (`entries.server`, `external`)
  * are documented no-ops in client mode: they stay in the config across a
  * flip instead of erroring.
  */
@@ -97,30 +97,33 @@ export interface StartOptions {
    * @default "src/App.{tsx,jsx,ts,js,tsrx}" (also probes lowercase "src/app.*")
    */
   app?: string;
-  /**
-   * Server entry module. Must export `render(request?, context?)` returning
-   * a `renderToStream` result, an HTML string, or a `Response`.
-   * `context.clientEntry` carries the resolved client entry URL.
-   * `context.nonce` is this request's CSP nonce — forward it into `renderToStream`.
-   *
-   * Server mode only — ignored in client mode, where the server entry is
-   * always generated (it renders the document shell without the app, for
-   * dev serving and the build-time prerender). Conventional
-   * `src/entry-server.*` files are likewise ignored there.
-   *
-   * @default "src/entry-server.{tsx,jsx,ts,js,mjs,tsrx}" when present, else a
-   * generated entry rendering `<Document><App /></Document>`
-   */
-  entryServer?: string;
-  /**
-   * Client entry module. In SSR mode it hydrates; in client mode it mounts
-   * (a generated one calls `render()`), and it stands alone — no pairing
-   * rule with a server entry.
-   *
-   * @default "src/entry-client.{tsx,jsx,ts,js,mjs,tsrx}" when present, else a
-   * generated entry
-   */
-  entryClient?: string;
+  /** Explicit rendering entries. Conventional entry files are used when omitted. */
+  entries?: {
+    /**
+     * Client entry module. In SSR mode it hydrates; in client mode it mounts
+     * (a generated one calls `render()`), and it stands alone — no pairing
+     * rule with a server entry.
+     *
+     * @default "src/entry-client.{tsx,jsx,ts,js,mjs,tsrx}" when present, else a
+     * generated entry
+     */
+    client?: string;
+    /**
+     * Server entry module. Must export `render(request?, context?)` returning
+     * a `renderToStream` result, an HTML string, or a `Response`.
+     * `context.clientEntry` carries the resolved client entry URL.
+     * `context.nonce` is this request's CSP nonce — forward it into `renderToStream`.
+     *
+     * Server mode only — ignored in client mode, where the server entry is
+     * always generated (it renders the document shell without the app, for
+     * dev serving and the build-time prerender). Conventional
+     * `src/entry-server.*` files are likewise ignored there.
+     *
+     * @default "src/entry-server.{tsx,jsx,ts,js,mjs,tsrx}" when present, else a
+     * generated entry rendering `<Document><App /></Document>`
+     */
+    server?: string;
+  };
   /**
    * Document shell component wrapping the app in generated entries. Receives
    * `props.children` and must render the full `<html>` document including
@@ -512,14 +515,14 @@ interface ResolvedEntries {
 }
 
 function resolveEntries(root: string, options: StartOptions, clientMode: boolean): ResolvedEntries {
-  const explicitClient = options.entryClient
-    ? normalizeUserPath(root, options.entryClient, 'entryClient')
+  const explicitClient = options.entries?.client
+    ? normalizeUserPath(root, options.entries.client, 'entries.client')
     : null;
 
   if (clientMode) {
     // Client mode: the server entry is always generated (it renders the
     // document shell only — no App — for dev serving and the build-time
-    // prerender); `start.entryServer` and conventional src/entry-server.*
+    // prerender); `start.entries.server` and conventional src/entry-server.*
     // files are documented no-ops here, so a project flipping the `ssr`
     // boolean never has to touch them. No entry pairing rule either: an
     // authored client entry stands alone. The document resolves in every
@@ -555,8 +558,8 @@ function resolveEntries(root: string, options: StartOptions, clientMode: boolean
     };
   }
 
-  const explicitServer = options.entryServer
-    ? normalizeUserPath(root, options.entryServer, 'entryServer')
+  const explicitServer = options.entries?.server
+    ? normalizeUserPath(root, options.entries.server, 'entries.server')
     : null;
   const entryServer = explicitServer ?? probe(root, 'src/entry-server', ENTRY_EXTENSIONS);
   const entryClient = explicitClient ?? probe(root, 'src/entry-client', ENTRY_EXTENSIONS);
@@ -572,8 +575,8 @@ function resolveEntries(root: string, options: StartOptions, clientMode: boolean
     const missing = entryServer ? 'entry-client' : 'entry-server';
     throw new Error(
       `[@solidjs/vite-plugin] found ${found} but no ${missing}; entry files come in pairs. ` +
-        `Provide both (src/entry-server.* and src/entry-client.*, or the start.entryServer / ` +
-        `start.entryClient options) or neither (to generate both from start.app).`,
+        `Provide both (src/entry-server.* and src/entry-client.*, or start.entries.server / ` +
+        `start.entries.client) or neither (to generate both from start.app).`,
     );
   }
 
@@ -638,6 +641,18 @@ export function startServe(
     onClientEntryResolved?: (entryId: string) => void;
   } = {},
 ): Plugin[] {
+  // Renamed before the stable release, without aliases: name the
+  // replacement instead of silently ignoring the old key.
+  for (const [key, replacement] of [
+    ['entryServer', 'entries.server'],
+    ['entryClient', 'entries.client'],
+  ]) {
+    if (key in options) {
+      throw new Error(
+        `[@solidjs/vite-plugin] \`start.${key}\` has been renamed to \`start.${replacement}\`.`,
+      );
+    }
+  }
   // Client mode (the `start` option without `ssr: true`) rides this exact
   // plugin with three deltas: the generated server entry renders the
   // document shell WITHOUT the app (dev serving doubles as history
@@ -1693,7 +1708,7 @@ export function startServe(
         instrumentPath = options.instrument
           ? path.resolve(root, normalizeUserPath(root, options.instrument, 'instrument'))
           : null;
-        // Server-mode only, like `entryServer`/`external` (a documented
+        // Server-mode only, like `entries.server`/`external` (a documented
         // no-op in client mode so configs survive the `ssr` boolean flip).
         setupPath =
           !clientMode && options.setup

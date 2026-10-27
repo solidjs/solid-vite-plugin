@@ -233,7 +233,7 @@ same server functions.
 
 The object form carries the options (`start: true` is pure sugar for
 `start: {}` — both mean the identical start mode with defaults, and
-`false`/absent means off): `app`, `document`, `entryServer`, `entryClient`,
+`false`/absent means off): `app`, `document`, `entries`,
 `middleware`, `setup`, `instrument`, `clientSetup`, `renderMode`,
 `devtools`, `productionErrorBoundary`,
 `external`, `node`, all documented below.
@@ -669,7 +669,7 @@ sees the throw when no boundary catches it first). Default: `true`.
 
 **Entry resolution** (all paths relative to the Vite root):
 
-1. Explicit `start.entryServer` / `start.entryClient` options.
+1. Explicit `start.entries.server` / `start.entries.client` options.
 2. Conventional files: `src/entry-server.{tsx,jsx,ts,js,mjs,tsrx}` and
    `src/entry-client.{tsx,jsx,ts,js,mjs,tsrx}`. Entry files come in pairs —
    providing only one is an error. The server entry must export
@@ -754,7 +754,7 @@ export default defineConfig({
 - **`vite preview`** serves the static build with history fallback (and
   dispatches the server-function endpoint through the kept handler).
 - Server-only options are inert here rather than errors, so a config
-  survives the flip untouched: `start.entryServer` (and conventional
+  survives the flip untouched: `start.entries.server` (and conventional
   `src/entry-server.*` files) are ignored — the shell render is always
   generated — and so is `start.external`. An authored `src/entry-client.*`
   stands alone and owns the mount.

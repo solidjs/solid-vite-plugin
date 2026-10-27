@@ -489,8 +489,8 @@ export interface Options {
    * so projects flip between them by toggling {@link ssr}): `src/App.*`
    * (or `start.app`) is the root component; `src/Document.*` (or
    * `start.document`) is the optional document shell; authored
-   * `src/entry-server.*` / `src/entry-client.*` (or `start.entryServer` /
-   * `start.entryClient`) replace the generated entries.
+   * `src/entry-server.*` / `src/entry-client.*` (or `start.entries.server` /
+   * `start.entries.client`) replace the generated entries.
    *
    * With `ssr: true` — SSR start mode:
    *
@@ -528,7 +528,7 @@ export interface Options {
    *   `start.node` then emits `dist/server/node.js` serving the static
    *   client with an `index.html` history fallback plus the endpoint.
    * - Client code stays non-hydratable (`generate: 'dom'`), exactly like a
-   *   plain SPA; server-only options (`entryServer`, `external`) are inert.
+   *   plain SPA; server-only options (`entries.server`, `external`) are inert.
    * - `vite preview` serves the static build with history fallback (and
    *   dispatches the server-function endpoint through the kept handler).
    *
