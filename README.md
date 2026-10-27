@@ -235,8 +235,8 @@ The object form carries the options (`start: true` is pure sugar for
 `start: {}` — both mean the identical start mode with defaults, and
 `false`/absent means off): `app`, `document`, `entries`,
 `middleware`, `setup`, `instrument`, `clientSetup`, `renderMode`, `env`,
-`devtools`, `errorBoundary`,
-`css`, `external`, `node`, all documented below.
+`devtools`, `productionErrorBoundary`,
+`external`, `node`, all documented below.
 
 Install `@solidjs/start-devtools` as a development dependency to add the
 development toolbar with runtime errors and server function calls:
@@ -495,7 +495,7 @@ registered, and the client gets a bodyless 500. That 500 carries the
 headers and cookies written to the request event only while the response
 head is still open: once `next()` has returned a rendered page, the head
 was committed with that page, and a later throw drops them. An error
-middleware still sees a throw first, and with `errorBoundary` on, render
+middleware still sees a throw first, and with `productionErrorBoundary` on, render
 errors are handled by the boundary before they get this far. In dev those
 failures still reject, so the dev server sees the original error (with the
 built-in dev middleware, Vite's error middleware and its overlay).
@@ -740,42 +740,16 @@ client values, the leak scan — follows
 design-correct prior art, reimplemented on this plugin's machinery with
 Standard Schema as the only contract (and runtime-read server values).
 
-**`errorBoundary`** — in a production build, generated entries wrap the app
+**`productionErrorBoundary`** — in a production build, generated entries wrap the app
 in a default error boundary (and the document in an outer one): a render
 error streams a generic `500 | Internal Server Error` fallback — no stack
 or error details reach the HTML; the error itself goes to `console.error`
 — and an error caught before the shell flushes commits a real 500 status
 through the response-head lifecycle. Development is unaffected (Vite's
 error overlay owns dev errors), as are authored entries — the boundary is
-generated-entry codegen. Disable it with `start: { errorBoundary: false }`
+generated-entry codegen. Disable it with `start: { productionErrorBoundary: false }`
 when application middleware owns error handling (an error middleware only
 sees the throw when no boundary catches it first). Default: `true`.
-
-**`css.filter`** — include/exclude patterns
-([picomatch](https://github.com/micromatch/picomatch) globs or regexes;
-relative globs resolve against the Vite root) for the module graphs the dev
-server crawls when collecting the CSS it inlines into `<head>` (the no-FOUC
-guarantee). By default the crawl covers the app's own sources and skips
-`node_modules`. `exclude` prunes matching graphs — providing one replaces
-the default `node_modules` exclusion — and `include` opts matching files in
-on top of that baseline, which is how a dependency's CSS gets
-server-inlined in dev:
-
-```ts
-solid({
-  start: {
-    css: { filter: { include: /node_modules\/some-ui-lib/ } },
-  },
-  ssr: true,
-});
-```
-
-CSS files themselves and virtual modules always pass — the filter decides
-which module graphs are traversed, not which stylesheets are kept — and a
-file matching both patterns stays excluded (Vite `createFilter`'s
-conflict rule). Development only: excluding a graph does not remove its
-CSS from the production build, where CSS always comes from the built
-assets.
 
 **Entry resolution** (all paths relative to the Vite root):
 
@@ -949,6 +923,30 @@ configureServerFunctionsServer({
 
 Set `csrf: false` only when another trusted layer protects the endpoint.
 
+Custom serialization (extra seroval plugins for class instances such as a
+`Money` or an `ObjectId`) is configured the same way, once per side. Set the
+server codec in the `configure` module and the client codec in
+[`start.clientSetup`](#optionsstart), both from one shared options module:
+
+```ts
+// src/serialization.ts
+import type { JSONCodecOptions } from '@solidjs/web/serialization';
+export default { plugins: [MoneyPlugin] } satisfies JSONCodecOptions;
+
+// src/server-config.ts (serverFunctions.configure)
+import { configureServerFunctionsServer } from '@solidjs/web/server-functions/server';
+import codec from './serialization';
+configureServerFunctionsServer({ codec });
+
+// src/client-setup.ts (start.clientSetup)
+import { configureServerFunctionsClient } from '@solidjs/web/server-functions/client';
+import codec from './serialization';
+configureServerFunctionsClient({ codec });
+```
+
+Both sides must use the same plugins. This covers server-function arguments
+and results; the SSR hydration payload takes its own `plugins` option.
+
 Meta-frameworks that need to control plugin ordering and dispatch requests
 through their own server should use the standalone `serverFunctions()`
 export instead, which never installs the dev middleware. See
@@ -977,6 +975,37 @@ identically (all the same transforms and codegen), and declares the host
 owns the wiring, so the plugin skips the warning it otherwise prints when
 the option is enabled without SSR start mode. It reuses the plugin's
 `external` vocabulary (cf. `start.external` — a host owns the server).
+
+#### options.css
+
+- Type: Object
+- Default: undefined
+
+`css.filter` takes include/exclude patterns
+([picomatch](https://github.com/micromatch/picomatch) globs or regexes;
+relative globs resolve against the Vite root) for the module graphs the dev
+server crawls when collecting the CSS it inlines into `<head>` (the no-FOUC
+guarantee), in start mode and in `ssr: true` setups reading
+`virtual:solid-manifest`. By default the crawl covers the app's own sources and skips
+`node_modules`. `exclude` prunes matching graphs — providing one replaces
+the default `node_modules` exclusion — and `include` opts matching files in
+on top of that baseline, which is how a dependency's CSS gets
+server-inlined in dev:
+
+```ts
+solid({
+  start: true,
+  css: { filter: { include: /node_modules\/some-ui-lib/ } },
+  ssr: true,
+});
+```
+
+CSS files themselves and virtual modules always pass — the filter decides
+which module graphs are traversed, not which stylesheets are kept — and a
+file matching both patterns stays excluded (Vite `createFilter`'s
+conflict rule). Development only: excluding a graph does not remove its
+CSS from the production build, where CSS always comes from the built
+assets.
 
 #### options.compiler
 
