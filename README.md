@@ -236,7 +236,7 @@ The object form carries the options (`start: true` is pure sugar for
 `false`/absent means off): `app`, `document`, `entries`,
 `middleware`, `setup`, `instrument`, `clientSetup`, `renderMode`,
 `devtools`, `productionErrorBoundary`,
-`external`, `node`, all documented below.
+`externalServer`, `node`, all documented below.
 
 Install `@solidjs/start-devtools` as a development dependency to add the
 development toolbar with runtime errors and server function calls:
@@ -371,7 +371,7 @@ both start modes — in client mode with `serverFunctions` (which keeps
 `dist/server`) the entry serves the static client with an `index.html`
 history fallback for HTML navigations plus the endpoint. Nothing is
 emitted where no server bundle exists (client mode without
-`serverFunctions`, or `start.external`); the build warns. The
+`serverFunctions`, or `start.externalServer`); the build warns. The
 compression/proxy stance is unchanged: the entry speaks plain HTTP —
 terminate TLS and compress at the reverse proxy or CDN in front of it.
 
@@ -703,7 +703,7 @@ ownership and stands its HTTP middlewares down automatically.
 
 Two explicit switches remain for custom host setups:
 
-1. **`start.external: true`** — hands the whole server side to a host that
+1. **`start.externalServer: true`** — hands the whole server side to a host that
    does not adopt Solid's normal `ssr` environment. Solid skips its
    server-build wiring and stands its development middlewares down, while
    continuing to provide the generated entries, client manifest, and
@@ -756,7 +756,7 @@ export default defineConfig({
 - Server-only options are inert here rather than errors, so a config
   survives the flip untouched: `start.entries.server` (and conventional
   `src/entry-server.*` files) are ignored — the shell render is always
-  generated — and so is `start.external`. An authored `src/entry-client.*`
+  generated — and so is `start.externalServer`. An authored `src/entry-client.*`
   stands alone and owns the mount.
 
 The point is the migration story: an app born with `start: true` moves to
@@ -899,7 +899,7 @@ on-demand module loading is off too, a host owning dev dispatch should
 side-effect import `virtual:solid-server-function-manifest` in its server
 entry so functions referenced only by client code still register. (When a
 provider owns the `ssr` environment outright — it isn't runnable — the
-middleware already stands down automatically; see the `external` option
+middleware already stands down automatically; see the `externalServer` option
 under [`start`](#optionsstart) for the whole-server switch and how the
 three options relate.)
 
@@ -986,7 +986,7 @@ should set `components: 'external'` instead of `true`. It behaves
 identically (all the same transforms and codegen), and declares the host
 owns the wiring, so the plugin skips the warning it otherwise prints when
 the option is enabled without SSR start mode. It reuses the plugin's
-`external` vocabulary (cf. `start.external` — a host owns the server).
+`external` vocabulary (cf. `start.externalServer` — a host owns the server).
 
 #### options.css
 

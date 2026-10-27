@@ -528,7 +528,7 @@ export interface Options {
    *   `start.node` then emits `dist/server/node.js` serving the static
    *   client with an `index.html` history fallback plus the endpoint.
    * - Client code stays non-hydratable (`generate: 'dom'`), exactly like a
-   *   plain SPA; server-only options (`entries.server`, `external`) are inert.
+   *   plain SPA; server-only options (`entries.server`, `externalServer`) are inert.
    * - `vite preview` serves the static build with history fallback (and
    *   dispatches the server-function endpoint through the kept handler).
    *
@@ -1400,6 +1400,12 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
         '`solid({ start: true, css: { filter } })`.',
     );
   }
+  if (startOptions && 'external' in startOptions) {
+    // Renamed before the stable release, without an alias.
+    throw new Error(
+      '[@solidjs/vite-plugin] `start.external` has been renamed to `start.externalServer`.',
+    );
+  }
   const styleFilterOptions = options.css?.filter;
   // The CSS crawl walks the module graph from the app's own entries, so a
   // plain createFilter allowlist can't express the option's purpose (opting
@@ -1422,9 +1428,9 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
   };
   let styleFilter = createStyleFilter();
   const filterDevStyles = (id: string) => styleFilter(id);
-  // `start.external` only means something when a server side exists to hand
+  // `start.externalServer` only means something when a server side exists to hand
   // over (SSR start mode); in client mode it is a documented no-op.
-  const externalDevServer = !!options.ssr && !!startOptions?.external;
+  const externalDevServer = !!options.ssr && !!startOptions?.externalServer;
   // Chrome Performance panel tracks: `null` opts out, otherwise the options
   // the injected module enables them with (dev serve only; see the
   // `solid:performance-tracks` plugin and the start-mode entry codegen).

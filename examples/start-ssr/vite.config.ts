@@ -189,7 +189,7 @@ export default defineConfig({
         : process.env.SSR_DOCUMENT
           ? { document: process.env.SSR_DOCUMENT }
           : {
-              external: !!process.env.SOLID_EXTERNAL,
+              externalServer: !!process.env.SOLID_EXTERNAL,
               // CSS_FILTER=include|default (css-filter mode) roots the app at
               // the temp src/CssLibApp.tsx; the filter itself is the
               // top-level `css` option below.

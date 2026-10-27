@@ -97,7 +97,7 @@ export interface ServerFunctionsOptions {
    *
    * When a provider owns the dev server's `ssr` environment (it isn't
    * runnable), the middleware already stands down automatically — no need
-   * to set this. See `start.external` for the whole-server switch.
+   * to set this. See `start.externalServer` for the whole-server switch.
    *
    * @default true (stands down automatically when the `ssr` dev environment isn't runnable)
    */
