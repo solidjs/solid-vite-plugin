@@ -949,6 +949,30 @@ configureServerFunctionsServer({
 
 Set `csrf: false` only when another trusted layer protects the endpoint.
 
+Custom serialization (extra seroval plugins for class instances such as a
+`Money` or an `ObjectId`) is configured the same way, once per side. Set the
+server codec in the `configure` module and the client codec in
+[`start.clientSetup`](#optionsstart), both from one shared options module:
+
+```ts
+// src/serialization.ts
+import type { JSONCodecOptions } from '@solidjs/web/serialization';
+export default { plugins: [MoneyPlugin] } satisfies JSONCodecOptions;
+
+// src/server-config.ts (serverFunctions.configure)
+import { configureServerFunctionsServer } from '@solidjs/web/server-functions/server';
+import codec from './serialization';
+configureServerFunctionsServer({ codec });
+
+// src/client-setup.ts (start.clientSetup)
+import { configureServerFunctionsClient } from '@solidjs/web/server-functions/client';
+import codec from './serialization';
+configureServerFunctionsClient({ codec });
+```
+
+Both sides must use the same plugins. This covers server-function arguments
+and results; the SSR hydration payload takes its own `plugins` option.
+
 Meta-frameworks that need to control plugin ordering and dispatch requests
 through their own server should use the standalone `serverFunctions()`
 export instead, which never installs the dev middleware. See
