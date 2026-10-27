@@ -2,7 +2,7 @@ node_modules
 dist
 
 # Local env files (examples ship committed fixtures explicitly, e.g.
-# examples/start-env/.env, which stays tracked because git ignores
+# examples/env/.env, which stays tracked because git ignores
 # don't apply to already-tracked files)
 .env
 .env.*

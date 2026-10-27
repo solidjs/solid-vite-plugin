@@ -23,7 +23,7 @@ try {
   // manifest (the same signal the browser's module request sends in a real
   // session); it also yields the compiled reference to pull the id from.
   const transformed = await server.transformRequest('/src/api.ts');
-  const match = /createServerReference\w*\("([^"]*-getServerMessage)"/.exec(transformed?.code || '');
+  const match = /createServerReference\w*\("(getServerMessage-[^"]*)"/.exec(transformed?.code || '');
   if (!match) throw new Error('could not extract function id from transformed module');
 
   const runner = server.environments.ssr.runner;
@@ -33,20 +33,20 @@ try {
   // same-origin protection rejects dispatches without it.
   const response = await handler.handleServerFunctionRequest(
     new Request(
-      `http://localhost${handler.endpoint}?id=${encodeURIComponent(match[1])}&args=${encodeURIComponent('["host"]')}`,
+      `http://localhost${handler.endpoint}/${encodeURIComponent(match[1])}?args=${encodeURIComponent('["host"]')}`,
       { method: 'POST', headers: { 'Sec-Fetch-Site': 'same-origin' } },
     ),
   );
   const body = await response.text();
   console.log(`HOST-DISPATCH ${response.status} ${body}`);
 
-  const nativeMatch = /createServerReference\w*\("([^"]*-nativeAddress)"/.exec(
+  const nativeMatch = /createServerReference\w*\("(nativeAddress-[^"]*)"/.exec(
     transformed?.code || '',
   );
   if (!nativeMatch) throw new Error('could not extract nativeAddress function id');
   const nativeResponse = await handler.handleServerFunctionRequest(
     new Request(
-      `http://localhost${handler.endpoint}?id=${encodeURIComponent(nativeMatch[1])}&args=${encodeURIComponent('[]')}`,
+      `http://localhost${handler.endpoint}/${encodeURIComponent(nativeMatch[1])}?args=${encodeURIComponent('[]')}`,
       { method: 'POST', headers: { 'Sec-Fetch-Site': 'same-origin' } },
     ),
     { event: { nativeEvent: { socket: { remoteAddress: '198.51.100.7' } } } },

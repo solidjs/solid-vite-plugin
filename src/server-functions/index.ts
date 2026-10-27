@@ -8,6 +8,7 @@
 // conditions resolve the right half per environment. Any runtime satisfying
 // that contract can be swapped in through `options.runtime` (SolidStart's,
 // or your own).
+import { randomBytes } from 'crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import path from 'path';
 import {
@@ -19,6 +20,7 @@ import {
 } from 'vite';
 import { getEnvironmentConsumer, isRunnableEnvironment } from '../environment.js';
 import { joinBase, sendWebResponse, webRequestFromNode } from '../http.js';
+import { isTsrxModule } from '../tsrx.js';
 import { compile, type CompileOptions } from './compile.js';
 import xxHash32 from './xxhash32.js';
 
@@ -28,7 +30,7 @@ import xxHash32 from './xxhash32.js';
  * root — not the invocation directory — so running `vite` from outside the
  * project keeps compiling the same files. Absolute patterns are used as-is.
  *
- * @default include "src/**\/*.{jsx,tsx,ts,js,mjs,cjs}", exclude "node_modules/**\/*.{jsx,tsx,ts,js,mjs,cjs}"
+ * @default include "src/**\/*.{jsx,tsx,tsrx,ts,js,mjs,cjs}", exclude "node_modules/**\/*.{jsx,tsx,tsrx,ts,js,mjs,cjs}"
  */
 export interface ServerFunctionsFilter {
   include?: FilterPattern;
@@ -138,25 +140,30 @@ export interface ServerFunctionsOptions {
    * per-request wiring or server code.
    *
    * Document SSR of server components (rendered inline at t=0 and adopted
-   * at boot with zero endpoint requests) needs three more pieces: the
-   * render must run with the server-component render plugin, the document
-   * must carry the bootstrap script, and the client must call
-   * `installServerComponents()` before hydrating. With SSR app mode (the
-   * main plugin's `app` option with `ssr: true`) and generated entries
-   * the plugin emits all three. With authored entries those pieces live in
-   * your entry files — import them from `@solidjs/web/frames` (see the
-   * README).
+   * at boot with zero endpoint requests) needs two more pieces: the render
+   * must run with the server-component render plugin (plus the direct-call
+   * transform), and the client must call `installServerComponents()` before
+   * hydrating (the serialized references self-bootstrap the registry, so no
+   * separate bootstrap script is involved). With SSR app mode (the main
+   * plugin's `app` option with `ssr: true`) and generated entries the
+   * plugin emits both. With authored entries those pieces live in your
+   * entry files — import them from `@solidjs/web/frames` (see the README).
+   *
+   * `'external'` behaves exactly like `true`, and additionally declares
+   * that a composing host (e.g. a meta-framework adapter such as Astro's or
+   * TanStack Start's) owns that document wiring itself, so the plugin skips
+   * the without-SSR-app-mode warning.
    *
    * All of this is pure codegen: when the option is off, no reference to
    * the server-component runtime is emitted anywhere.
    *
    * @default false
    */
-  components?: boolean;
+  components?: boolean | 'external';
 }
 
-const DEFAULT_INCLUDE = 'src/**/*.{jsx,tsx,ts,js,mjs,cjs}';
-const DEFAULT_EXCLUDE = 'node_modules/**/*.{jsx,tsx,ts,js,mjs,cjs}';
+const DEFAULT_INCLUDE = 'src/**/*.{jsx,tsx,tsrx,ts,js,mjs,cjs}';
+const DEFAULT_EXCLUDE = 'node_modules/**/*.{jsx,tsx,tsrx,ts,js,mjs,cjs}';
 const DEFAULT_MANIFEST = 'virtual:solid-server-function-manifest';
 const DEFAULT_DIRECTIVE = 'use server';
 const DEFAULT_RUNTIME = '@solidjs/web/server-functions';
@@ -164,6 +171,18 @@ const DEFAULT_RUNTIME = '@solidjs/web/server-functions';
 // equals it, no configure calls need to be emitted at all.
 const DEFAULT_ENDPOINT = '/_server';
 const STORAGE_SOURCE = '@solidjs/web/storage';
+
+/**
+ * The endpoint mount as the runtime is configured with it — the option (or
+ * the runtime's default) with its leading slash guaranteed, before Vite's
+ * `base` is applied. Shared with the app-mode plugin, whose preview
+ * middleware classifies responses by this mount.
+ * @internal
+ */
+export function normalizeServerFunctionsEndpoint(endpoint?: string): string {
+  const option = endpoint || DEFAULT_ENDPOINT;
+  return option.startsWith('/') ? option : '/' + option;
+}
 // Server-only handler: importing it wires the endpoint in one line
 // (registrations via the manifest, request-event scoping, endpoint config).
 const HANDLER_ID = 'virtual:solid-server-function-handler';
@@ -177,13 +196,30 @@ const HANDLER_ID = 'virtual:solid-server-function-handler';
 // (`vite build` then `vite build --ssr`) does not, so the client build
 // persists its findings for the SSR build to merge (mirroring the plugin's
 // dist/client/.vite/manifest.json convention).
+//
+// The file doubles as the build's statement of which server functions the
+// CLIENT can reach — every reference the client compile emitted, by wire id
+// — for build tooling that needs that set without re-deriving it from
+// compiled output (a static-site prerenderer checking that each reachable
+// function was captured, for example). Paths are root-relative, posix.
 const PERSISTED_MANIFEST_PATH = '.vite/solid-server-functions.json';
+
+/** The persisted manifest's on-disk shape (the array form is the pre-`functions` legacy). */
+export interface PersistedServerFunctionManifest {
+  /** Modules containing server functions, root-relative. */
+  modules: string[];
+  /** Every server function the client build emitted a reference to. */
+  functions: Array<{ id: string; name: string; module: string }>;
+}
 
 function readPersistedManifest(root: string): Set<string> {
   const file = path.resolve(root, 'dist/client', PERSISTED_MANIFEST_PATH);
   if (!existsSync(file)) return new Set();
   try {
-    const entries: string[] = JSON.parse(readFileSync(file, 'utf-8'));
+    const parsed: string[] | PersistedServerFunctionManifest = JSON.parse(
+      readFileSync(file, 'utf-8'),
+    );
+    const entries = Array.isArray(parsed) ? parsed : parsed.modules;
     return new Set(
       entries.map((entry) => path.resolve(root, entry)).filter((entry) => existsSync(entry)),
     );
@@ -192,21 +228,46 @@ function readPersistedManifest(root: string): Set<string> {
   }
 }
 
-function writePersistedManifest(root: string, outDir: string, entries: Set<string>): void {
+function writePersistedManifest(
+  root: string,
+  outDir: string,
+  entries: Set<string>,
+  functions: Map<string, FunctionRecord>,
+): void {
   const file = path.resolve(root, outDir, PERSISTED_MANIFEST_PATH);
   mkdirSync(path.dirname(file), { recursive: true });
-  const relative = [...entries].map((entry) =>
-    path.relative(root, entry).split(path.sep).join('/'),
-  );
-  writeFileSync(file, JSON.stringify(relative, null, 2));
+  const relative = (entry: string) => path.relative(root, entry).split(path.sep).join('/');
+  const manifest: PersistedServerFunctionManifest = {
+    modules: [...entries].map(relative),
+    functions: [...functions].map(([id, record]) => ({
+      id,
+      name: record.name,
+      module: relative(record.module),
+    })),
+  };
+  writeFileSync(file, JSON.stringify(manifest, null, 2));
 }
 
-type Manifest = Record<CompileOptions['mode'], Set<string>>;
+interface FunctionRecord {
+  name: string;
+  /** Absolute path of the declaring module. */
+  module: string;
+}
+
+interface Manifest {
+  /** Modules with server functions, per consumer. */
+  modules: Record<CompileOptions['mode'], Set<string>>;
+  /** Wire id -> declaring function, for every reference the CLIENT compile emitted. */
+  clientFunctions: Map<string, FunctionRecord>;
+}
 
 function createManifest(): Manifest {
   return {
-    server: new Set(),
-    client: new Set(),
+    modules: {
+      server: new Set(),
+      client: new Set(),
+    },
+    clientFunctions: new Map(),
   };
 }
 
@@ -286,9 +347,21 @@ function invalidateModules(
   manifest: string,
 ): void {
   if (server?.environments && result.invalidPreload) {
-    invalidateModule(server.environments.client.moduleGraph, manifest);
-    invalidateModule(server.environments.ssr.moduleGraph, manifest);
+    // Every environment, not just `client` and `ssr`: a host can load the
+    // manifest from a server environment of its own (`void_worker`, a
+    // Cloudflare worker), and one with no `ssr` environment at all would
+    // otherwise throw here.
+    for (const environment of Object.values(server.environments)) {
+      invalidateModule(environment.moduleGraph, manifest);
+    }
   }
+}
+
+function removeManifestRecord(
+  source: Set<string>,
+  target: string,
+): ReturnType<typeof mergeManifestRecord> {
+  return { invalidPreload: source.delete(target), invalidated: [...source] };
 }
 
 /**
@@ -301,10 +374,29 @@ function invalidateModules(
  */
 export function serverFunctions(
   options: ServerFunctionsOptions = {},
-  internal: { devMiddleware?: boolean; externalDevServer?: boolean; ssrHandler?: string } = {},
+  internal: {
+    devMiddleware?: boolean;
+    externalDevServer?: boolean;
+    ssrHandler?: string;
+    tsrxAfterSolid?: boolean;
+    tsrxSourceMap?: boolean;
+    /**
+     * Other front ends' extensions (`Options.frontends`): their modules are
+     * in the default filter and, like `.tsrx`, compiled after Solid's.
+     */
+    frontendExtensions?: string[];
+  } = {},
 ): Plugin[] {
-  const filterInclude = options.filter?.include || DEFAULT_INCLUDE;
-  const filterExclude = options.filter?.exclude || DEFAULT_EXCLUDE;
+  const frontendExtensions = internal.frontendExtensions ?? [];
+  const withFrontends = (pattern: string) =>
+    frontendExtensions.length
+      ? pattern.replace('tsrx,', `tsrx,${frontendExtensions.map((e) => e.slice(1)).join(',')},`)
+      : pattern;
+  const filterInclude = options.filter?.include || withFrontends(DEFAULT_INCLUDE);
+  const filterExclude = options.filter?.exclude || withFrontends(DEFAULT_EXCLUDE);
+  // Lowered before this pass sees it: `.tsrx`, or another front end's module.
+  const isLowered = (id: string) =>
+    isTsrxModule(id) || frontendExtensions.some((e) => id.toLowerCase().endsWith(e));
   // Recreated in configResolved: relative patterns (the defaults included)
   // must resolve against the Vite root, not process.cwd() — running `vite`
   // from outside the project would otherwise silently skip every module.
@@ -312,8 +404,7 @@ export function serverFunctions(
   const manifestId = options.manifest || DEFAULT_MANIFEST;
   const directive = options.directive || DEFAULT_DIRECTIVE;
   const runtime = options.runtime || { server: DEFAULT_RUNTIME, client: DEFAULT_RUNTIME };
-  const endpointOption = options.endpoint || DEFAULT_ENDPOINT;
-  const endpoint = endpointOption.startsWith('/') ? endpointOption : '/' + endpointOption;
+  const endpoint = normalizeServerFunctionsEndpoint(options.endpoint);
   const components = !!options.components;
   // The middleware only exists on the main plugin's path to begin with (see the
   // `internal` parameter doc); the public option opts out of it there.
@@ -339,6 +430,23 @@ export function serverFunctions(
     client: undefined,
   };
   let currentServer: ViteDevServer | undefined;
+
+  // THE DEPLOYMENT SECRET (solidjs/solid#3239): the runtime's flash cookie
+  // — the no-JS form outcome — carries the submitted input, so it is
+  // AES-GCM encrypted under a key derived from a deployment-wide secret,
+  // and without one the outcome is withheld entirely. This plugin provides
+  // that secret with zero configuration through the internal
+  // `globalThis.__SOLID_SECRET__ ??=` contract: generated once per plugin
+  // instance, so a production build bakes one value into the emitted server
+  // chunk — every instance of that deployment shares it (a per-process
+  // value would silently lose flashes behind a load balancer) — and a dev
+  // session holds one for its lifetime (a restart invalidates in-flight
+  // flashes, which are 60-second one-shot cookies; the next render just
+  // reads "no flash"). Server output only, never the client graph. The
+  // `??=` keeps an explicit `configureServerFunctionsServer({ secret })` —
+  // or a value injected by an outer harness — authoritative.
+  const deploymentSecret = randomBytes(32).toString('hex');
+  const deploymentSecretSnippet = `globalThis.__SOLID_SECRET__ ??= ${JSON.stringify(deploymentSecret)};`;
 
   const clientOptions: Pick<CompileOptions, 'directive' | 'definitions'> = {
     directive,
@@ -403,6 +511,14 @@ export function serverFunctions(
     // import is only emitted when the option is on, so disabled setups keep
     // a server-component-free graph.
     return [
+      // The deployment secret. Imports are hoisted above it, but nothing
+      // reads the global at module evaluation — the runtime resolves it
+      // lazily per encode/decode — so leading textually is just the honest
+      // placement. This module is loaded before any dispatch on both
+      // surfaces, and the generated SSR handler imports it at module load,
+      // so the secret is in place for the flash's encode (the form POST)
+      // and its decode (the render that follows the redirect) alike.
+      deploymentSecretSnippet,
       // The user's `configure` module comes first: a side-effect import in
       // the handler graph, evaluated before any dispatch on both surfaces
       // (dev middleware and prod handler) and bundled into the handler
@@ -457,21 +573,36 @@ export function serverFunctions(
     ].join('\n');
   }
 
-  // Function IDs are `xxHash32(root-relative path)-<count>` (see compile.ts),
-  // so the hash segment maps an incoming ID back to its module. Rebuilt
-  // whenever a transform has grown the manifest.
+  // Function IDs are `<name>-<xxHash32(root-relative path)>[-<ordinal>]`
+  // (identity-keyed, solidjs/solid#3109). The name is a JS identifier and
+  // never contains `-`, so the hash is always the second segment and maps
+  // an incoming ID back to its module. Rebuilt whenever a transform has
+  // grown the manifest.
   const hashIndex = new Map<string, string>();
   let hashIndexSize = -1;
   function moduleForFunctionId(functionId: string): string | undefined {
-    if (manifest.server.size !== hashIndexSize) {
+    if (manifest.modules.server.size !== hashIndexSize) {
       hashIndex.clear();
-      for (const entry of manifest.server) {
+      for (const entry of manifest.modules.server) {
         const relative = path.relative(root, entry).split(path.sep).join('/');
         hashIndex.set(xxHash32(relative).toString(16), entry);
       }
-      hashIndexSize = manifest.server.size;
+      hashIndexSize = manifest.modules.server.size;
     }
-    return hashIndex.get(functionId.split('-', 1)[0]!);
+    return hashIndex.get(functionId.split('-')[1]!);
+  }
+
+  // Dev only: drops a module that was deleted or no longer declares server
+  // functions, so the manifest stops importing it. A build transforms each
+  // module once, so its manifest never needs this.
+  function forgetModule(id: string): void {
+    if (isBuild || !manifest.modules.server.has(id)) return;
+    for (const [functionId, record] of manifest.clientFunctions) {
+      if (record.module === id) manifest.clientFunctions.delete(functionId);
+    }
+    hashIndexSize = -1;
+    const result = removeManifestRecord(manifest.modules.server, id);
+    invalidateModules(currentServer, result, manifestId);
   }
 
   function moduleDevUrl(entry: string): string {
@@ -515,27 +646,55 @@ export function serverFunctions(
         if (internal.externalDevServer || !isRunnableEnvironment(ssrEnvironment)) {
           return;
         }
+        // A call's address takes one of three shapes: `<endpoint>/<id>`
+        // (plain HTTP), `<endpoint>/data/<id>` (the scripted transport's own
+        // path, solidjs/solid#3076, #3094) or `<endpoint>/live/<id>` (a
+        // `live` loop's connection, answered as an event stream; @solidjs/web
+        // 2.0.0-rc.10). Bare-mount requests still reach the runtime handler
+        // (it answers 404), so misdirected posts fail through the endpoint
+        // rather than falling through to SSR.
+        const underMount = (pathname: string, mount: string) =>
+          pathname === mount || pathname.startsWith(mount + '/');
         server.middlewares.use((req, res, next) => {
           const url = new URL(req.url || '/', 'http://localhost');
           // Match with and without `base` — middleware-mode hosts may mount
           // vite.middlewares below the base themselves.
-          if (url.pathname !== resolvedEndpoint && url.pathname !== endpoint) {
+          if (!underMount(url.pathname, resolvedEndpoint) && !underMount(url.pathname, endpoint)) {
             return next();
           }
+          const basePrefixed = underMount(url.pathname, resolvedEndpoint);
           // When the stripped form matched, restore the base for dispatch:
           // the generated handler compares the request pathname against the
           // base-prefixed endpoint, and production handlers only ever see
           // base-prefixed URLs.
-          const dispatchUrl =
-            url.pathname === resolvedEndpoint ? undefined : joinBase(base, req.url || '/');
+          const dispatchUrl = basePrefixed ? undefined : joinBase(base, req.url || '/');
           (async () => {
             // Make sure the referenced module has been evaluated in the SSR
             // environment so its registration exists — functions only client
             // code references are never loaded by the SSR render itself.
-            const headerId = req.headers['x-server-function-id'];
-            const functionId =
-              (typeof headerId === 'string' ? headerId.split('#')[0] : undefined) ||
-              url.searchParams.get('id');
+            // The id lives in the path segment after the mount — behind a
+            // literal `data` segment on the scripted transport's address
+            // (solidjs/solid#3094) or a literal `live` segment on a live
+            // loop's. Mirrors the runtime's `parseServerFunctionAddress`:
+            // one kind segment at most is stripped, and segment count keeps
+            // the shapes apart — an id occupies exactly one segment, so
+            // `data/<id>` / `live/<id>` are only ever kind-prefixed
+            // addresses, a function id spelled `data` or `live` still parses
+            // at the bare one, and `data/live/<id>` is a miss (the runtime
+            // 404s it too).
+            const mount = basePrefixed ? resolvedEndpoint : endpoint;
+            let segment = url.pathname.slice(mount.length + 1);
+            if (segment.startsWith('data/') || segment.startsWith('live/')) {
+              segment = segment.slice(5);
+            }
+            let functionId: string | null = null;
+            if (segment && !segment.includes('/')) {
+              try {
+                functionId = decodeURIComponent(segment);
+              } catch {
+                // not an address; the runtime handler answers the 404
+              }
+            }
             if (functionId) {
               const entry = moduleForFunctionId(functionId);
               if (entry) await ssrEnvironment.runner.import(moduleDevUrl(entry));
@@ -569,6 +728,83 @@ export function serverFunctions(
     });
   }
 
+  async function transformModule(
+    ctx: any,
+    code: string,
+    fileId: string,
+    opts: unknown,
+    tsrx: boolean,
+  ) {
+    const mode = getEnvironmentConsumer(ctx.environment, opts);
+    const [id] = fileId.split('?');
+    if (!id || !filter(id) || isLowered(id) !== tsrx) return null;
+
+    // The directive has to appear literally, so anything without the
+    // substring can skip the native parse entirely.
+    if (!code.includes(directive)) {
+      forgetModule(id);
+      return null;
+    }
+
+    const result = await compile(id, code, {
+      ...(mode === 'server' ? serverOptions : clientOptions),
+      mode,
+      env,
+      root,
+      // A front end's module arrives with its map (native `.tsrx` does not).
+      sourceMap: !tsrx || !!internal.tsrxSourceMap || !isTsrxModule(id),
+    });
+
+    if (!result.valid) {
+      forgetModule(id);
+      return null;
+    }
+
+    // The client compile is the authority on what the browser can dispatch:
+    // record every reference it emitted, by wire id, for the persisted
+    // manifest. A module is re-transformed on change, so its previous ids
+    // are dropped first (a renamed function must not linger as reachable).
+    if (mode === 'client') {
+      for (const [functionId, record] of manifest.clientFunctions) {
+        if (record.module === id) manifest.clientFunctions.delete(functionId);
+      }
+      for (const fn of result.functions) {
+        manifest.clientFunctions.set(fn.id, { name: fn.name, module: id });
+      }
+    }
+
+    const preloader = preload[mode];
+    if (preloader) preloader.defer();
+    invalidateModules(
+      currentServer,
+      mergeManifestRecord(manifest.modules.server, new Set([id])),
+      manifestId,
+    );
+
+    return {
+      // Appended (not prepended) so the source map for the compiled module
+      // stays valid; imports hoist and the endpoint is only read at call time.
+      code: (result.code || '') + endpointConfigureSnippet(mode),
+      map: result.map,
+    };
+  }
+
+  const compilerPlugin: Plugin = {
+    name: 'solid:server-functions/compiler',
+    enforce: 'pre',
+    transform(code, fileId, opts) {
+      return transformModule(this, code, fileId, opts, false);
+    },
+  };
+
+  const tsrxCompilerPlugin: Plugin = {
+    name: 'solid:server-functions/tsrx-compiler',
+    enforce: 'pre',
+    transform(code, fileId, opts) {
+      return transformModule(this, code, fileId, opts, true);
+    },
+  };
+
   return [
     {
       name: 'solid:server-functions/setup',
@@ -598,12 +834,15 @@ export function serverFunctions(
           // build discovered so the server manifest registers them even when
           // the SSR module graph never imports them.
           for (const entry of readPersistedManifest(root)) {
-            manifest.server.add(entry);
+            manifest.modules.server.add(entry);
           }
         }
       },
       configureServer(server) {
         currentServer = server;
+      },
+      watchChange(id, change) {
+        if (change.event === 'delete') forgetModule(id);
       },
       writeBundle() {
         // Same client-build detection as the main plugin: builder-mode builds
@@ -613,7 +852,7 @@ export function serverFunctions(
         const consumer = ctx.environment?.config?.consumer;
         const isClient = consumer ? consumer === 'client' : !isSsrBuild;
         if (isBuild && isClient) {
-          writePersistedManifest(root, outDir, manifest.server);
+          writePersistedManifest(root, outDir, manifest.modules.server, manifest.clientFunctions);
         }
       },
     },
@@ -636,12 +875,19 @@ export function serverFunctions(
             // configs resolve before the client build has written the file,
             // but this load runs once the SSR environment builds — after it.
             for (const entry of readPersistedManifest(root)) {
-              manifest.server.add(entry);
+              manifest.modules.server.add(entry);
             }
           }
-          const current = new Debouncer(() =>
-            [...manifest[mode]].map((entry) => `import ${JSON.stringify(entry)};`).join('\n'),
-          );
+          const source = () =>
+            [...manifest.modules[mode]]
+              .map((entry) => `import ${JSON.stringify(entry)};`)
+              .join('\n');
+          // In dev, each transform that registers a new module invalidates
+          // the manifest, and a function's module is always transformed
+          // before anything can call it. So the current list is enough, and
+          // waiting would only delay every load.
+          if (!isBuild) return source();
+          const current = new Debouncer(source);
           preload[mode] = current;
           const result = await current.promise.reference;
           return result;
@@ -649,51 +895,8 @@ export function serverFunctions(
         return null;
       },
     },
-    {
-      name: 'solid:server-functions/compiler',
-      enforce: 'pre',
-      async transform(code, fileId, opts) {
-        const mode = getEnvironmentConsumer(this.environment, opts);
-        const [id] = fileId.split('?');
-        if (!filter(id)) {
-          return null;
-        }
-
-        // Fast path: the directive has to appear literally, so anything
-        // without the substring can skip the native parse entirely.
-        if (!code.includes(directive)) {
-          return null;
-        }
-
-        const result = await compile(id!, code, {
-          ...(mode === 'server' ? serverOptions : clientOptions),
-          mode,
-          env,
-          root,
-        });
-
-        if (result.valid) {
-          const preloader = preload[mode];
-          if (preloader) {
-            preloader.defer();
-          }
-          invalidateModules(
-            currentServer,
-            mergeManifestRecord(manifest.server, new Set([id!])),
-            manifestId,
-          );
-
-          return {
-            // Appended (not prepended) so the source map for the compiled
-            // module stays valid; imports hoist and the endpoint is only
-            // read at call time, never during module evaluation.
-            code: (result.code || '') + endpointConfigureSnippet(mode),
-            map: result.map,
-          };
-        }
-        return null;
-      },
-    },
+    compilerPlugin,
+    ...(internal.tsrxAfterSolid ? [tsrxCompilerPlugin] : []),
     ...startPlugins,
   ];
 }

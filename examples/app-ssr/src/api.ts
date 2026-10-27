@@ -58,3 +58,11 @@ export async function nativeAddress() {
 export async function configureProbe() {
   return 'configure-probe';
 }
+
+// Containment probe (src/middleware.ts, /mw-direct-throw): called in-process
+// from the outermost middleware and left uncaught. The runtime reports the
+// direct call's failure before rethrowing, so the configureServerErrors hook
+// must hear it once even though the handler's containment sees it too.
+export async function failDirect(): Promise<never> {
+  throw new Error('token=direct-throw-secret');
+}

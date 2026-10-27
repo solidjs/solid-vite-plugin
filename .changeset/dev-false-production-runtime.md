@@ -1,0 +1,5 @@
+---
+'@solidjs/vite-plugin': patch
+---
+
+`dev: false` now serves Solid's production builds under `vite dev`, as documented (#62). The plugin already dropped its own `development` condition, but Vite's default `development|production` condition resolves to `development` in any non-production mode, so the client still pre-bundled `solid.dev.js` / `web.dev.js` and SSR loaded `server.dev.js`. With `dev: false` the plugin now rewrites that condition to `production` under `vite dev`; vitest runs and `vite build` keep Vite's default resolution. Vite conditions apply per environment, so other packages that ship a `development` export also get their production builds in that case. It also stops emitting HMR refresh wrappers and pre-bundling `solid-js/refresh`, because the production refresh runtime is an inert stub that only warns; edits fall back to a full reload. The diagnostics bridge also stays off with `dev: false` unless `observe` is on, since its channels exist only in the dev and observe builds.

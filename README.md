@@ -23,11 +23,13 @@ Join [solid discord](https://discord.com/invite/solidjs) and check the [troubles
 - Drop-in installation as a vite plugin
 - Minimal bundle size
 - Support typescript (`.tsx`) out of the box
+- Experimental TypeScript TSRX (`.tsrx`) support out of the box
 - Support code splitting out of the box
 
 ## Requirements
 
-This module is 100% ESM compatible and requires Node.js `^20.19.0 || >=22.12.0`.
+This module is 100% ESM compatible and requires Node.js `>=22.12.0` (the same
+floor as the `solid-js` 2.0 runtime packages).
 
 You can check your current Node.js version by running `node -v`. Use a version
 manager such as [Volta](https://volta.sh/) or [nvm](https://github.com/nvm-sh/nvm)
@@ -120,9 +122,58 @@ A [picomatch](https://github.com/micromatch/picomatch) pattern, or array of patt
 - Type: Boolean
 - Default: true
 
-This will inject `solid-js/dev` in place of `solid-js` in dev mode. Has no effect in prod.
-If set to false, it won't inject it in dev.
-This is useful for extra logs and debug.
+Resolve Solid's development builds under `vite dev` — the `development` export condition of
+`solid-js` and `@solidjs/web`, which carry the extra checks, warnings and diagnostics. Has no
+effect on `vite build`. Set to `false` to serve the production builds in dev instead.
+
+#### options.observe
+
+- Type: Boolean
+- Default: false
+
+Resolve Solid's observe builds in production: the production-speed runtime that keeps the
+diagnostics and attribution channels (`OBSERVE`) alive for observability tooling (error
+monitoring, performance tracing). Adds the `observe` export condition to every environment
+and turns on the compiler's source names (see `options.solid.sourceNames`), so graph labels
+(`<Home>`, `span.textContent`, `count`) survive minification. Under `vite dev` the dev build
+still wins.
+
+#### options.performanceTracks
+
+- Type: `boolean | PerformanceTracksOptions` (from `@solidjs/web/performance-tracks`)
+- Default: true
+
+Dev-serve only: paint Solid's records — effect and memo re-runs, interactions, holds, async
+flights, navigations, server-function calls — as custom tracks in the Chrome Performance
+panel, without the app calling `enablePerformanceTracks()` itself. Record a trace with the
+Performance panel while the dev server serves the page; the `Solid` group appears beside
+Chrome's main-thread and network tracks (`Interactions`, `Propagation`, `Effects`, `Memos`,
+`Async`, `Holds`, `Navigations`, `Server`), every span labelled by *why* it ran, findings as
+markers on the Timings track. See [Chrome Performance panel](https://github.com/solidjs/solid/blob/next/documentation/solid-2.0/08-dev-diagnostics.md#chrome-performance-panel-solidjswebperformance-tracks)
+in the Solid 2.0 diagnostics guide for how to read them.
+
+The plugin injects a small client module that enables the tracks *ahead of the app's entry*
+— a `<script type="module">` prepended to `<head>` for `index.html` apps, the first import
+of the client entry (generated or authored) in app mode — so hydration and the first
+interaction are on the timeline. The dev server needs nothing: it already writes its side
+of the work (`Server-Timing`: `solid-shell`, `solid-boundary`, `solid-invocation`), which the
+tracks read back onto the `Server` track.
+
+| Value | `vite dev` | `vite build` / preview / vitest |
+| --- | --- | --- |
+| omitted or `true` | enabled, adapter defaults | off |
+| `{ minMs, rich, attribution }` | enabled with those options | off |
+| `false` | off | off |
+
+The object form passes `PerformanceTracksOptions` through — `minMs` (floor for run spans),
+`rich` (`performance.measure` with tooltips and properties vs `console.timeStamp`), and
+`attribution` (the options of the engine hold the adapter takes: thresholds and the `values`
+level). All plain data: the options are serialized into the injected module. Never active on
+`vite build` — not for `dev: true` or `observe` builds; an observe app that wants tracks in
+production calls `enablePerformanceTracks()` itself — and never in test mode or preview.
+With `dev: false` (and no `observe`) the production runtime is served under `vite dev` and
+the adapter is a no-op. Requires the installed `@solidjs/web` to export `./performance-tracks` (every version
+in the peer range does); an older install warns once at startup and skips the injection.
 
 #### options.hot
 
@@ -141,7 +192,11 @@ Whether the app is server-rendered — one meaning everywhere.
 
 Without [`app`](#optionsapp), `ssr: true` enables the SSR transforms
 (hydratable client code, SSR server code); you provide the entries and the
-server yourself, as before. With `app`, the boolean selects the app
+server yourself, as before. With `ssr: false`, client code is
+non-hydratable DOM output. Modules that Vite loads on the server, for
+example through `ssrLoadModule` to prerender static pages, get
+non-hydratable SSR output, so they render to HTML without hydration keys.
+With `app`, the boolean selects the app
 mode: `ssr: true` is SSR app mode, `ssr: false`/omitted is client app
 mode — see below.
 
@@ -184,8 +239,8 @@ same server functions.
 The object form carries the options (`app: true` is pure sugar for
 `app: {}` — both mean the identical app mode with defaults, and
 `false`/absent means off): `root`, `document`, `entries`, `middleware`,
-`setup`, `devtools`, `productionErrorBoundary`, `css`, and `external`,
-all documented below.
+`setup`, `instrument`, `clientSetup`, `renderMode`, `devtools`,
+`productionErrorBoundary`, `css`, `external`, and `node`, all documented below.
 
 Install `@solidjs/start-devtools` as a development dependency to add the
 development toolbar with runtime errors and server function calls:
@@ -204,7 +259,7 @@ entries, place the development boundary around the app in the shared document
 or root:
 
 ```tsx
-import { DevToolbar } from '@solidjs/start-devtools';
+import { DevToolbar } from "@solidjs/start-devtools";
 
 <body>
   <DevToolbar>
@@ -228,7 +283,9 @@ With `ssr: true` — **SSR app mode**:
 - **Dev**: `vite` just works — a middleware on the dev server streams the
   rendered app for HTML-accepting GET requests through the SSR environment,
   injecting the Vite client (HMR, error overlay) and the dev style patch
-  into `<head>`. SSR errors render Vite's error page with the overlay.
+  into `<head>`. SSR errors render Vite's error page with the overlay. The
+  client entry enables the Chrome Performance panel tracks before it
+  hydrates (see [`performanceTracks`](#optionsperformancetracks)).
 - **Build**: a plain `vite build` produces both bundles via the
   environments/builder API — client assets (+ manifest) to `dist/client` and
   the server bundle to `dist/server/server.js`. (`vite build --app`, or the
@@ -257,12 +314,79 @@ The Fetchable wrapper deliberately accepts only the request. Hosts may pass
 environment or execution-context arguments after it; those are not the
 Solid options accepted by `handleRequest`'s second parameter.
 
-Among those options, **`event`** is the supported public seam for extending
-the request event: its fields spread into the event at creation, so a custom
-server entry (or a host wrapper) can attach whatever its platform knows and
-read it back anywhere in the request scope with `getRequestEvent()`. The
-conventional field name is `nativeEvent` — the platform's raw request
-object. A Node entry passes the `IncomingMessage`:
+- **Deploying to Node** — **`node`**: Node is the one mainstream runtime
+  without a fetch-shaped server API (Workers, Deno, Bun, Netlify, and Nitro
+  consume `{ fetch }` directly), so the build can emit the Node server for
+  you. With `app: { node: true }` the ssr build writes
+  `dist/server/node.js` beside `server.js`, and the production start
+  command is:
+
+```sh
+node dist/server/node.js   # PORT (default 3000), HOST
+```
+
+The entry serves `dist/client` statically — files under
+`build.assetsDir` as `Cache-Control: public, max-age=31536000, immutable`
+(their names are content hashes), everything else `public, max-age=0,
+must-revalidate` with `Last-Modified`; `HEAD` supported, dot-segment
+paths and `..` traversal refused — and hands every other request to
+`handleRequest` with the raw Node request as `nativeEvent`, so
+`getRequestEvent().nativeEvent` is the `IncomingMessage` (client IP:
+`event.nativeEvent.socket.remoteAddress`; behind a proxy read the
+forwarding headers off `event.request` instead, only when you trust the
+proxy). The node<->web bridge is the plugin's own — the same code the dev
+and preview middlewares run: HTTP/2 pseudo-headers, `https:` on TLS
+sockets, client disconnects as the request's `AbortSignal`, HEAD
+short-circuit, `set-cookie` split, backpressure that also settles when
+the client goes away. Errors log to `console.error` and answer 500. The
+file is ESM, depends on nothing but `node:*` and `./server.js`, and
+exports `listener` — the `(req, res)` function — plus
+`createListener(options?)` and `serve(options?)`, so it composes with an
+existing server. With Express, either let the entry serve everything or
+keep only the bridge behind Express's own static handling:
+
+```js
+import express from 'express';
+import compression from 'compression';
+import { listener, createListener } from './dist/server/node.js';
+
+const app = express();
+app.use(compression());
+app.use(listener); // static + pages + server functions
+// — or — let Express own static files (point it at dist/client):
+app.use(express.static('dist/client', { immutable: true, maxAge: '1y' }));
+app.use(createListener({ static: false }));
+app.listen(process.env.PORT || 3000);
+```
+
+`createListener({ static: false })` skips the file lookup and, in client
+mode, the `index.html` history fallback — the framework owns both.
+`createListener({ event: (req) => ({ ... }) })` merges extra fields over
+`{ nativeEvent: req }` into the request event. `serve({ port, host, static,
+event })` takes the same two options on top of the listen address.
+
+`node.js` is an emitted asset, not a second build input: `server.js` and
+its `handleRequest` / `{ fetch }` contracts are unchanged. With
+`instrument` set, `node.js` is a small wrapper that awaits `./server.js`
+(and so the instrument module) before it loads the server from
+`node-runtime.js` beside it, so `node:http` is not loaded until the
+instrument has run; deploy both files. It applies to
+both app modes — in client mode with `serverFunctions` (which keeps
+`dist/server`) the entry serves the static client with an `index.html`
+history fallback for HTML navigations plus the endpoint. Nothing is
+emitted where no server bundle exists (client mode without
+`serverFunctions`, or `app.external`); the build warns. The
+compression/proxy stance is unchanged: the entry speaks plain HTTP —
+terminate TLS and compress at the reverse proxy or CDN in front of it.
+
+Among the `handleRequest` options, **`event`** is the supported public seam
+for extending the request event: its fields spread into the event at
+creation, so a custom server entry (or a host wrapper) can attach whatever
+its platform knows and read it back anywhere in the request scope with
+`getRequestEvent()`. The conventional field name is `nativeEvent` — the
+platform's raw request object. This is what the emitted `node.js` does; a
+hand-written Node entry (the custom-server recipe) passes the
+`IncomingMessage` the same way:
 
 ```js
 import { createServer } from 'node:http';
@@ -285,12 +409,13 @@ event.nativeEvent; // the Node IncomingMessage the entry passed
 
 The plugin's own dev and preview middlewares (and the server-function dev
 middleware) pass `event: { nativeEvent: req }` with the Node request, so
-`getRequestEvent().nativeEvent` answers the same under `vite dev` and
-`vite preview` as behind a Node entry written like the above. For the
-client's IP on bare Node, read `event.nativeEvent.socket.remoteAddress`;
-behind a proxy or load balancer that address is the proxy's, so read the
-forwarding headers off `event.request` instead (`x-forwarded-for` and
-friends) — only when you trust the proxy that set them.
+`getRequestEvent().nativeEvent` answers the same under `vite dev`,
+`vite preview`, and `node dist/server/node.js` as behind a Node entry
+written like the above. For the client's IP on bare Node, read
+`event.nativeEvent.socket.remoteAddress`; behind a proxy or load balancer
+that address is the proxy's, so read the forwarding headers off
+`event.request` instead (`x-forwarded-for` and friends) — only when you
+trust the proxy that set them.
 
 - **Preview**: `vite build && vite preview` runs the production artifact
   with no server file — Vite's preview statics serve `dist/client`, and
@@ -310,35 +435,74 @@ real 3xx redirect, and one set after it (streamed responses) falls back to
 a `<script>window.location=...</script>` tail.
 
 **`middleware`** points at a server-only module default-exporting one
-fetch-style middleware — `(request, next) => Response | Promise<Response>`
-— or an array of them, composed in order:
+middleware — `(event, next) => Response | Promise<Response>`, the request
+at `event.request` — or an array of them. The plugin composes the chain
+itself. `next()` takes no arguments: assign `event.request = new Request(...)`
+before calling it to hand a different request downstream (calling
+`next(request)`, the previous shape, throws a migration error).
+
+The page render runs inside `next()`, so per-request render inputs go on
+the event before that call. `event.nonce` is the CSP nonce (a string, or
+`{ script, style }` with each a non-empty string or `false`).
+`event.renderMode` is `'stream'` or `'async'` for this request, overriding
+the static `renderMode` below.
+`handleRequest(request, { nonce, renderMode })` is seeded onto the event
+before the chain and wins over a middleware write.
 
 ```ts
 // vite.config.ts
 solid({ app: { middleware: './src/middleware.ts' }, ssr: true });
 
 // src/middleware.ts
-import { getRequestEvent } from '@solidjs/web';
-
-export default async function auth(request: Request, next) {
-  getRequestEvent().locals.user = await userFromCookie(request);
-  try {
-    const response = await next();
-    response.headers.set('server-timing', 'app'); // pre-wire window
-    return response;
-  } catch (error) {
-    return new Response('oops', { status: 500 });
+export default async (event, next) => {
+  event.nonce ??= crypto.randomUUID();
+  if (/bot|crawler/i.test(event.request.headers.get('user-agent') ?? '')) {
+    event.renderMode = 'async';
   }
-}
+  const response = await next();
+  const scriptNonce = typeof event.nonce === 'string' ? event.nonce : event.nonce?.script;
+  if (scriptNonce && response.headers.get('content-type')?.startsWith('text/html')) {
+    response.headers.set(
+      'content-security-policy',
+      `script-src 'nonce-${scriptNonce}' 'strict-dynamic'; object-src 'none'; base-uri 'none'`,
+    );
+  }
+  return response;
+};
 ```
+
+Generated entries pass `event.nonce` into `renderToStream`. An authored
+`entry-server` must forward the `context.nonce` the handler passes it
+(`renderToStream(app, { manifest, nonce: context.nonce })`).
 
 The chain fronts every request the plugin dispatches — page SSR and the
 server-function endpoint, dev, production, and preview alike — and runs
-inside the request-event scope, so `getRequestEvent()` works exactly as in
-application code (the endpoint shares the chain's event, so `locals`
+inside the request-event scope, so `getRequestEvent()` answers with the
+same event as the `event` argument (the endpoint shares it, so `locals`
 decoration is visible to server functions too). Nothing reaches the wire
 until the outermost middleware returns: headers stay mutable after
-`next()` even for streamed responses.
+`next()` even for streamed responses. In dev, writing `event.nonce` or
+`event.renderMode` after `await next()` warns: the render already read them.
+
+Whatever escapes the chain is settled at the handler edge. A thrown
+`Response` is the response, so `throw redirect('/login')` answers the 302
+(as the server-function endpoint does), and so is the `Response` a thrown
+`respond()` envelope carries; `Response.error()` is not a response and
+counts as a failure. In a production build any other failure (a middleware
+throw, a `setup` failure, or an invalid `event.renderMode` / `event.nonce`) is contained by the
+handler instead of rejecting to the host. It is reported once to the hook
+registered with `configureServerErrors` from `@solidjs/web` (through its
+`reportRequestFailure`: `{ kind: 'request', handling: 'failed' }` and the
+request `event`; an error the runtime already reported is not heard
+again), or logged with `console.error` when no hook is
+registered, and the client gets a bodyless 500. That 500 carries the
+headers and cookies written to the request event only while the response
+head is still open: once `next()` has returned a rendered page, the head
+was committed with that page, and a later throw drops them. An error
+middleware still sees a throw first, and with `productionErrorBoundary` on, render
+errors are handled by the boundary before they get this far. In dev those
+failures still reject, so the dev server sees the original error (with the
+built-in dev middleware, Vite's error middleware and its overlay).
 
 **`setup`** points at a server-only module default-exporting a per-request
 app-setup hook: `(event, App) => Component | void | Promise<Component |
@@ -380,6 +544,122 @@ whatever the hook renders must be matched client-side for hydration —
 routers that own both sides (their client entry re-creates the router and
 hydrates the same tree) fit naturally.
 
+**`instrument`** — a server-only module that runs to completion before
+anything else in the server graph loads: the app, the middleware,
+`@solidjs/web`, every dependency. The seam for instrumentation that must
+patch the runtime before the modules it patches are loaded — an APM's
+OpenTelemetry setup, a profiler, a `module.register` hook:
+
+```ts
+// vite.config.ts
+solid({ app: { instrument: './src/instrument.ts' }, ssr: true });
+
+// src/instrument.ts
+import * as Sentry from '@sentry/node';
+Sentry.init({ dsn: process.env.SENTRY_DSN, tracesSampleRate: 1 });
+```
+
+Import order alone cannot do this in ESM: static imports are hoisted and
+evaluated in dependency order, so `import './instrument'` at the top of an
+entry still runs after everything the entry imports. The plugin therefore
+hands out the handler as `await import(instrument); await import(handler)`
+— top-level await sequencing, the one construct that guarantees the order —
+on every surface (`vite dev`, `vite build`, `vite preview`, a host consuming
+the handler entry, and the `node` entry). This replaces the per-host `node --import
+instrument.mjs` dance. The module may be async and needs no exports; the
+server build must keep code splitting on (the default), since inlining
+dynamic imports would hoist the handler graph back above the instrument.
+
+**`clientSetup`** points at a client module that the generated client entry
+runs before it hydrates (SSR mode) or mounts (client mode) the app. Use it
+for browser setup that must be in place before the first render:
+
+- a server-function transport wrapper or request-header hook,
+- a `vite:preloadError` listener,
+- an error reporter's `init()`.
+
+```ts
+// vite.config.ts
+solid({ app: { clientSetup: './src/client-setup.ts' }, ssr: true });
+
+// src/client-setup.ts
+window.addEventListener('vite:preloadError', () => window.location.reload());
+```
+
+How it runs:
+
+- The generated entry imports the module for its side effects, ahead of the
+  app. A synchronous module finishes before the app's modules evaluate.
+- The module may use top-level `await`. `hydrate()` / `render()` waits for
+  it to settle. The app's modules may evaluate while it waits, but nothing
+  renders.
+- Because it can wait, it can read a global that a classic `<script>` in
+  `<body>` defines: await `DOMContentLoaded` first.
+- It stays in the entry's static module graph, so the build preloads the
+  app's chunks and links its stylesheets as before.
+- Editing it in dev reloads the page.
+
+The module needs no exports. It only applies to a generated client entry.
+An authored `entry-client` can run its own code before `hydrate()`, so
+configuring both is an error.
+
+**`renderMode`** — how a page render becomes a response body: `'stream'`
+(the default) or `'async'`.
+
+Streaming flushes the document shell as soon as it is ready, with every
+`<Loading>` fallback in place, and streams the boundaries' content behind it
+in later chunks; inline scripts swap that content into the page as it
+arrives. That is the best time-to-first-byte a server render can have, but a
+client that never runs JavaScript — a crawler, `curl`, a browser with
+scripts disabled — is left looking at the fallbacks forever
+([solidjs/solid#3280](https://github.com/solidjs/solid/issues/3280)).
+`'async'` is the other end of that trade: the handler awaits the render until
+every boundary has settled and sends one complete document.
+
+```ts
+solid({ app: { renderMode: 'async' }, ssr: true });
+```
+
+Because nothing has flushed when a boundary resolves, its content is spliced
+in place of its placeholder — the document carries no fallback markup, no
+swap templates, no swap scripts — while hydration data still serializes
+exactly as before, so JavaScript clients hydrate the settled document the
+same way they hydrate a streamed one. The tradeoffs are inherent: the
+response waits for the slowest boundary before its first byte, and the whole
+page buffers in memory before it goes out. Two consequences worth knowing:
+`deferStream` is moot under `'async'` (everything defers), and a `Location`
+header written mid-render — the post-flush script redirect in stream mode —
+becomes a real 3xx with no body, which is exactly what a no-JS client needs.
+
+Most apps want streaming for browsers and a complete document for the few
+clients that cannot run the swap. Decide that per request in middleware,
+before `next()` — see the middleware example above:
+
+```ts
+if (/bot|crawler/i.test(event.request.headers.get('user-agent') ?? '')) {
+  event.renderMode = 'async';
+}
+```
+
+The module form (`renderMode: './src/render-mode.ts'`) shipped only in
+3.0.0-next prereleases and is a config error pointing at `event.renderMode`.
+
+Hosts driving the handler directly can decide per call instead:
+`handleRequest(request, { renderMode: 'async' })`. Precedence is that
+option, then `event.renderMode`, then this static value. A bad
+`handleRequest` option rejects the call before the chain runs; a bad
+`event.renderMode` is a request failure, contained in production like any
+other. The mode applies to generated and authored entries alike — an
+authored `render()` returning a `renderToStream` result is awaited the same
+way (and in production its client-entry reference is still rewritten).
+`httpStatus()` / `httpHeader()` declarations survive either mode: the
+runtime freezes the response head when the awaited render completes
+(`@solidjs/web` 2.0.0-rc.7+), just as streaming freezes it at shell flush.
+Server mode only — in client mode the served shell has no boundaries to
+settle, so the option is a documented no-op there. A nonce set during the
+client-mode shell prerender is ignored (and the build warns): baking one
+into `dist/client/index.html` would replay it on every load.
+
 **`productionErrorBoundary`** — in a production build, generated entries wrap the app
 in a default error boundary (and the document in an outer one): a render
 error streams a generic `500 | Internal Server Error` fallback — no stack
@@ -420,8 +700,8 @@ assets.
 **Entry resolution** (all paths relative to the Vite root):
 
 1. Explicit `app.entries.server` / `app.entries.client` options.
-2. Conventional files: `src/entry-server.{tsx,jsx,ts,js,mjs}` and
-   `src/entry-client.{tsx,jsx,ts,js,mjs}`. Entry files come in pairs —
+2. Conventional files: `src/entry-server.{tsx,jsx,ts,js,mjs,tsrx}` and
+   `src/entry-client.{tsx,jsx,ts,js,mjs,tsrx}`. Entry files come in pairs —
    providing only one is an error. The server entry must export
    `render(request?, context?)` returning a `renderToStream` result, an HTML
    string, or a `Response`; `context.clientEntry` carries the resolved
@@ -430,8 +710,8 @@ assets.
    the hashed asset (the classic harness convention keeps working).
 3. Generated entries (the zero-config path): when no entry files exist, both
    are generated from a root component — `app.root`, defaulting to
-   `src/App.{tsx,jsx,ts,js}` (or lowercase `src/app.*`) — wrapped in a
-   document shell: `app.document`, defaulting to `src/Document.{tsx,jsx}`,
+   `src/App.{tsx,jsx,ts,js,tsrx}` (or lowercase `src/app.*`) — wrapped in a
+   document shell: `app.document`, defaulting to `src/Document.{tsx,jsx,tsrx}`,
    else a built-in minimal shell. A custom document receives the app as
    `props.children` and must render the full `<html>` document including
    `<HydrationScript />`; the client entry script is injected into `<head>`
@@ -491,12 +771,13 @@ export default defineConfig({
   graph's CSS inlined; deep links get the same shell (history-fallback
   semantics). The generated client entry `render()`s (not hydrates) the app
   into `document.body`.
-- **Build**: `vite build` emits a purely static `dist/client` — the shell is
-  prerendered once through the built handler into `dist/client/index.html`,
-  with the hashed entry script and the entry graph's CSS links — deployable
-  to any static host. No server bundle remains unless `serverFunctions` is
-  enabled, in which case `dist/server` is kept and its `handleRequest`
-  serves the endpoint (pages stay static).
+- **Build**: standalone `vite build` emits a static `dist/client`. The shell
+  is prerendered once through the built handler into `dist/client/index.html`,
+  with hashed scripts and CSS links, ready for a static host. The server bundle
+  is removed unless `serverFunctions` is enabled, in which case `dist/server`
+  is kept and its `handleRequest` serves the endpoint (pages stay static).
+  Hosts such as Nitro can relocate the client and server outputs; prerender
+  uses those directories and retains the server service for the host's build.
 - **Transforms**: client code compiles exactly like a plain SPA today
   (`generate: 'dom'`, non-hydratable); only the document shell goes through
   the SSR transforms.
@@ -670,9 +951,18 @@ handle that automatically. Combined with SSR app mode
 document wiring is emitted too: server components render inline in the
 SSR'd document and are adopted
 at boot with zero endpoint requests. With authored entries, the app-side
-pieces (the render plugin, the bootstrap script, and the client's
-`installServerComponents()` call, all from `@solidjs/web/frames`) live in
-your entry files instead. See `examples/app-ssr` for a complete page.
+pieces (the render plugin and the client's `installServerComponents()`
+call, both from `@solidjs/web/frames`) live in your entry files instead.
+See `examples/app-ssr` for a complete page.
+
+Composing hosts (e.g. the Astro adapter or TanStack Start's Solid
+integration) that emit that document wiring themselves — the render plugin
+around their renders plus a client-side `installServerComponents()` call —
+should set `components: 'external'` instead of `true`. It behaves
+identically (all the same transforms and codegen), and declares the host
+owns the wiring, so the plugin skips the warning it otherwise prints when
+the option is enabled without SSR app mode. It reuses the plugin's
+`external` vocabulary (cf. `app.external` — a host owns the server).
 
 #### options.compiler
 
@@ -680,8 +970,8 @@ your entry files instead. See `examples/app-ssr` for a complete page.
 - Default: `"native"`
 
 Choose the JSX compiler backend. The default `"native"` compiles JSX through
-the native compiler from `@dom-expressions/compiler`. `"babel"` runs
-`babel-preset-solid` instead and only switches the JSX transform — every
+the native compiler from `@solidjs/compiler`. `"babel"` runs
+`@solidjs/babel-plugin` instead and only switches the JSX transform — every
 other pass (the `lazy()` module-URL transform and the solid-refresh HMR
 transform) is native in both modes.
 
@@ -689,7 +979,7 @@ transform) is native in both modes.
 you expect, set `compiler: 'babel'` and file an issue — the behavioral diff
 between the two modes is the bug report. Platforms without a prebuilt native
 binary (for example StackBlitz WebContainers) automatically fall back to the
-`@dom-expressions/compiler-wasm32-wasi` build, so no configuration is needed
+`@solidjs/compiler-wasm32-wasi` build, so no configuration is needed
 there.
 
 ```ts
@@ -701,22 +991,105 @@ export default defineConfig({
 });
 ```
 
+#### Experimental TSRX
+
+Files ending in `.tsrx` are recognized automatically as TypeScript TSRX; they
+do not need to be listed in `options.extensions`. Both the native and Babel
+compiler backends preserve the `.tsrx` filename when invoking their TSRX
+frontends.
+
+Scoped CSS emitted by either backend is exposed as a sibling virtual CSS
+sidecar and imported once from the compiled module. The sidecar goes through
+Vite's normal CSS pipeline, so extraction and injection work in development,
+production builds, and SSR, including client HMR and SSR development style
+collection. A file that emits no CSS has no sidecar import.
+
+The Babel backend chains TSRX source maps through the later lazy-module and
+refresh transforms. The native compiler does not currently emit the required
+TSRX projection map, so native `.tsrx` transforms return no source map. With
+`compiler: "native"` and custom `babel` options, the custom Babel support pass
+runs after native TSRX lowering (on ordinary JavaScript); ordinary JSX/TSX
+keeps the existing pre-native ordering.
+
+With `serverFunctions` enabled, function-level `"use server"` directives work
+in `.tsrx` with both compiler backends. The plugin lowers TSRX first, then runs
+the same native directive transform while retaining the authored `.tsrx` path
+for stable client/server function IDs. TSRX's host-defined
+`module server { ... }` profile is not supported.
+
 #### options.babel
 
 - Type: Babel.TransformOptions
 - Default: {}
 
 Pass any additional [babel transform options](https://babeljs.io/docs/en/options). Those will be merged with the transformations required by Solid.
+With the native compiler these options normally run before JSX lowering; for
+`.tsrx` only, they run after native TSRX lowering as described above.
 
 #### options.solid
 
-- Type: [@dom-expressions/compiler](https://github.com/ryansolid/dom-expressions/tree/main/packages/compiler#options) / [@dom-expressions/babel-plugin-jsx](https://github.com/ryansolid/dom-expressions/tree/main/packages/babel-plugin-jsx#plugin-options)
+- Type: [@solidjs/compiler](https://github.com/solidjs/solid/tree/main/packages/compiler) / [@solidjs/babel-plugin](https://github.com/solidjs/solid/tree/main/packages/babel-plugin)
 - Default: {}
 
-Pass additional DOM Expressions JSX compiler options. They will be merged with
-Solid's defaults (`moduleName: "@solidjs/web"`, Solid built-ins, custom-element
-context, and conditional wrapping) and applied to whichever compiler backend is
-selected.
+Pass additional Solid JSX compiler options. Both backends carry the Solid
+defaults (`moduleName: "@solidjs/web"`, the control-flow built-ins,
+custom-element context, and conditional wrapping) internally; anything set
+here is merged over them and applied to whichever backend is selected.
+
+##### options.solid.sourceNames
+
+- Type:
+  `boolean | { components?: boolean; bindings?: boolean; primitives?: boolean; locations?: boolean }`
+- Default: on in dev and under `observe`, off in production builds; `locations` on in dev only
+
+Which names as written in source are carried into output so the dev and observe runtimes
+can label the reactive graph after minification — in diagnostics, `whyDidRun` chains, error
+owner paths, and the Chrome performance tracks. Three kinds:
+
+- `components` emits the tag name (`createComponent(Home, props, "Home")` → owners read
+  `<Home>`).
+- `bindings` names compiled binding effects by what they write (`span.textContent`,
+  `div.class:active`, a hole `div.children`).
+- `primitives` names `createSignal`/`createMemo`/`createStore`/… after the identifier they
+  are declared as (`count`, `doubled`, `todos.title`), prefixed with the enclosing
+  non-component function for composed primitives (`createCounter.value`). An explicit
+  `name` option is never overridden.
+- `locations` adds a `file:line:col` next to every name the other kinds emit —
+  `createComponent(Home, props, "Home", "src/App.tsx:12:5")`,
+  `createSignal(0, { name: "count", loc: "src/store.ts:3:22" })` — so a diagnostic report, a
+  `whyDidRun` chain, or a devtools entry points at the line that declared the node. Paths are
+  relative to the Vite root, so under `vite dev` the console's
+  `http://localhost:5173/src/App.tsx:12:5` opens the file in the browser's sources panel. A
+  location is only emitted where its name is.
+
+The kinds come from two different places. `components` and `bindings` are the JSX compiler's
+own `sourceNames` option, passed through to whichever backend compiles your JSX
+(`@solidjs/compiler` or `@solidjs/babel-plugin`). `primitives` is the native compiler's
+standalone `transformSourceNames` pass — plain JavaScript in and out — which the plugin runs
+on every module it sees, `.ts`/`.js` files included, never inside `node_modules`. The plugin
+always runs its non-JSX work through the native compiler, so babel apps get primitive names
+too.
+
+The default follows the posture: on whenever the plugin compiles for the dev runtime (the
+same `dev` flag it hands the compilers — `vite dev`, or `dev: true`) and for `observe`
+builds; off for production builds, whose runtime ignores the names anyway, so production
+output is unchanged. `locations` is the one kind that does not follow `observe`: an observe
+build is a production bundle, and a source path inside it is an opt-in, so it is on in dev
+only. `sourceNames: false` turns every kind off, in dev too; `true` turns every kind on,
+production builds included. The object form sets the listed kinds and leaves the rest at the
+posture default — `{ primitives: false }` keeps component and binding names in dev but skips
+the primitives pass; `{ locations: true }` ships locations in an observe build.
+
+| `sourceNames`          | dev                    | `observe` build              | production build            |
+| ---------------------- | ---------------------- | ---------------------------- | --------------------------- |
+| (unset)                | all on                 | names on, `locations` off    | all off                     |
+| `true`                 | all on                 | all on                       | all on                      |
+| `false`                | all off                | all off                      | all off                     |
+| `{ kind: true/false }` | as given; the rest on  | as given; the rest as unset  | as given; the rest off      |
+
+`locations` needs a compiler release that takes the option; on an older `@solidjs/compiler`
+the names keep coming without locations, with a one-time warning when it was asked for
+explicitly.
 
 #### options.typescript
 
@@ -731,8 +1104,49 @@ Pass any additional [@babel/preset-typescript](https://babeljs.io/docs/en/babel-
 - Default: []
 
 An array of custom extension that will be passed through the solid compiler.
-By default, the plugin only transform `jsx` and `tsx` files.
+By default, the plugin transforms `jsx`, `tsx`, and experimental `tsrx` files.
+TSRX is always recognized and does not need to be added here.
 This is useful if you want to transform `mdx` files for example.
+
+#### options.frontends
+
+- Type: `Record<string, Frontend>`
+- Default: `{}` (plus the built-in `.rx`, below)
+
+Front ends for languages that lower to Solid themselves, keyed by file
+extension (`{ ".x": x() }`). Unlike `extensions`, whose files are parsed as
+JSX text, a front end's module is handed to its `compile` function, which
+returns the module's code, source map and stylesheet:
+
+```ts
+interface Frontend {
+  compile(
+    source: string,
+    context: {
+      id: string; // the module's file path
+      moduleId: string; // its full id, query included (`./x.rx?dep`)
+      ssr: boolean; // compiled for a server environment
+      root: string; // Vite's resolved root
+      solid: SolidOptions; // what this plugin would pass @solidjs/compiler for a JSX module here
+      addWatchFile(file: string): void; // recompile this module when `file` changes
+    },
+  ): { code: string; map?: string | object | null; css?: string } | null;
+}
+```
+
+A front end usually ends in `@solidjs/compiler` with `context.solid`, so its
+output matches this environment's `generate`, `hydratable` and `moduleName`.
+From there the module takes the route a lowered `.tsrx` module takes: the
+lazy and HMR refresh passes, server functions (IDs from the module's own
+path), and `css` as a CSS module the module imports. Solid's own extensions
+(`.jsx`, `.tsx`, `.tsrx`, ...) can't be claimed. Return `null` to leave a
+module to the rest of the pipeline.
+
+`.rx` ([ReactiveScript](https://github.com/ryansolid/reactivescript)) is
+built in: install `@reactivescript/compiler` in the project and `.rx`
+modules compile with no option. The plugin loads the package's `/vite`
+front end the first time it meets an `.rx` module, so a project without
+`.rx` files never loads it. A `.rx` entry in `frontends` replaces it.
 
 ## `server-only` and `client-only` boundary markers
 
@@ -765,7 +1179,7 @@ plugin's errors are prefixed `[@solidjs/vite-plugin]`.
 ## Note on HMR
 
 Starting from version `1.1.0`, this plugin handles automatic HMR. The refresh
-transform is compiled natively by `@dom-expressions/compiler` and drives the
+transform is compiled natively by `@solidjs/compiler` and drives the
 dev-only `solid-js/refresh` runtime entry that ships with Solid (the
 standalone [solid-refresh](https://github.com/solidjs/solid-refresh) package
 is no longer used).
@@ -787,6 +1201,94 @@ if (import.meta.hot) {
 }
 ```
 
+## Building a library
+
+Publish your components as JSX source under a `solid` export condition. The app that uses the library then compiles it with its own settings.
+
+Solid compiles JSX at build time, and the output depends on the target. Client code, server code (`ssr`), and hydratable code are all different. A library that ships only compiled JavaScript has fixed one of these choices. For example, DOM output throws "Client-only API called on the server side" when an app renders it on the server. React and Vue libraries do not have this problem, because their compiled output is the same on the client and the server.
+
+This plugin adds `solid` to Vite's `resolve.conditions`. It also scans your dependencies, and every package that has a `solid` key in its `exports` is excluded from dependency pre-bundling and is bundled into the SSR build instead of being externalized. Its JSX then goes through the same compile step as your own files.
+
+### package.json
+
+Put `solid` before `import` so Vite picks it first. Keep `import` for tools that do not know the `solid` condition. List `solid-js` and `@solidjs/web` as peer dependencies, so the app and the library share one copy.
+
+```json
+{
+  "name": "my-solid-lib",
+  "type": "module",
+  "files": ["dist"],
+  "sideEffects": ["**/*.css"],
+  "exports": {
+    ".": {
+      "types": "./dist/source/index.d.ts",
+      "solid": "./dist/source/index.jsx",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "vite build && tsc -p tsconfig.build.json && cp src/*.css dist/source/"
+  },
+  "peerDependencies": {
+    "@solidjs/web": "^2.0.0-rc.14",
+    "solid-js": "^2.0.0-rc.14"
+  }
+}
+```
+
+Each subpath export, such as `"./button"`, needs its own `solid` entry.
+
+### Source output and types
+
+TypeScript can write the JSX source and the type declarations in one step. Set `jsx` to `preserve` so the JSX stays in the output.
+
+```jsonc
+// tsconfig.build.json
+{
+  "compilerOptions": {
+    "target": "ESNext",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "jsx": "preserve",
+    "jsxImportSource": "@solidjs/web",
+    "declaration": true,
+    "outDir": "dist/source",
+    "rootDir": "src",
+    "strict": true,
+    "skipLibCheck": true
+  },
+  "include": ["src"]
+}
+```
+
+`tsc` does not copy CSS files. Copy them next to the output yourself, as the `build` script above does. CSS that needs a preprocessor, such as Sass, has to be compiled to plain CSS first, unless every app that uses the library also has that preprocessor installed.
+
+### Compiled output
+
+Vite's [library mode](https://vite.dev/guide/build.html#library-mode) builds the `import` entry. Mark `solid-js` and `@solidjs/web` as external so they are not bundled into the library.
+
+```js
+// vite.config.js
+import { defineConfig } from 'vite';
+import solid from '@solidjs/vite-plugin';
+
+export default defineConfig({
+  plugins: [solid()],
+  build: {
+    lib: { entry: 'src/index.tsx', formats: ['es'], fileName: 'index' },
+    rolldownOptions: { external: [/^solid-js(\/|$)/, /^@solidjs\/web(\/|$)/] },
+  },
+});
+```
+
+This output is client-only DOM code that cannot hydrate. Library mode also writes imported CSS to a separate file (`dist/index.css`) and does not import it from the JavaScript.
+
+### Using the library
+
+Install the library and import it. No extra configuration is needed. This also works for a package in the same monorepo that is linked through the workspace, as long as it is listed in the app's `package.json`.
+
+If a library ships only compiled code and fails during SSR, ask its author to add a `solid` export condition.
+
 # Troubleshooting
 
 - It appears that Webstorm generate some weird triggers when saving a file. In order to prevent that you can follow [this thread](https://intellij-support.jetbrains.com/hc/en-us/community/posts/360000154544-I-m-having-a-huge-problem-with-Webstorm-and-react-hot-loader-) and disable the **"Safe Write"** option in **"Settings | Appearance & Behavior | System Settings"**.
@@ -807,7 +1309,7 @@ For other breaking changes, check [the migration guide of vite](https://vitejs.d
 
 If you are using [vitest](https://vitest.dev/), this plugin already injects the necessary configuration for you. It even automatically detects if you have `@testing-library/jest-dom` installed in your project and automatically adds it to the `setupFiles`. All you need to add (if you want) is `globals`, `coverage`, and other testing configuration of your choice. If you can live without those, enjoy using vitest without the need to configure it yourself.
 
-Tests default to the client posture, regardless of the app's `ssr` flag: DOM codegen, non-hydratable (nothing hydrates in a test), browser export conditions, and a `jsdom` default `test.environment`. A server-rendered app needs no `ssr: mode !== 'test'` workaround — DOM component tests just work.
+Tests default to the client posture, regardless of the app's `ssr` flag: DOM codegen, non-hydratable (nothing hydrates in a test), and browser export conditions. The plugin does not set `test.environment`: set `environment: 'jsdom'` (or `'happy-dom'`) for DOM component tests, as Vitest's own default is `node`. `solid-js`, `@solidjs/web` and the packages that import them (such as `@solidjs/testing-library`) are inlined, so their imports resolve the browser build through Vite on any host runtime, Deno included. A server-rendered app needs no `ssr: mode !== 'test'` workaround — DOM component tests just work.
 
 Server-runtime unit tests (server functions, sessions, `renderToString` — anything that needs `isServer` to be `true` and the real server build of the framework) opt out per [vitest project](https://vitest.dev/guide/projects) by setting `test.environment: 'node'` (or `'edge-runtime'`) explicitly. That project gets the server posture end to end: server export conditions, ssr codegen, and the framework inlined so the whole graph — request-event storage included — resolves into one server-build instance. No inline/alias configuration needed. Both postures coexist in one workspace:
 
@@ -826,6 +1328,8 @@ test: {
   ],
 },
 ```
+
+The posture is chosen while each project resolves its own Vite config. Vitest 5 lets inline projects reuse the root Vite server instead (`test.sharedViteServer`, on by default), which skips that step, so the plugin sets `sharedViteServer: false` when the root config declares `test.projects` — trading Vitest 5's shared-server optimization for the per-project resolution Vitest 4 always did. Setting the option yourself overrides this; with `true`, every shared project runs with the root config's posture, without the injected `jest-dom` setup file, and without the plugin's `server.deps` handling (the framework inlined in both postures, together with its consumers such as `@solidjs/testing-library` in the client one).
 
 # Credits
 

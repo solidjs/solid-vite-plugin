@@ -1,0 +1,5 @@
+---
+'@solidjs/vite-plugin': patch
+---
+
+Fix `vite dev` failing in dependency optimization for apps using a Solid library that ships build-time code in the same package (#375). Since the semi-framework classification landed (any package with `solid-js` / `@solidjs/web` in `dependencies` or `peerDependencies` is `ssr.noExternal` so it shares the app's runtime copy), vitefu's crawl also deep-included every CJS dependency of such a package into the browser's `optimizeDeps.include`, exactly as it does for framework packages. For `@yak/solid` that is `@swc/core`, and rolldown failed on its native `.node` binding (`UNLOADABLE_DEPENDENCY … stream did not contain valid UTF-8`) before the dev server served a page. Sharing the runtime needs nothing pre-bundled, so include chains that pass through a semi-framework package are dropped; a browser-side CJS dependency of one is discovered and optimized on first use, as before the package was classified. Framework packages (a `solid` export condition) keep vitefu's full treatment.

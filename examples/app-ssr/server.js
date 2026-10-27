@@ -27,7 +27,15 @@ const MIME = {
 function webRequest(req) {
   const url = new URL(req.url || '/', `http://${req.headers.host || `localhost:${port}`}`);
   const method = req.method || 'GET';
-  const body = method === 'GET' || method === 'HEAD' ? undefined : Readable.toWeb(req);
+  // Attach a body only when the request carries one (Content-Length or
+  // Transfer-Encoding, RFC 9112 §6): the runtime treats a present body that
+  // decodes to nothing as malformed since @solidjs/web 2.0.0-rc.5.
+  const hasBody =
+    method !== 'GET' &&
+    method !== 'HEAD' &&
+    (req.headers['transfer-encoding'] !== undefined ||
+      (req.headers['content-length'] !== undefined && req.headers['content-length'] !== '0'));
+  const body = hasBody ? Readable.toWeb(req) : undefined;
   return new Request(url, {
     method,
     headers: req.headers,

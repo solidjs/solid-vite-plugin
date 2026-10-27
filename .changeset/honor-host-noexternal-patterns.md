@@ -1,0 +1,5 @@
+---
+'@solidjs/vite-plugin': patch
+---
+
+Honor the host's `resolve.noExternal` patterns when adding vitefu's externals to the SSR environment. The plugin already refused to re-externalize anything `noExternal` inlines, but it compared literal names only, while Vite treats string entries as picomatch patterns and RegExp entries as tests (`createFilter(undefined, noExternal, { resolve: false })`). Since 3.0.0-next.41 the crawl also reaches the packages that consume the Solid runtime, and their non-Solid dependencies land in `ssr.external` — so a host that inlines its packages by pattern (TanStack Start's `@tanstack/start**`, whose `@tanstack/start-server-core` resolves its `#tanstack-*` imports only when Vite processes it) saw them re-externalized, and `vite dev` failed with `ERR_PACKAGE_IMPORT_NOT_DEFINED: Package import specifier "#tanstack-router-entry" is not defined`. The externals are now filtered with the same matcher Vite uses, and a single string or RegExp `noExternal` value is kept instead of being dropped.

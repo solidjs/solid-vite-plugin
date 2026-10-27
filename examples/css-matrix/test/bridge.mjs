@@ -92,6 +92,15 @@ try {
       assets.css.some((c) => typeof c === 'object' && c.content?.includes(LAZY_CSS_COLOR)),
     JSON.stringify(assets?.css)?.slice(0, 200),
   );
+  const slashHit = await fetch(`${origin}${ENDPOINT}?key=${encodeURIComponent('/' + LAZY_KEY)}`);
+  const slashAssets = await slashHit.json();
+  record(
+    'slash-prefixed key resolves like the root-relative key (URL and CSS, #390)',
+    slashAssets?.js?.length === 1 &&
+      slashAssets.js[0] === '/' + LAZY_KEY &&
+      slashAssets.css?.some((c) => typeof c === 'object' && c.content?.includes(LAZY_CSS_COLOR)),
+    JSON.stringify(slashAssets)?.slice(0, 200),
+  );
 
   // ---- Serve-side hardening: registry miss --------------------------------
   {
@@ -126,6 +135,13 @@ try {
     'bridge resolveSync before the cache warms stays js-only (no sync HTTP)',
     coldSync?.js?.includes('/' + LAZY_KEY) && coldSync?.css?.length === 0,
     JSON.stringify(coldSync),
+  );
+  // A hand-written slash-prefixed moduleUrl names the same module (#390).
+  const slashSync = bridgeResolver.resolveSync('/' + LAZY_KEY);
+  record(
+    'bridge resolveSync maps a slash-prefixed key to the root-relative URL (no "//")',
+    slashSync?.js?.length === 1 && slashSync.js[0] === '/' + LAZY_KEY,
+    JSON.stringify(slashSync),
   );
   const bridged = await bridgeResolver.resolve(LAZY_KEY);
   record(

@@ -1,0 +1,5 @@
+---
+'@solidjs/vite-plugin': patch
+---
+
+Under `vite dev` the SSR environment now inlines `seroval` and `seroval-plugins` next to `solid-js` and `@solidjs/web`. Both ship a `dist/dev` build behind the `development` condition, and `@solidjs/web` imports both. Left external, `seroval-plugins` loaded through Node and its own `import "seroval"` resolved to the prod copy, while the inlined `@solidjs/web` got the runner's dev copy. Seroval detects streams with `instanceof Stream`, so the `Stream` that `ReadableStreamPlugin` builds from one copy was rejected by the other copy's serializer. This broke server components (`serverFunctions: { components: true }`) in dev when a component resolved after the shell flush (for example after an `await` in the server function): its `sc:live` ReadableStream failed with "Seroval caught an error during the parsing process … cannot be parsed/serialized", the `<Loading>` boundary contained the error, and the component only rendered on the client. Builds were unaffected because they bundle a single copy. A host that sets `noExternal: true` and Vitest projects are left alone, as before.

@@ -29,6 +29,9 @@ jobs:
       - name: Install project dependencies
         run: pnpm i
 
+      - name: Run unit tests
+        run: pnpm run test:unit
+
       - name: Install playwright browser
         working-directory: examples/${{ matrix.example }}
         run: pnpm exec playwright install chromium

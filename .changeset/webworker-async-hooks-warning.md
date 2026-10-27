@@ -1,0 +1,5 @@
+---
+'@solidjs/vite-plugin': patch
+---
+
+Warn at build time when the server build targets a worker runtime (`ssr.target: 'webworker'`) and the plugin generates server code — SSR or client start mode, or `serverFunctions` on its own. That code imports `@solidjs/web/storage`, the one Solid module that needs `node:async_hooks` (`AsyncLocalStorage` keeps the request event live across `await`s; there is no sync-scope fallback), so on a worker without Node compat the deploy failed with a bare `No such module "node:async_hooks"` (solidjs/solid#3597, Shopify Oxygen — whose Vite plugin sets the webworker target). The warning names the requirement and both fixes: a `compatibility_date` of 2026-08-04 or later (Cloudflare enables `nodejs_compat` by default from that date, and Oxygen accepts the same date), or the `nodejs_compat` flag. It is emitted once per server build, from the `ssr` environment's `buildStart` (the default builder resolves the config once per environment, so a config-time warning would repeat), and never in dev, where the ssr environment runs in Node. No new option; the condition is the resolved `ssr.target`.

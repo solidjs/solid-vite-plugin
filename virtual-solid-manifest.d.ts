@@ -40,6 +40,8 @@ declare module 'virtual:solid-server-function-handler' {
 // manifest, and — when `serverFunctions` is enabled — serves the
 // server-function endpoint ahead of SSR.
 declare module 'virtual:solid-ssr-handler' {
+  import type { CSPNonce } from '@solidjs/web';
+
   export function handleRequest(
     request: Request,
     options?: {
@@ -49,6 +51,29 @@ declare module 'virtual:solid-ssr-handler' {
       context?: Record<string, unknown>;
       /** Status/headers for the HTML response. */
       responseInit?: ResponseInit;
+      /**
+       * Per-call CSP nonce, in `@solidjs/web`'s `CSPNonce` shape. Seeded onto
+       * the request event as `event.nonce` before the middleware chain runs
+       * (so middleware can read it) and reasserted at the page render, so it
+       * wins over a middleware write. It reaches every tag the render emits
+       * (hydration bootstrap, streamed data and swap scripts, preloads,
+       * styles), the injected client-entry tag, the post-flush redirect
+       * fallback and the `csp-nonce` meta. `null` or `''` renders without
+       * one. Any value outside `CSPNonce` rejects the call before the chain
+       * runs.
+       */
+      nonce?: CSPNonce | null;
+      /**
+       * Per-call render mode, seeded onto the request event as
+       * `event.renderMode` like `nonce`, and winning over both a middleware
+       * write and `app.renderMode`. `'stream'` flushes the document shell
+       * with `<Loading>` fallbacks and streams boundary content behind it;
+       * `'async'` awaits the render until every boundary settled and sends
+       * one complete document — no fallbacks, no swap scripts, hydration
+       * data intact — for clients that never run JavaScript. A mid-render
+       * `Location` becomes a real 3xx under `'async'`.
+       */
+      renderMode?: 'stream' | 'async';
       /**
        * Extra fields spread into the request event at creation — the public
        * wrapper→event extension seam. Conventionally `nativeEvent` carries

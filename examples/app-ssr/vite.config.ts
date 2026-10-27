@@ -27,6 +27,24 @@ import solidPlugin from '@solidjs/vite-plugin';
 // - SSR_SETUP=1 wires src/setup.tsx through `app.setup` (middleware mode):
 //   the per-request app-setup hook, awaited between the middleware chain and
 //   renderToStream with the shared request event in hand.
+// - SSR_INSTRUMENT=1 wires src/instrument.ts through `app.instrument`
+//   (middleware mode): the module awaited to completion before the handler
+//   graph loads — the APM/OpenTelemetry seam; middleware.ts reports what it
+//   saw at its own load in an `x-instrument` header.
+// - SSR_CLIENT_SETUP=1 wires src/client-setup.ts through `app.clientSetup`
+//   (client-setup mode) and wraps App in src/ClientSetupApp.tsx, which
+//   records whether the setup module settled before hydration rendered.
+// - SOLID_OBSERVE=1 (observe mode) turns on `observe`: the `observe` export
+//   condition everywhere and the compiler's `sourceNames` for both
+//   postures, so the built server AND client bundles carry component labels.
+// - SSR_RENDER_MODE sets `app.renderMode` (render-mode mode): `middleware`
+//   wires src/middleware.ts instead, whose `renderPolicy` sets
+//   `event.renderMode` per request (header / crawler UA / `?nojs`); any
+//   other value passes through verbatim — `async` for the static
+//   complete-document mode, and bogus literals or paths (the retired module
+//   form) for the config-validation assertions.
+// - SSR_NONCE=1 (nonce mode) wires src/middleware.ts too: `renderPolicy`
+//   puts the test's CSP nonce headers on `event.nonce`.
 // - SERVER_FN_DEV_MIDDLEWARE=0 disables the built-in dev middleware via
 //   `serverFunctions.devMiddleware` (no-middleware mode) — endpoint dispatch
 //   becomes the host's job, like a Cloudflare-style environment plugin.
@@ -49,9 +67,29 @@ import solidPlugin from '@solidjs/vite-plugin';
 // - SOLID_SERVER_COMPONENTS points the generated entries at the
 //   server-components page and flips `serverFunctions: { components: true }`
 //   (frames mode) — the one-line enablement under test.
+// - EXTRA_CLIENT_INPUT=1 (extra-input mode) lists src/ExtraInput.tsx — a
+//   module App.tsx also lazily imports — as a further client build input,
+//   the shape filesystem-routing's `buildInputs` produces for every route
+//   module (#353). Vite merges the plugin's injected entry into this array.
+// - SANITIZE_FILE_NAME (file-names mode) sets the build's
+//   `output.sanitizeFileName`: `custom` is a user function that turns every
+//   character outside `[\w-]` into a dot, so its own output has dot runs
+//   and only a collapse that runs after it leaves none; `plugin` sets the
+//   same function from a later, normal-order plugin's `outputOptions` hook,
+//   which the solid plugin's post-order hook must still wrap; `off` is
+//   `false`, the opt-out the plugin leaves alone (#391).
+// - APP_NODE=1 (node mode) sets `app.node`: the build emits the
+//   ready-to-run Node server entry dist/server/node.js beside server.js.
+// - SOLID_PERF_TRACKS (perf-tracks mode) sets `performanceTracks`: `0` opts
+//   out, a JSON object is the options form (`{"minMs":2}`); unset leaves
+//   the default (on under dev serve), which the dev mode asserts.
+// - SOLID_DEV_BUILD=1 (perf-tracks mode) sets `dev: true`, so a `vite
+//   build` resolves the development runtime — the build that must still
+//   carry no performance-tracks injection.
 const jsxCompiler =
   process.env.SOLID_JSX_COMPILER === 'babel' ? ('babel' as const) : ('native' as const);
 const serverComponents = !!process.env.SOLID_SERVER_COMPONENTS;
+const dotSanitizeFileName = (name: string) => name.replace(/[^\w-]/g, '.');
 
 export default defineConfig({
   future: {
@@ -76,9 +114,8 @@ export default defineConfig({
   // DOM component tests under jsdom get the client posture (browser
   // conditions, dom codegen), while the node project gets the server
   // posture end to end (server conditions, isServer true, ssr codegen)
-  // just by writing `environment: 'node'`. Without the knob the config has
-  // no `test` block at all: the zero-config client-posture default stays
-  // under test too.
+  // just by writing `environment: 'node'`. Without the knob the config only
+  // picks jsdom: the client posture needs no other `test` options.
   ...(process.env.VITEST_PROJECTS
     ? {
         test: {
@@ -102,6 +139,25 @@ export default defineConfig({
           ],
         },
       }
+    : { test: { environment: 'jsdom' } }),
+  ...(process.env.EXTRA_CLIENT_INPUT
+    ? {
+        environments: {
+          client: { build: { rollupOptions: { input: ['src/ExtraInput.tsx'] } } },
+        },
+      }
+    : {}),
+  ...(process.env.SANITIZE_FILE_NAME === 'custom' || process.env.SANITIZE_FILE_NAME === 'off'
+    ? {
+        build: {
+          rollupOptions: {
+            output: {
+              sanitizeFileName:
+                process.env.SANITIZE_FILE_NAME === 'off' ? false : dotSanitizeFileName,
+            },
+          },
+        },
+      }
     : {}),
   ...(process.env.BUILD_SSR_FIRST
     ? {
@@ -117,6 +173,17 @@ export default defineConfig({
     solidPlugin({
       compiler: jsxCompiler,
       ssr: true,
+      // SOLID_OBSERVE=1 (observe mode): the production-speed runtime that
+      // keeps `OBSERVE` alive, with component labels compiled into BOTH
+      // postures — the server bundle's boundary records and findings locate
+      // by component the same way the client's do.
+      ...(process.env.SOLID_OBSERVE ? { observe: true } : {}),
+      ...(process.env.SOLID_DEV_BUILD ? { dev: true } : {}),
+      ...(process.env.SOLID_PERF_TRACKS === '0'
+        ? { performanceTracks: false }
+        : process.env.SOLID_PERF_TRACKS
+          ? { performanceTracks: JSON.parse(process.env.SOLID_PERF_TRACKS) }
+          : {}),
       app: serverComponents
         ? { root: 'src/frames/FramesApp.tsx' }
         : process.env.SSR_DOCUMENT
@@ -150,17 +217,35 @@ export default defineConfig({
               // @solidjs/start-devtools install is auto-detected, so plain dev
               // runs double as coverage for the default-on wiring.
               ...(process.env.SSR_DEVTOOLS === '0' ? { devtools: false } : {}),
+              // APP_NODE=1 (node mode): emit the Node server entry.
+              ...(process.env.APP_NODE ? { node: true } : {}),
               // SSR_MIDDLEWARE=1 (middleware/preview modes): a fetch-style
               // chain fronting every dispatch path — page SSR, /_server,
               // preview — with getRequestEvent() live inside it.
               ...(process.env.SSR_MIDDLEWARE
                 ? { middleware: './src/middleware.ts', productionErrorBoundary: false }
-                : {}),
+                : process.env.SSR_RENDER_MODE === 'middleware' || process.env.SSR_NONCE
+                  ? { middleware: './src/middleware.ts' }
+                  : {}),
               // SSR_SETUP=1 (middleware mode): the per-request app-setup
               // hook — src/setup.tsx runs between the middleware chain and
               // renderToStream, receiving the event and returning the
               // component to render (the TanStack-style async router seam).
               ...(process.env.SSR_SETUP ? { setup: './src/setup.tsx' } : {}),
+              ...(process.env.SSR_INSTRUMENT ? { instrument: './src/instrument.ts' } : {}),
+              // SSR_CLIENT_SETUP=1 (client-setup mode): src/client-setup.ts
+              // runs in the browser before the generated entry hydrates;
+              // src/ClientSetupApp.tsx wraps App to record the order.
+              ...(process.env.SSR_CLIENT_SETUP
+                ? { clientSetup: './src/client-setup.ts', root: './src/ClientSetupApp.tsx' }
+                : {}),
+              // SSR_RENDER_MODE (render-mode mode): `middleware` → the
+              // per-request policy in src/middleware.ts (`event.renderMode`);
+              // anything else verbatim (`async`, or an invalid value / a
+              // retired module path for the validation checks).
+              ...(process.env.SSR_RENDER_MODE && process.env.SSR_RENDER_MODE !== 'middleware'
+                ? { renderMode: process.env.SSR_RENDER_MODE as 'stream' | 'async' }
+                : {}),
             },
       serverFunctions: serverComponents
         ? { components: true }
@@ -212,6 +297,21 @@ export default defineConfig({
                   built.join(','),
                 );
               },
+            },
+          },
+        ] satisfies Plugin[])
+      : []),
+    // SANITIZE_FILE_NAME=plugin (file-names mode): a normal-order plugin
+    // after the solid plugin sets the sanitizer from its own `outputOptions`
+    // hook, the spelling that replaced the solid plugin's wrapper while that
+    // hook ran in plugin order (#391).
+    ...(process.env.SANITIZE_FILE_NAME === 'plugin'
+      ? ([
+          {
+            name: 'test:sanitize-file-name',
+            apply: 'build',
+            outputOptions(outputOptions) {
+              return { ...outputOptions, sanitizeFileName: dotSanitizeFileName };
             },
           },
         ] satisfies Plugin[])

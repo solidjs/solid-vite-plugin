@@ -97,30 +97,102 @@
 //     middleware catching a render throw, and the post-next()
 //     header-mutation window on a streamed response — in dev and prod,
 //     plus codegen string assertions that the generated handler resolves
-//     commitEventResponse from @solidjs/web and folds after the unwind,
+//     commitEventResponse from @solidjs/web and folds after the unwind;
+//     a thrown redirect() or respond() envelope escaping the chain is the
+//     response (dev included), and any other escaping failure (middleware,
+//     app.setup, an in-process server-function call) is contained in
+//     production (preview and node too): a generic 500 with the stub
+//     cookie, the configureServerErrors hook hearing each error once (or
+//     console.error without one), while dev still hands it to the Vite
+//     overlay and its handler reports nothing itself,
 //   - `vite preview` serves the production artifact with no server file:
 //     dist/client statically, everything else (pages, /_server, middleware,
 //     the lifecycle) through the built handler,
+//   - `app.renderMode` (render-mode mode, SSR_RENDER_MODE): 'async' sends
+//     one settled document — no Loading fallback markup, no swap scripts,
+//     boundary content in place, hydration data intact (the streamed page's
+//     browser checks pass against it) — with httpStatus/httpHeader still on
+//     the wire and a mid-render Location as a real 3xx; `event.renderMode`
+//     set by middleware (src/middleware.ts) switches modes within one server
+//     by header / crawler UA / `?nojs`; the `handleRequest(request,
+//     { renderMode })` override wins over both; authored entries get the same
+//     treatment; invalid config (the retired module form included) and
+//     runtime values are rejected with the fix in the message,
+//   - the CSP nonce (nonce mode, SSR_NONCE): `event.nonce` set by middleware
+//     reaches every script, style and preload of the page, the client-entry
+//     tag, the redirect fallback, the dev head and the csp-nonce meta, in
+//     dev and in a build (default Fetchable included); handleRequest's nonce
+//     is seen by middleware and wins; invalid values are rejected; a nonce
+//     written after `await next()` warns in dev; request substitution via
+//     `event.request` and the next(request) migration error,
 //   - lazy asset keys survive module identities beyond plain root-relative
 //     paths (the /lazy-assets surface, dev and prod): a query-suffixed lazy
 //     import keeps its query through the manifest key / dev URL (#299), and
-//     a root-external module gets a /@fs/ dev URL (#298),
+//     a root-external module gets a /@fs/ dev URL (#298), and a
+//     hand-written slash-prefixed moduleUrl resolves like the
+//     project-relative key (#390),
 //   - a non-root Vite `base` (base mode, SOLID_BASE=/app/) holds end to end:
 //     dev pages/assets/endpoint and preview pages/statics/endpoint all serve
 //     base-prefixed, the built handler receives base-restored URLs from the
-//     preview adapter (#300), and dev lazy asset URLs carry the base (#298).
+//     preview adapter (#300), and dev lazy asset URLs carry the base (#298),
+//   - extra configured client inputs (extra-input mode, EXTRA_CLIENT_INPUT=1,
+//     the filesystem-routing `buildInputs` shape) don't displace the client
+//     entry: the built handler boots the real entry chunk and links the entry
+//     graph's stylesheet even though the extra input is an `isEntry` record
+//     sorting ahead of it (#353),
+//   - built file names carry no `..` (file-names mode): the catch-all route
+//     module src/routes/[...rest].tsx builds to a chunk and a CSS asset whose
+//     names collapse the dot run, and server.js (which refuses any URL
+//     containing `..`) serves both; the server build collapses too, so the
+//     URL it writes for an asset named with a dot run (mark..svg) is the
+//     file the client build wrote; a user `sanitizeFileName` that produces
+//     dots still runs, with the collapse after it, whether set in the config
+//     (SANITIZE_FILE_NAME=custom) or from a later plugin's `outputOptions`
+//     hook (SANITIZE_FILE_NAME=plugin), and `sanitizeFileName: false`
+//     (SANITIZE_FILE_NAME=off) is left alone (#391),
+//   - `app.node` (node mode, APP_NODE=1): the build emits a ready-to-run
+//     Node server entry, dist/server/node.js, beside server.js — statics
+//     (immutable assets, must-revalidate otherwise, HEAD, no traversal),
+//     everything else through handleRequest with `nativeEvent`, PORT/HOST,
+//     the `listener` export mountable — while server.js stays byte-identical
+//     and nothing is emitted without the option (see runNodeMode).
+//   - `app.clientSetup` (client-setup mode, SSR_CLIENT_SETUP=1): the
+//     generated client entry imports src/client-setup.ts ahead of the app
+//     in both app modes, and in dev and prod the browser runs it before
+//     the app graph and finishes its top-level await before hydrate(); an
+//     edit reloads the page; an authored entry-client with the option is a
+//     config error (see runClientSetupMode).
+//   - `performanceTracks` (on by default): under dev serve the generated and
+//     authored client entries import the plugin's virtual module ahead of
+//     everything else, the served module calls enablePerformanceTracks(),
+//     and a first interaction in the browser lands on Solid's tracks
+//     (measure entries with `detail.devtools.track`); the perf-tracks mode
+//     (SOLID_PERF_TRACKS / SOLID_DEV_BUILD) covers `false`, the options
+//     form, test mode, an index.html app's head script, and a `dev: true`
+//     build; prod and observe builds assert no injection.
 //
 // Requires the plugin built (pnpm build at the repo root) and Google Chrome.
 // Usage: node test/run.mjs
-// [dev|prod|document|css-filter|entries|endpoint|configure|no-middleware|middleware|preview|base|builder-order|builder-prepare|babel-hmr|frames]
+// [dev|prod|document|css-filter|entries|endpoint|configure|no-middleware|middleware|preview|render-mode|nonce|base|builder-order|builder-prepare|extra-input|file-names|babel-hmr|frames|external|observe|perf-tracks|detect|vitest|node|client-setup]
 // (default: all)
 
-import { spawn, execSync } from 'node:child_process';
+import { spawn, execSync, execFileSync } from 'node:child_process';
+import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import path from 'node:path';
-import { mkdirSync, rmSync, existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
-import http from 'node:http';
 import {
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  existsSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+} from 'node:fs';
+import http from 'node:http';
+import os from 'node:os';
+import {
+  build as viteBuild,
   createServer,
   createServerHotChannel,
   createServerModuleRunner,
@@ -149,6 +221,30 @@ const CHROME =
 const CDP_PORT = 9337;
 
 const SECRET = 'SERVER-ONLY-SECRET';
+
+// The plugin's Chrome Performance panel injection (`performanceTracks`): the
+// virtual module the client entry imports under dev serve, and the track
+// names `@solidjs/web/performance-tracks` paints under the `Solid` group
+// (the adapter's TRACKS table; a measure entry's `detail.devtools.track`).
+const PERF_TRACKS_ID = 'virtual:solid-performance-tracks';
+const SOLID_TRACKS = [
+  'Interactions',
+  'Propagation',
+  'Effects',
+  'Memos',
+  'Async',
+  'Holds',
+  'Navigations',
+  'Server',
+];
+// Build-output markers for the adapter itself: the Performance panel
+// extensibility payload's literals (`dataType: "track-entry"`, the
+// `trackGroup` key), which survive minification where identifiers don't.
+// Present in the dev and observe adapters; a build that never injected the
+// module carries neither.
+const PERF_TRACKS_BUILD_MARKERS = ['track-entry', 'trackGroup', PERF_TRACKS_ID];
+const perfTracksMarkersIn = (source) =>
+  PERF_TRACKS_BUILD_MARKERS.some((marker) => source.includes(marker));
 
 // Server-function round-trips driven from the hydrated page.
 const CALLS = [
@@ -212,6 +308,34 @@ async function fetchStreamed(url) {
     html += chunk;
   }
   return { status: res.status, headers: res.headers, chunks, html };
+}
+
+/**
+ * A request with EXACTLY the headers given. `fetch` (undici) treats the
+ * `Sec-Fetch-*` names as forbidden request headers — it drops the caller's
+ * and sends its own `Sec-Fetch-Mode: cors` — so a browser form navigation
+ * (`Sec-Fetch-Mode: navigate`, the gate of the no-JS server-function
+ * convention) cannot be imitated through it. Never follows redirects;
+ * `setCookies` is the raw multi-valued `Set-Cookie`.
+ */
+function rawRequest(url, { method = 'GET', headers = {}, body } = {}) {
+  return new Promise((resolve, reject) => {
+    const req = http.request(url, { method, headers }, (res) => {
+      let text = '';
+      res.setEncoding('utf8');
+      res.on('data', (chunk) => (text += chunk));
+      res.on('end', () =>
+        resolve({
+          status: res.statusCode,
+          headers: res.headers,
+          setCookies: res.headers['set-cookie'] ?? [],
+          text,
+        }),
+      );
+    });
+    req.on('error', reject);
+    req.end(body);
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -297,28 +421,48 @@ function record(mode, phase, name, ok, detail = '') {
   console.log(`  [${mode}/${phase}] ${status} ${name}${detail && !ok ? ` — ${detail}` : ''}`);
 }
 
-// Dev function IDs are `hash-count-name`; pull the one for `name` out of the
-// client-transformed module so the endpoint can be hit directly.
+// Reads a handler call's whole body; a rejection becomes the assertion's
+// detail instead of aborting the whole run.
+async function settledText(call) {
+  try {
+    const response = await call();
+    return { text: await response.text(), error: '' };
+  } catch (error) {
+    return { text: '', error: String(error) };
+  }
+}
+
+// Pull the function id for `name` out of the client-transformed module so
+// the endpoint can be hit directly.
 function extractFunctionId(transformedCode, name) {
-  // The import identifier may be aliased (e.g. createServerReference_1), and
-  // newer compilers pass the function name as a second argument after the id.
-  const match = transformedCode.match(new RegExp(`createServerReference\\w*\\("([^"]*-${name})"`));
+  // The import identifier may be aliased (e.g. createServerReference_1).
+  // Ids are identity-keyed `<name>-<hash>[-<ordinal>]` (solidjs/solid#3109);
+  // the literal `-` after the name keeps e.g. `getServerMessage2` from
+  // matching a probe for `getServerMessage`.
+  const match = transformedCode.match(new RegExp(`createServerReference\\w*\\("(${name}-[^"]*)"`));
   return match ? match[1] : null;
 }
 
-async function runCsrfChecks(mode, origin) {
-  const crossSite = await fetch(origin + '/_server?id=csrf-probe', {
-    method: 'POST',
-    headers: { 'Sec-Fetch-Site': 'cross-site' },
-  });
+async function runCsrfChecks(mode, origin, registeredId) {
+  // The runtime answers unknown ids 404 before the same-origin check runs
+  // (@solidjs/web 2.0.0-rc.5), so the rejection must be probed against a
+  // registered function id.
+  const crossSite = await fetch(
+    `${origin}/_server/${encodeURIComponent(registeredId || 'csrf-probe')}`,
+    {
+      method: 'POST',
+      headers: { 'Sec-Fetch-Site': 'cross-site' },
+    },
+  );
   record(
     mode,
     'csrf',
     'cross-site server function request rejected',
     crossSite.status === 403,
+    registeredId ? `status ${crossSite.status}` : 'no registered id to probe',
   );
 
-  const sameOrigin = await fetch(origin + '/_server?id=csrf-probe', { method: 'POST' });
+  const sameOrigin = await fetch(origin + '/_server/csrf-probe', { method: 'POST' });
   record(mode, 'csrf', 'same-origin request reaches dispatch', sameOrigin.status === 404);
 }
 
@@ -452,6 +596,33 @@ async function runHttpChecks(mode, origin) {
     'post-flush redirect emits the script fallback',
     post.html.includes('window.location') && post.html.includes('/redirected-target'),
   );
+
+  // Pages answer what Vite's HTML fallback counts as navigations, as in
+  // production: HEAD, a `*/*` GET (curl, fetch()), a GET with no Accept.
+  const head = await rawRequest(origin + '/', { method: 'HEAD' });
+  record(
+    mode,
+    'http',
+    'HEAD answers like GET',
+    head.status === 200 && head.text === '',
+    `status ${head.status}`,
+  );
+  const anyType = await rawRequest(origin + '/', { headers: { accept: '*/*' } });
+  record(
+    mode,
+    'http',
+    'GET accepting */* renders the page',
+    anyType.status === 200 && anyType.text.includes('SSR App Mode'),
+    `status ${anyType.status}`,
+  );
+  const noAccept = await rawRequest(origin + '/');
+  record(
+    mode,
+    'http',
+    'GET without Accept renders the page',
+    noAccept.status === 200 && noAccept.text.includes('SSR App Mode'),
+    `status ${noAccept.status}`,
+  );
 }
 
 // Lazy asset-key checks (the /lazy-assets surface, src/App.tsx): a
@@ -459,17 +630,20 @@ async function runHttpChecks(mode, origin) {
 // for #299 (the query is part of the module identity — manifest key, dev
 // URL — and must survive the SSR asset lookup) and #298 (dev URLs must be
 // base-prefixed, and root-external modules must resolve to /@fs/ URLs, not
-// "/../…"). `basePrefix` is the configured Vite base without its trailing
-// slash ('' for the default '/'), asserted on every emitted URL.
+// "/../…"), plus a hand-written slash-prefixed moduleUrl (#390: dev emitted
+// a protocol-relative "//src/…" URL, the manifest lookup missed in prod).
+// `basePrefix` is the configured Vite base without its trailing slash (''
+// for the default '/'), asserted on every emitted URL.
 async function runLazyAssetChecks(mode, origin, { dev, basePrefix = '' } = {}) {
   const page = await fetchStreamed(origin + basePrefix + '/lazy-assets');
   record(
     mode,
     'lazy',
-    'query-suffixed and root-external lazy components SSR',
+    'query-suffixed, root-external and slash-keyed lazy components SSR',
     page.status === 200 &&
       page.html.includes('QUERY-LAZY-CONTENT') &&
-      page.html.includes('EXTERNAL-LAZY-CONTENT'),
+      page.html.includes('EXTERNAL-LAZY-CONTENT') &&
+      page.html.includes('SLASH-LAZY-CONTENT'),
     `status ${page.status}`,
   );
   const preloads = [...page.html.matchAll(/<link rel="modulepreload" href="([^"]+)">/g)].map(
@@ -477,6 +651,7 @@ async function runLazyAssetChecks(mode, origin, { dev, basePrefix = '' } = {}) {
   );
   const queryHref = preloads.find((href) => href.includes('QueryLazy'));
   const externalHref = preloads.find((href) => href.includes('LazyOutside'));
+  const slashHref = preloads.find((href) => href.includes('SlashLazy'));
 
   if (dev) {
     record(
@@ -493,6 +668,13 @@ async function runLazyAssetChecks(mode, origin, { dev, basePrefix = '' } = {}) {
       !!externalHref &&
         externalHref.startsWith(`${basePrefix}/@fs/`) &&
         externalHref.endsWith('app-ssr-external/LazyOutside.tsx'),
+      `modulepreloads: ${preloads.join(', ') || '(none)'}`,
+    );
+    record(
+      mode,
+      'lazy',
+      'slash-keyed module preloaded by its root-relative dev URL (no "//")',
+      slashHref === `${basePrefix}/src/SlashLazy.tsx`,
       `modulepreloads: ${preloads.join(', ') || '(none)'}`,
     );
   } else {
@@ -522,6 +704,14 @@ async function runLazyAssetChecks(mode, origin, { dev, basePrefix = '' } = {}) {
       !!externalEntry?.file && externalHref === `${basePrefix}/${externalEntry.file}`,
       `modulepreloads: ${preloads.join(', ') || '(none)'}`,
     );
+    const slashEntry = clientManifest['src/SlashLazy.tsx'];
+    record(
+      mode,
+      'lazy',
+      'slash-keyed module preload resolved through the manifest',
+      !!slashEntry?.file && slashHref === `${basePrefix}/${slashEntry.file}`,
+      `modulepreloads: ${preloads.join(', ') || '(none)'}`,
+    );
   }
 
   // The emitted URLs must actually be servable — a wrong base or a mangled
@@ -529,6 +719,7 @@ async function runLazyAssetChecks(mode, origin, { dev, basePrefix = '' } = {}) {
   for (const [name, href] of [
     ['queried module', queryHref],
     ['root-external module', externalHref],
+    ['slash-keyed module', slashHref],
   ]) {
     if (!href) {
       record(mode, 'lazy', `${name} preload URL serves JS`, false, 'no modulepreload emitted');
@@ -670,7 +861,7 @@ async function runHmrChecks(mode, cdp, origin, { expectCompiler } = {}) {
 async function runBrowserChecks(
   mode,
   origin,
-  { hmr, devCss, expectCompiler, devtools, ssrError } = {},
+  { hmr, devCss, expectCompiler, devtools, perfTracks, ssrError } = {},
 ) {
   const chrome = startProcess(CHROME, [
     '--headless=new',
@@ -696,6 +887,23 @@ async function runBrowserChecks(
       hydrationErrs.join(' | '),
     );
 
+    if (perfTracks) {
+      // Observe the User Timing entries the tracks adapter emits from here
+      // on: rich mode (the dev default) paints every span as a
+      // `performance.measure` with `detail.devtools`, and clears its own
+      // entries in batches — an observer sees each entry once regardless,
+      // where the buffer might have been cleared by the time it is read.
+      await cdp.evalJs(`
+        window.__solidTracks = new Set();
+        new PerformanceObserver((list) => {
+          for (const entry of list.getEntries()) {
+            const devtools = entry.detail?.devtools;
+            if (devtools?.trackGroup === 'Solid') window.__solidTracks.add(devtools.track);
+          }
+        }).observe({ entryTypes: ['measure'] });
+      `);
+    }
+
     await cdp.evalJs('document.querySelector("#increment").click()');
     await cdp.evalJs('document.querySelector("#increment").click()');
     record(
@@ -704,6 +912,29 @@ async function runBrowserChecks(
       'hydrated app is interactive (counter)',
       await cdp.waitFor('document.querySelector("#count")?.textContent === "2"'),
     );
+
+    if (perfTracks) {
+      // The click is an interaction the engine records and the adapter
+      // paints: an `Interactions` span for the click itself, the drain on
+      // `Propagation`, the count's text effect on `Effects`. Any of Solid's
+      // track names on a measure entry proves the tracks were enabled before
+      // the interaction — by the injected module, since the app never calls
+      // enablePerformanceTracks() itself.
+      const tracked = `[...window.__solidTracks, ...performance.getEntriesByType('measure')
+        .map((e) => e.detail?.devtools?.trackGroup === 'Solid' ? e.detail.devtools.track : null)
+        .filter(Boolean)]`;
+      await cdp.waitFor(
+        `${tracked}.some((track) => ${JSON.stringify(SOLID_TRACKS)}.includes(track))`,
+      );
+      const seen = await cdp.evalJs(`[...new Set(${tracked})]`);
+      record(
+        mode,
+        'perf-tracks',
+        'first interaction painted on the Solid performance tracks (measure entries with detail.devtools.track)',
+        Array.isArray(seen) && seen.some((track) => SOLID_TRACKS.includes(track)),
+        `tracks seen: ${JSON.stringify(seen)}`,
+      );
+    }
 
     for (const call of CALLS) {
       await cdp.evalJs(`document.querySelector(${JSON.stringify(call.button)}).click()`);
@@ -783,11 +1014,15 @@ async function runBrowserChecks(
         await cdp.waitFor('document.querySelector("[data-solid-dev-toolbar]") !== null'),
       );
     } else if (devtools === false) {
+      const toolbar = await cdp.evalJs(
+        'document.querySelector("[data-solid-dev-toolbar]")?.outerHTML.slice(0, 200) ?? null',
+      );
       record(
         mode,
         'devtools',
         'no development toolbar in the DOM',
-        (await cdp.evalJs('document.querySelector("[data-solid-dev-toolbar]")')) === null,
+        toolbar === null,
+        `found: ${JSON.stringify(toolbar)}`,
       );
     }
 
@@ -870,7 +1105,7 @@ async function runDevMode() {
   const port = 3160;
   const origin = `http://localhost:${port}`;
 
-  // Cold start: clear Vite's dep cache so the dependency scanner actually
+  // Cold app: clear Vite's dep cache so the dependency scanner actually
   // runs. The scanner crawls the RAW graph from the plugin's injected scan
   // entries (App.tsx) straight through the 'use server' module into
   // src/db.ts's `server-only` import — the boundary guard must not treat
@@ -910,7 +1145,7 @@ async function runDevMode() {
     // from the query string when no instance header is present.
     const cold = functionId
       ? await fetch(
-          `${origin}/_server?id=${encodeURIComponent(functionId)}&args=${encodeURIComponent('["app-ssr"]')}`,
+          `${origin}/_server/${encodeURIComponent(functionId)}?args=${encodeURIComponent('["app-ssr"]')}`,
           { method: 'POST' },
         )
       : null;
@@ -922,9 +1157,59 @@ async function runDevMode() {
       coldText === 'hello app-ssr from the server',
       functionId ? `got ${JSON.stringify(coldText)}` : 'could not extract function id',
     );
-    const bogus = await fetch(origin + '/_server?id=bogus-0');
+    const bogus = await fetch(origin + '/_server/bogus-0');
     record(mode, 'sf', 'dev middleware rejects unknown id', bogus.status === 404);
-    await runCsrfChecks(mode, origin);
+    await runCsrfChecks(mode, origin, functionId);
+
+    // ---- Live address, cold: `<endpoint>/live/<id>` (@solidjs/web rc.10) --
+    // A `live` loop connects at the third address shape, answered as an
+    // event stream. The function lives in a module nothing has loaded
+    // server-side yet — src/frames/data.tsx is the frames page's; App.tsx
+    // never imports it, and the bare cold dispatch above loaded api.ts only
+    // — so the middleware has to read the id out of the live shape and
+    // import the module itself. Read as a `data/`-only shape the id parsed
+    // to null, the import was skipped, and the runtime 404'd the call.
+    const liveModule = await (await fetch(origin + '/src/frames/data.tsx')).text();
+    const liveId = extractFunctionId(liveModule, 'incrementCounter');
+    const live = liveId
+      ? await fetch(`${origin}/_server/live/${encodeURIComponent(liveId)}`, { method: 'POST' })
+      : null;
+    // A live body would stay open on a source that keeps yielding; a plain
+    // value is one event and the end of the stream — bound the read so a
+    // regression into an open connection fails instead of hanging.
+    const liveBody = live
+      ? await Promise.race([
+          live.text(),
+          new Promise((resolve) => setTimeout(() => resolve(null), 10000)),
+        ])
+      : null;
+    record(
+      mode,
+      'sf',
+      'cold dispatch at the live address imports the module on demand (event stream)',
+      !!live &&
+        live.status === 200 &&
+        (live.headers.get('content-type') || '').startsWith('text/event-stream') &&
+        typeof liveBody === 'string' &&
+        /^data: /m.test(liveBody),
+      liveId
+        ? `status ${live.status}, content-type ${JSON.stringify(live.headers.get('content-type'))}, body ${JSON.stringify(liveBody)}`
+        : 'could not extract function id',
+    );
+    // The runtime's address grammar, mirrored: one kind segment at most, and
+    // an id is exactly one segment — the middleware must not import a module
+    // for these either (the runtime answers 404 in every case).
+    for (const miss of ['/_server/live/', '/_server/live/a/b', '/_server/data/live/' + liveId]) {
+      const res = await fetch(origin + miss, { method: 'POST' });
+      await res.text();
+      record(
+        mode,
+        'sf',
+        `live address grammar: ${miss} is a miss`,
+        res.status === 404,
+        `status ${res.status}`,
+      );
+    }
 
     const html = await runSsrChecks(mode, origin);
     record(mode, 'dev', 'Vite client injected into <head>', html.includes('/@vite/client'));
@@ -986,6 +1271,50 @@ async function runDevMode() {
         /@solidjs(?:\/|_)start-devtools/.test(generatedEntry),
     );
 
+    // Performance tracks default-on (`performanceTracks` omitted): the
+    // generated entry imports the plugin's virtual module as its FIRST
+    // source import — ahead of the toolbar and the app, and so evaluated
+    // before the hydrate() call (the JSX compiler's own helper import of
+    // the runtime is hoisted above everything; evaluating the runtime
+    // module renders nothing) — and the module calls
+    // enablePerformanceTracks with the adapter's defaults, importing the
+    // adapter through the optimizer (pre-bundled in the first pass; a late
+    // discovery would re-optimize and bring a second signals core).
+    {
+      const tracksAt = generatedEntry.indexOf(PERF_TRACKS_ID);
+      const toolbarAt = generatedEntry.search(/@solidjs(?:\/|_)start-devtools/);
+      const appAt = generatedEntry.indexOf('/src/App.tsx');
+      const hydrateAt = generatedEntry.indexOf('hydrate(');
+      record(
+        mode,
+        'perf-tracks',
+        'generated client entry imports the performance-tracks module ahead of the toolbar, the app and hydrate()',
+        tracksAt !== -1 &&
+          toolbarAt !== -1 &&
+          appAt !== -1 &&
+          hydrateAt !== -1 &&
+          tracksAt < toolbarAt &&
+          tracksAt < appAt &&
+          tracksAt < hydrateAt,
+        `tracks@${tracksAt} toolbar@${toolbarAt} app@${appAt} hydrate@${hydrateAt}`,
+      );
+      const tracksModule = await (await fetch(origin + '/@id/' + PERF_TRACKS_ID)).text();
+      record(
+        mode,
+        'perf-tracks',
+        'served performance-tracks module enables the tracks with the defaults',
+        /enablePerformanceTracks\(\{\}\)/.test(tracksModule),
+        tracksModule.slice(0, 300),
+      );
+      record(
+        mode,
+        'perf-tracks',
+        'performance-tracks module imports the pre-bundled adapter',
+        /\.vite\/deps\/@solidjs_web_performance-tracks\.js/.test(tracksModule),
+        tracksModule.slice(0, 300),
+      );
+    }
+
     await runHttpChecks(mode, origin);
 
     const boom = await fetchStreamed(origin + '/boom');
@@ -1004,8 +1333,65 @@ async function runDevMode() {
       devCss: true,
       expectCompiler: 'native',
       devtools: true,
+      perfTracks: true,
       ssrError: true,
     });
+
+    // ---- Re-optimization keeps the toolbar import current ----------------
+    // The generated entry's toolbar import resolves through the optimizer,
+    // so it carries a browserHash. A dependency discovered after the initial
+    // scan re-optimizes (new hash, toolbar chunks re-emitted under new
+    // names); the entry must follow, not keep the id detection resolved
+    // against the first pass — that stale id 504'd the toolbar's lazy chunks
+    // and brought a second solid-js instance into the page. The probe module
+    // imports a package subpath the app graph never touches, which is what
+    // a late discovery looks like — one that shares chunks with the deps
+    // already bundled, so the optimizer has to rewrite them (a dependency
+    // that only adds a standalone bundle keeps the old hashes and reloads
+    // nothing).
+    {
+      const entryUrl = origin + '/@id/virtual:solid-ssr-entry-client.tsx';
+      const hashes = async () => {
+        const entry = await (await fetch(entryUrl)).text();
+        return {
+          toolbar: /@solidjs_start-devtools\.js\?v=([0-9a-f]+)/.exec(entry)?.[1] ?? null,
+          web: /@solidjs_web\.js\?v=([0-9a-f]+)/.exec(entry)?.[1] ?? null,
+        };
+      };
+      const before = await hashes();
+      const probePath = path.join(exampleDir, 'src/ReoptimizeProbe.ts');
+      writeFileSync(
+        probePath,
+        `import '@solidjs/web/frames/client';\nexport const probe = true;\n`,
+      );
+      let after = before;
+      try {
+        await fetch(origin + '/src/ReoptimizeProbe.ts');
+        // Discovery re-optimizes on a short debounce; wait for the entry's
+        // other optimized import to move to the new pass.
+        const deadline = Date.now() + 15000;
+        while (after.web === before.web && Date.now() < deadline) {
+          await new Promise((resolve) => setTimeout(resolve, 250));
+          after = await hashes();
+        }
+      } finally {
+        rmSync(probePath, { force: true });
+      }
+      record(
+        mode,
+        'devtools',
+        'late dependency discovery re-optimized (probe)',
+        !!before.web && !!after.web && after.web !== before.web,
+        `@solidjs/web ?v=${before.web} -> ?v=${after.web}`,
+      );
+      record(
+        mode,
+        'devtools',
+        'toolbar import follows the optimizer across a re-optimization',
+        !!after.toolbar && after.toolbar === after.web && after.toolbar !== before.toolbar,
+        `start-devtools ?v=${before.toolbar} -> ?v=${after.toolbar}, @solidjs/web ?v=${after.web}`,
+      );
+    }
 
     // ---- Cold-start dep scan (boundary-guard false positive) -------------
     // Counterpart: the ssr example's boundary.mjs proves the guard still
@@ -1124,6 +1510,88 @@ async function runProdMode() {
     'client entry carries the escaped CSP nonce',
     nonceHtml.includes('<script type="module" nonce="test&quot;&lt;&amp;" src="'),
   );
+  // @solidjs/web's CSPNonce also takes a `{ script, style }` pair. The tags
+  // the handler writes are scripts, so they take the `script` value.
+  const pairNonce = { script: 'pair-script', style: 'pair-style' };
+  const pairPage = await settledText(() =>
+    builtHandler.handleRequest(new Request(origin + '/'), { nonce: pairNonce }),
+  );
+  record(
+    mode,
+    'build',
+    'client entry takes the script nonce of a { script, style } pair',
+    pairPage.text.includes('<script type="module" nonce="pair-script" src="') &&
+      !/<script\b[^>]*nonce="pair-style"/.test(pairPage.text),
+    pairPage.error,
+  );
+  const pairRedirect = await settledText(() =>
+    builtHandler.handleRequest(new Request(origin + '/redirect-post'), { nonce: pairNonce }),
+  );
+  record(
+    mode,
+    'build',
+    'post-flush redirect fallback takes the script nonce of a { script, style } pair',
+    pairRedirect.text.includes('<script nonce="pair-script">window.location='),
+    pairRedirect.error,
+  );
+  const styleOnlyNonce = { script: false, style: 'pair-style' };
+  const styleOnlyPage = await settledText(() =>
+    builtHandler.handleRequest(new Request(origin + '/'), { nonce: styleOnlyNonce }),
+  );
+  record(
+    mode,
+    'build',
+    'a pair without a script nonce leaves the client entry un-nonced',
+    styleOnlyPage.text.includes('<script type="module" src="'),
+    styleOnlyPage.error,
+  );
+  const styleOnlyRedirect = await settledText(() =>
+    builtHandler.handleRequest(new Request(origin + '/redirect-post'), { nonce: styleOnlyNonce }),
+  );
+  record(
+    mode,
+    'build',
+    'a pair without a script nonce leaves the redirect fallback un-nonced',
+    styleOnlyRedirect.text.includes('<script>window.location='),
+    styleOnlyRedirect.error,
+  );
+  // An empty nonce means none, as in the runtime.
+  for (const empty of [null, '']) {
+    const emptyPage = await settledText(() =>
+      builtHandler.handleRequest(new Request(origin + '/'), { nonce: empty }),
+    );
+    record(
+      mode,
+      'build',
+      `an empty nonce (${JSON.stringify(empty)}) leaves the client entry un-nonced`,
+      emptyPage.text.includes('<script type="module" src="'),
+      emptyPage.error,
+    );
+  }
+  // Anything outside CSPNonce rejects the call itself, before the chain
+  // runs: the host's own error, not a contained request failure.
+  for (const [label, invalid] of [
+    ['a number', 42],
+    ['an array', ['x']],
+    ['a pair without style', { script: 'x' }],
+    ['a misspelled key', { scirpt: 'x', style: 'y' }],
+    ['an empty script', { script: '', style: 'y' }],
+    ['a number as style', { script: 'x', style: 1 }],
+  ]) {
+    const outcome = await builtHandler
+      .handleRequest(new Request(origin + '/'), { nonce: invalid })
+      .then(
+        (response) => `resolved ${response.status}`,
+        (error) => String(error),
+      );
+    record(
+      mode,
+      'build',
+      `an invalid nonce (${label}) rejects handleRequest`,
+      outcome.includes('handleRequest options.nonce must be'),
+      outcome,
+    );
+  }
   record(
     mode,
     'build',
@@ -1178,6 +1646,25 @@ async function runProdMode() {
     'no devtools wiring in server bundle',
     !serverBundle.includes('start-devtools') && !serverBundle.includes('virtual:solid-devtools'),
   );
+  // Dev-serve-only guarantee for `performanceTracks` (on by default): a
+  // build never emits the injection — neither the virtual module id nor the
+  // adapter's payload literals reach either bundle.
+  const tracksLeaks = readdirSync(assetsDir).filter((f) =>
+    perfTracksMarkersIn(readFileSync(path.join(assetsDir, f), 'utf-8')),
+  );
+  record(
+    mode,
+    'perf-tracks',
+    'no performance-tracks injection in client assets',
+    tracksLeaks.length === 0,
+    tracksLeaks.join(', '),
+  );
+  record(
+    mode,
+    'perf-tracks',
+    'no performance-tracks injection in server bundle',
+    !perfTracksMarkersIn(serverBundle),
+  );
 
   const server = startProcess('node', ['server.js'], {
     cwd: exampleDir,
@@ -1190,9 +1677,10 @@ async function runProdMode() {
   try {
     await waitForHttp(origin + '/', 30000, { headers: { accept: 'text/html' } });
 
-    const bogus = await fetch(origin + '/_server?id=bogus-0');
+    const bogus = await fetch(origin + '/_server/bogus-0');
     record(mode, 'sf', 'prod handler rejects unknown id', bogus.status === 404);
-    await runCsrfChecks(mode, origin);
+    const registeredId = serverBundle.match(/registerServerReference\w*\("([^"]+)"/)?.[1] ?? null;
+    await runCsrfChecks(mode, origin, registeredId);
 
     const html = await runSsrChecks(mode, origin);
     record(
@@ -1520,6 +2008,26 @@ async function runEntriesMode() {
       html.includes('src="/src/entry-client.tsx"') &&
         !html.includes('virtual:solid-ssr-entry-client'),
     );
+    // The authored entry gets the same dev-serve injection as the generated
+    // one: the performance-tracks import prepended ahead of its own source
+    // imports (the shell module) and its hydrate() call.
+    {
+      const authoredEntry = await (await fetch(origin + '/src/entry-client.tsx')).text();
+      const tracksAt = authoredEntry.indexOf(PERF_TRACKS_ID);
+      const shellAt = authoredEntry.indexOf('/src/TestShell.tsx');
+      const hydrateAt = authoredEntry.indexOf('hydrate(');
+      record(
+        mode,
+        'perf-tracks',
+        'authored client entry is served with the performance-tracks import ahead of its own',
+        tracksAt !== -1 &&
+          shellAt !== -1 &&
+          hydrateAt !== -1 &&
+          tracksAt < shellAt &&
+          tracksAt < hydrateAt,
+        `tracks@${tracksAt} shell@${shellAt} hydrate@${hydrateAt}`,
+      );
+    }
     await runCustomEntryDevtoolsChecks(mode, origin);
     try {
       process.kill(-server.pid, 'SIGTERM');
@@ -1621,7 +2129,7 @@ async function runEndpointMode() {
     const functionId = extractFunctionId(clientModule, 'getServerMessage');
     const custom = functionId
       ? await fetch(
-          `${origin}${endpoint}?id=${encodeURIComponent(functionId)}&args=${encodeURIComponent('["endpoint"]')}`,
+          `${origin}${endpoint}/${encodeURIComponent(functionId)}?args=${encodeURIComponent('["endpoint"]')}`,
           { method: 'POST' },
         )
       : null;
@@ -1634,13 +2142,19 @@ async function runEndpointMode() {
       functionId ? `got ${JSON.stringify(customText)}` : 'could not extract function id',
     );
 
-    const fallback = await fetch(`${origin}/_server?id=${encodeURIComponent(functionId || '')}`);
+    const fallback = functionId
+      ? await fetch(
+          `${origin}/_server/${encodeURIComponent(functionId)}?args=${encodeURIComponent('["endpoint"]')}`,
+          { method: 'POST' },
+        )
+      : null;
+    const fallbackText = fallback ? await fallback.text() : '';
     record(
       mode,
       'rpc',
       'default endpoint no longer handled',
-      fallback.status !== 200,
-      `status ${fallback.status}`,
+      !!fallback && fallbackText !== 'hello endpoint from the server',
+      fallback ? `status ${fallback.status}` : 'could not extract function id',
     );
   } catch (e) {
     record(
@@ -1687,7 +2201,7 @@ async function runConfigureMode() {
   };
   const dispatch = async (id) => {
     const res = await fetch(
-      `${origin}/_server?id=${encodeURIComponent(id)}&args=${encodeURIComponent('[]')}`,
+      `${origin}/_server/${encodeURIComponent(id)}?args=${encodeURIComponent('[]')}`,
       { method: 'POST' },
     );
     return {
@@ -1771,10 +2285,10 @@ async function runConfigureMode() {
     });
     captureLog(server);
     await waitForHttp(origin + '/', 30000, { headers: { accept: 'text/html' } });
-    // Production ids are the dev id minus its dev-only trailing `-name`
-    // segment (`hash-count` vs `hash-count-name`), so the dev phase's id
-    // carries over. Dispatch before any page render, like dev.
-    const prodId = functionId ? functionId.replace(/-configureProbe$/, '') : null;
+    // Identity-keyed ids (`<name>-<hash>[-<ordinal>]`, solidjs/solid#3109)
+    // are the same in dev and prod, so the dev phase's id carries over
+    // as-is. Dispatch before any page render, like dev.
+    const prodId = functionId;
     const prod = prodId ? await dispatch(prodId) : null;
     record(
       mode,
@@ -1849,7 +2363,7 @@ async function runNoMiddlewareMode() {
     const functionId = extractFunctionId(clientModule, 'getServerMessage');
     const res = functionId
       ? await fetch(
-          `${origin}/_server?id=${encodeURIComponent(functionId)}&args=${encodeURIComponent('["nobody"]')}`,
+          `${origin}/_server/${encodeURIComponent(functionId)}?args=${encodeURIComponent('["nobody"]')}`,
           { method: 'POST' },
         )
       : null;
@@ -1961,6 +2475,377 @@ async function runBuilderOrderMode() {
       'prod',
       'hashed client entry script injected',
       /<script type="module" src="\/assets\/[^"]+\.js" async><\/script>/.test(html),
+    );
+  } catch (e) {
+    record(
+      mode,
+      'run',
+      'mode completed',
+      false,
+      String(e) + (serverLog ? `\nserver: ${serverLog.slice(-2000)}` : ''),
+    );
+  } finally {
+    if (server) {
+      try {
+        process.kill(-server.pid, 'SIGTERM');
+      } catch {}
+    }
+    // Leave dist in the standard state for anyone poking at it.
+    try {
+      execSync('pnpm run build', { cwd: exampleDir, stdio: 'pipe' });
+    } catch {}
+  }
+}
+
+// Extra configured client inputs (#353): EXTRA_CLIENT_INPUT=1 lists
+// src/ExtraInput.tsx — a module App.tsx also lazily imports — as a further
+// client build input, the shape filesystem-routing's `buildInputs` produces
+// for every route module. Since #347 such inputs keep `isEntry` (they are
+// genuine entries), so the manifest carries several flagged records and the
+// extra one's key (`src/…`) sorts ahead of the plugin's `virtual:` entry. The
+// built handler used to take the first `isEntry` record as the client entry:
+// the page booted the route chunk and linked the route's CSS while the real
+// entry's global stylesheet never made it into <head>. The manifest module
+// now names its entry (`_entry`, serialized first) and the handler reads it.
+async function runExtraInputMode() {
+  const mode = 'extra-input';
+  console.log(`\n=== ${mode.toUpperCase()} ===`);
+  const env = { ...process.env, EXTRA_CLIENT_INPUT: '1' };
+  const entryKey = 'virtual:solid-ssr-entry-client.tsx';
+  const extraKey = 'src/ExtraInput.tsx';
+
+  try {
+    rmSync(path.join(exampleDir, 'dist'), { recursive: true, force: true });
+    console.log('  building…');
+    execSync('pnpm run build', { cwd: exampleDir, stdio: 'pipe', env });
+    const clientManifest = JSON.parse(
+      readFileSync(path.join(exampleDir, 'dist/client/.vite/manifest.json'), 'utf-8'),
+    );
+    const entry = clientManifest[entryKey];
+    const extra = clientManifest[extraKey];
+    record(
+      mode,
+      'build',
+      'both configured inputs are manifest entries (extra one lazily imported too)',
+      !!entry?.isEntry &&
+        !!extra?.isEntry &&
+        !!entry?.css?.length &&
+        !!extra?.css?.length &&
+        (entry.dynamicImports ?? []).includes(extraKey),
+      `keys: ${Object.keys(clientManifest).join(', ')}`,
+    );
+    record(
+      mode,
+      'build',
+      'extra input sorts ahead of the client entry in manifest.json',
+      Object.keys(clientManifest).indexOf(extraKey) < Object.keys(clientManifest).indexOf(entryKey),
+    );
+    const serverBundle = readFileSync(path.join(exampleDir, 'dist/server/server.js'), 'utf-8');
+    record(
+      mode,
+      'build',
+      'baked manifest names the client entry (_entry) and keeps the extra input flagged',
+      serverBundle.includes(`"_entry": ${JSON.stringify(entryKey)}`) &&
+        (serverBundle.match(/"isEntry":\s*true/g) ?? []).length >= 2,
+    );
+
+    const handler = await import(
+      pathToFileURL(path.join(exampleDir, 'dist/server/server.js')).href + `?extra=${Date.now()}`
+    );
+    const html = await (await handler.handleRequest(new Request('http://localhost/'))).text();
+    const scriptSrc = html.match(/<script type="module" src="([^"]+)" async><\/script>/)?.[1];
+    const stylesheets = [...html.matchAll(/<link rel="stylesheet" href="([^"]+)">/g)].map(
+      (m) => m[1],
+    );
+    record(mode, 'prod', 'app server-rendered', html.includes('SSR App Mode'));
+    record(
+      mode,
+      'prod',
+      'client entry script is the real entry chunk',
+      !!entry?.file && scriptSrc === `/${entry.file}`,
+      `script: ${scriptSrc}, entry: ${entry?.file}, extra: ${extra?.file}`,
+    );
+    record(
+      mode,
+      'prod',
+      "entry graph's stylesheet linked in <head>",
+      !!entry?.css?.[0] && stylesheets.includes(`/${entry.css[0]}`),
+      `stylesheets: ${stylesheets.join(', ')}`,
+    );
+    record(
+      mode,
+      'prod',
+      'extra input chunk is neither the boot script nor a linked stylesheet on /',
+      !!extra?.file &&
+        scriptSrc !== `/${extra.file}` &&
+        !stylesheets.includes(`/${extra.css?.[0]}`) &&
+        !html.includes(extra.file),
+      `script: ${scriptSrc}, stylesheets: ${stylesheets.join(', ')}`,
+    );
+    // The extra input is still a working lazy target: rendering its route
+    // registers its own CSS alongside the entry's.
+    const extraHtml = await (
+      await handler.handleRequest(new Request('http://localhost/extra-input'))
+    ).text();
+    const extraStylesheets = [...extraHtml.matchAll(/<link rel="stylesheet" href="([^"]+)">/g)].map(
+      (m) => m[1],
+    );
+    record(
+      mode,
+      'prod',
+      'lazy route to the extra input renders with both stylesheets and the real entry script',
+      extraHtml.includes('EXTRA-INPUT-PAGE') &&
+        extraStylesheets.includes(`/${entry?.css?.[0]}`) &&
+        extraStylesheets.includes(`/${extra?.css?.[0]}`) &&
+        extraHtml.includes(`<script type="module" src="/${entry?.file}" async></script>`),
+      `stylesheets: ${extraStylesheets.join(', ')}`,
+    );
+  } catch (e) {
+    record(mode, 'run', 'mode completed', false, String(e));
+  } finally {
+    // Leave dist in the standard state for anyone poking at it.
+    try {
+      execSync('pnpm run build', { cwd: exampleDir, stdio: 'pipe' });
+    } catch {}
+  }
+}
+
+// Built file names (#391): a filesystem router's catch-all route module,
+// src/routes/[...rest].tsx, builds to a chunk named after its file, and the
+// bundler's default sanitizer only swaps the brackets: the chunk came out as
+// `_...rest_-<hash>.js` and the CSS asset Vite names after it as
+// `_..-<hash>.css`. server.js, like many hosts and middleware, refuses every
+// URL containing `..`, so the lazy route's preload fell through to SSR and
+// came back as HTML. The plugin now collapses dot runs in built file names,
+// after the default or the user's sanitizer. The default build must carry no
+// `..` anywhere under dist/client or dist/server, keep the catch-all's chunk
+// and CSS under the collapsed names (the CSS keeps its extension) and have
+// server.js serve both. The route also renders mark..svg, whose URL the
+// server bundle writes itself: it must name a file under dist/client, which
+// only holds while both builds collapse. SANITIZE_FILE_NAME=custom rebuilds
+// with a user `sanitizeFileName` that turns the brackets into dots, so only
+// a collapse that runs after it leaves the name free of `..`;
+// SANITIZE_FILE_NAME=plugin sets that function from a later plugin's
+// `outputOptions` hook instead of the config; SANITIZE_FILE_NAME=off rebuilds
+// with `sanitizeFileName: false`, the opt-out the plugin leaves alone (raw
+// names).
+async function runFileNamesMode() {
+  const mode = 'file-names';
+  console.log(`\n=== ${mode.toUpperCase()} ===`);
+  const port = 3185;
+  const origin = `http://localhost:${port}`;
+  const routeKey = 'src/routes/[...rest].tsx';
+  const clientDir = path.join(exampleDir, 'dist/client');
+  const serverDir = path.join(exampleDir, 'dist/server');
+  const build = (env) => {
+    rmSync(path.join(exampleDir, 'dist'), { recursive: true, force: true });
+    execSync('pnpm run build', { cwd: exampleDir, stdio: 'pipe', env });
+    return JSON.parse(readFileSync(path.join(clientDir, '.vite/manifest.json'), 'utf-8'));
+  };
+  // Every path under a dist directory (files and directories),
+  // slash-separated.
+  const distPaths = (dir) =>
+    readdirSync(dir, { recursive: true }).map((p) => p.split(path.sep).join('/'));
+  const dottedClientPaths = () => distPaths(clientDir).filter((p) => p.includes('..'));
+
+  let server;
+  let serverLog = '';
+  try {
+    console.log('  building…');
+    let manifest = build(process.env);
+    let dotted = dottedClientPaths();
+    record(mode, 'build', 'no dist/client path contains ".."', !dotted.length, dotted.join(', '));
+    const chunk = manifest[routeKey]?.file;
+    const css = manifest[routeKey]?.css?.[0];
+    record(
+      mode,
+      'build',
+      'catch-all chunk emitted under the collapsed name (_.rest_-<hash>.js)',
+      !!chunk &&
+        /^assets\/_\.rest_-[\w-]+\.js$/.test(chunk) &&
+        existsSync(path.join(clientDir, chunk)),
+      `file: ${chunk}`,
+    );
+    record(
+      mode,
+      'build',
+      'catch-all CSS asset emitted without ".." and keeps its .css extension',
+      !!css && !css.includes('..') && css.endsWith('.css') && existsSync(path.join(clientDir, css)),
+      `css: ${css}`,
+    );
+    const dottedServer = distPaths(serverDir).filter((p) => p.includes('..'));
+    record(
+      mode,
+      'build',
+      'no dist/server path contains ".."',
+      !dottedServer.length,
+      dottedServer.join(', '),
+    );
+    const serverChunks = distPaths(serverDir).filter((p) => /(^|\/)_.*rest_-[\w-]+\.js$/.test(p));
+    record(
+      mode,
+      'build',
+      'server build names the catch-all chunk the same way (_.rest_-<hash>.js)',
+      serverChunks.length > 0 && serverChunks.every((p) => /(^|\/)_\.rest_-[\w-]+\.js$/.test(p)),
+      `server: ${serverChunks.join(', ')}`,
+    );
+
+    server = startProcess('node', ['server.js'], {
+      cwd: exampleDir,
+      env: { ...process.env, PORT: String(port), NODE_ENV: 'production' },
+    });
+    server.stdout.on('data', (d) => (serverLog += d));
+    server.stderr.on('data', (d) => (serverLog += d));
+    await waitForHttp(origin + '/', 30000, { headers: { accept: 'text/html' } });
+    const page = await fetchStreamed(origin + '/catch-all');
+    record(
+      mode,
+      'prod',
+      'catch-all route SSRs and links its chunk and CSS',
+      page.status === 200 &&
+        page.html.includes('CATCH-ALL-PAGE') &&
+        !!chunk &&
+        page.html.includes(`/${chunk}`) &&
+        !!css &&
+        page.html.includes(`/${css}`),
+      `status ${page.status}`,
+    );
+    // The server bundle computes this URL with its own sanitizer: it names
+    // a file under dist/client only while both builds collapse dot runs.
+    const markTag = page.html.match(/<img\b[^>]*\bid="catch-all-mark"[^>]*>/)?.[0];
+    const markSrc = markTag?.match(/\bsrc="([^"]*)"/)?.[1];
+    record(
+      mode,
+      'prod',
+      'SSR src of mark..svg names a file the client build wrote',
+      !!markSrc &&
+        markSrc.startsWith('/assets/') &&
+        !markSrc.includes('..') &&
+        existsSync(path.join(clientDir, markSrc)),
+      `src: ${markSrc}; client assets: ${(manifest[routeKey]?.assets ?? []).join(', ')}`,
+    );
+    // server.js skips its static lookup for any URL containing `..`, so an
+    // undotted name is what lets the asset through instead of the SSR page.
+    for (const [name, file, type, marker] of [
+      ['chunk', chunk, 'application/javascript', 'CATCH-ALL-PAGE'],
+      ['CSS', css, 'text/css', 'catch-all'],
+      ['mark..svg', markSrc?.slice(1), 'image/svg+xml', '<svg'],
+    ]) {
+      if (!file) {
+        record(mode, 'prod', `server.js serves the catch-all ${name}`, false, 'no URL to fetch');
+        continue;
+      }
+      const res = await fetch(`${origin}/${file}`);
+      const body = await res.text();
+      record(
+        mode,
+        'prod',
+        `server.js serves the catch-all ${name}`,
+        res.status === 200 && res.headers.get('content-type') === type && body.includes(marker),
+        `GET /${file} → ${res.status} ${res.headers.get('content-type')}`,
+      );
+    }
+    try {
+      process.kill(-server.pid, 'SIGTERM');
+    } catch {}
+    server = null;
+
+    // The user function turns `[...rest]` into `....rest.`: collapsing after
+    // it gives `.rest.`, collapsing before it would leave `..rest.`, and the
+    // default sanitizer alone would give `_.rest_`. Rolldown refuses a
+    // `[name]` that starts with `..` (it reads as a relative path), so an
+    // uncollapsed run fails the build outright: record that and move on to
+    // the next variant.
+    for (const [variant, label] of [
+      ['custom', 'set in the config'],
+      ['plugin', "set from a later plugin's outputOptions hook"],
+    ]) {
+      console.log(`  building with a user sanitizeFileName ${label}…`);
+      let userChunk;
+      let buildError = '';
+      try {
+        manifest = build({ ...process.env, SANITIZE_FILE_NAME: variant });
+        userChunk = manifest[routeKey]?.file;
+      } catch (e) {
+        const lines = String(e.stderr || e.message)
+          .replace(/\x1b\[[0-9;]*m/g, '')
+          .split('\n');
+        buildError =
+          'build failed: ' + (lines.find((l) => /\[[A-Z_]+\]/.test(l)) ?? lines[0]).trim();
+      }
+      record(
+        mode,
+        variant,
+        'user sanitizeFileName runs and the collapse follows it (.rest.-<hash>.js)',
+        !!userChunk && /^assets\/\.rest\.-[\w-]+\.js$/.test(userChunk),
+        buildError || `file: ${userChunk}`,
+      );
+      dotted = buildError ? [buildError] : dottedClientPaths();
+      record(mode, variant, 'no dist/client path contains ".."', !dotted.length, dotted.join(', '));
+    }
+
+    console.log('  building with sanitizeFileName: false…');
+    manifest = build({ ...process.env, SANITIZE_FILE_NAME: 'off' });
+    const rawChunk = manifest[routeKey]?.file;
+    record(
+      mode,
+      'off',
+      'sanitizeFileName: false is left alone (raw [...rest]-<hash>.js)',
+      !!rawChunk && /^assets\/\[\.\.\.rest\]-[\w-]+\.js$/.test(rawChunk),
+      `file: ${rawChunk}`,
+    );
+
+    // preserveModules keeps each module's path in its name, `../` segments
+    // included, so the collapse only touches the last segment: a library
+    // built from a directory whose path has a dot run is rejected by the
+    // bundler if the directories change.
+    const dotLib = path.join(exampleDir, 'test-dot..lib');
+    rmSync(dotLib, { recursive: true, force: true });
+    mkdirSync(path.join(dotLib, 'src/card'), { recursive: true });
+    writeFileSync(
+      path.join(dotLib, 'src/index.tsx'),
+      "export { Button } from './Button';\nexport { Card } from './card/Card';\n",
+    );
+    writeFileSync(
+      path.join(dotLib, 'src/Button.tsx'),
+      'export function Button(props) {\n  return <button>{props.label}</button>;\n}\n',
+    );
+    writeFileSync(
+      path.join(dotLib, 'src/card/Card.tsx'),
+      'export function Card(props) {\n  return <section>{props.title}</section>;\n}\n',
+    );
+    let libFiles = [];
+    let libError = '';
+    try {
+      const { default: solid } = await import('@solidjs/vite-plugin');
+      await viteBuild({
+        configFile: false,
+        logLevel: 'silent',
+        root: dotLib,
+        plugins: [solid()],
+        build: {
+          outDir: 'out',
+          minify: false,
+          lib: { entry: 'src/index.tsx', formats: ['es'] },
+          rolldownOptions: {
+            external: [/^solid-js/, /^@solidjs\/web/],
+            output: { preserveModules: true },
+          },
+        },
+      });
+      libFiles = distPaths(path.join(dotLib, 'out')).sort();
+    } catch (e) {
+      libError = String(e && e.message ? e.message : e).replace(/\x1b\[[0-9;]*m/g, '');
+    } finally {
+      rmSync(dotLib, { recursive: true, force: true });
+    }
+    record(
+      mode,
+      'preserve-modules',
+      'a preserveModules build from a directory with a dot run keeps module paths',
+      // Lib mode names the files after the package; one per module.
+      !libError && libFiles.filter((f) => f.endsWith('.js')).length === 3,
+      libError.slice(0, 300) || libFiles.join(', '),
     );
   } catch (e) {
     record(
@@ -2109,14 +2994,14 @@ async function runFramesChecks(mode, origin) {
   // ---- The document over plain HTTP ------------------------------------
   const html = await (await fetch(origin + '/', { headers: { accept: 'text/html' } })).text();
   // (`panel:` not `panel:alpha`: hydration comment markers split the text.)
-  // A boundary SSRs as a real <dx-frame data-fid> element
+  // A boundary SSRs as a real <solid-frame data-fid> element
   // (display:contents); slot records remain comment markers.
   record(
     mode,
     'document',
     'server component SSR\'d inline (frame markers in document)',
     html.includes('panel:') &&
-      html.includes('<dx-frame') &&
+      html.includes('<solid-frame') &&
       html.includes('data-fid=') &&
       html.includes(':start-->'),
   );
@@ -2488,6 +3373,37 @@ async function runFramesMode() {
 // - error middleware (/boom: a render throw becomes the middleware's 500).
 async function runMiddlewareChecksOverHttp(mode, origin, functionId) {
   const page = await fetchStreamed(origin + '/');
+  // ---- app.instrument (src/instrument.ts) -------------------------------
+  // What middleware.ts saw at ITS module load, i.e. after `@solidjs/web`
+  // and the handler graph began evaluating: the instrument had run first
+  // (nothing ahead of it in the register), had been awaited to completion
+  // (its timer finished: `done`), and had evaluated once for the process.
+  const instrumentRaw = page.headers.get('x-instrument');
+  let instrument = null;
+  try {
+    instrument = instrumentRaw ? JSON.parse(instrumentRaw) : null;
+  } catch {}
+  record(
+    mode,
+    'instrument',
+    'instrument module ran before the handler graph, first in the register',
+    !!instrument && instrument.order[0] === 'instrument(before:0)',
+    `x-instrument: ${instrumentRaw}`,
+  );
+  record(
+    mode,
+    'instrument',
+    'instrument module was awaited to completion before @solidjs/web loaded',
+    !!instrument && instrument.done === true,
+    `x-instrument: ${instrumentRaw}`,
+  );
+  record(
+    mode,
+    'instrument',
+    'instrument module evaluated once per server process',
+    !!instrument && instrument.evaluations === 1,
+    `x-instrument: ${instrumentRaw}`,
+  );
   record(
     mode,
     'mw',
@@ -2614,7 +3530,7 @@ async function runMiddlewareChecksOverHttp(mode, origin, functionId) {
 
   if (functionId) {
     const fn = await fetch(
-      `${origin}/_server?id=${encodeURIComponent(functionId)}&args=${encodeURIComponent('[]')}`,
+      `${origin}/_server/${encodeURIComponent(functionId)}?args=${encodeURIComponent('[]')}`,
       { method: 'POST' },
     );
     const fnBody = await fn.text();
@@ -2673,6 +3589,289 @@ async function runMiddlewareChecksOverHttp(mode, origin, functionId) {
     !!first && !!second && second.seq > first.seq,
     `seq ${first?.seq} then ${second?.seq}`,
   );
+
+  // ---- The no-JS server-function convention, end to end ------------------
+  // A browser form posted to a server function's bare address without the
+  // client runtime cannot receive a value: the runtime answers 303 back to
+  // the referring page with the outcome riding a one-shot flash cookie, and
+  // the render that follows decodes it (src/setup.tsx here — the
+  // integration's half). Since @solidjs/web 2.0.0-rc.7 that cookie is
+  // AES-GCM encrypted under a key derived from the deployment secret, and
+  // WITHOUT a secret the flash is withheld entirely (the redirect goes out
+  // plain, dev warns once). The plugin provides the secret with zero
+  // configuration — `globalThis.__SOLID_SECRET__ ??=` leads the generated
+  // handler module — so the Set-Cookie below is the proof that it reached
+  // the runtime, and the marker is the proof the render decrypted it under
+  // the same key. Headers mimic a real form navigation: form content type,
+  // `Sec-Fetch-Mode: navigate` (the convention's gate — hence rawRequest,
+  // fetch cannot send it), same-origin proof for the CSRF check, and the
+  // referrer the redirect returns to.
+  if (functionId) {
+    const back = origin + '/';
+    const post = await rawRequest(`${origin}/_server/${encodeURIComponent(functionId)}`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/x-www-form-urlencoded',
+        accept: 'text/html',
+        referer: back,
+        'sec-fetch-site': 'same-origin',
+        'sec-fetch-mode': 'navigate',
+      },
+      body: new URLSearchParams({ name: 'nojs-flash' }).toString(),
+    });
+    record(
+      mode,
+      'flash',
+      'no-JS form POST to a server function redirects back to the referrer (303)',
+      post.status === 303 && post.headers.location === back,
+      `status ${post.status}, location ${JSON.stringify(post.headers.location)}`,
+    );
+    const postCookies = post.setCookies;
+    const flashCookie = postCookies.find((cookie) => cookie.startsWith('flash=')) ?? null;
+    record(
+      mode,
+      'flash',
+      'redirect carries the encrypted flash cookie (deployment secret reached the runtime)',
+      !!flashCookie && /^flash=1\./.test(flashCookie),
+      `set-cookie: ${JSON.stringify(postCookies)}`,
+    );
+    record(
+      mode,
+      'flash',
+      'flash cookie is one-shot and Lax (Max-Age=60, SameSite=Lax, HttpOnly)',
+      !!flashCookie &&
+        /;\s*max-age=60\b/i.test(flashCookie) &&
+        /;\s*samesite=lax\b/i.test(flashCookie) &&
+        /;\s*httponly\b/i.test(flashCookie),
+      `set-cookie: ${JSON.stringify(flashCookie)}`,
+    );
+
+    // The render that follows the redirect: the page reads the cookie back,
+    // decrypts it, and surfaces the outcome (the flash's url is the unbound
+    // function base, its result the function's return, its input the
+    // submitted form) — then clears the cookie so a reload reads "no flash".
+    const flashed = await fetch(back, {
+      headers: { accept: 'text/html', cookie: flashCookie ? flashCookie.split(';')[0] : '' },
+    });
+    const flashedHtml = await flashed.text();
+    const flashMarker = /flash:([^:<]+):([^:<]+):([^:<]+)</.exec(flashedHtml);
+    record(
+      mode,
+      'flash',
+      'following render decrypts the flash and surfaces the outcome (url, result, input)',
+      !!flashMarker &&
+        flashMarker[1] === `/_server/${functionId}` &&
+        flashMarker[2] === 'mw-user' &&
+        flashMarker[3] === 'nojs-flash',
+      flashMarker ? `marker ${JSON.stringify(flashMarker[0])}` : 'no flash marker in html',
+    );
+    const flashedCookies = flashed.headers.getSetCookie ? flashed.headers.getSetCookie() : [];
+    record(
+      mode,
+      'flash',
+      'render clears the flash cookie once read',
+      flashedCookies.some((cookie) => /^flash=;/.test(cookie) && /max-age=0\b/i.test(cookie)),
+      `set-cookie: ${JSON.stringify(flashedCookies)}`,
+    );
+    const plain = await fetch(back, { headers: { accept: 'text/html' } });
+    record(
+      mode,
+      'flash',
+      'a render without the cookie carries no flash',
+      !/flash:/.test(await plain.text()),
+    );
+  }
+}
+
+// Failures escaping the whole middleware chain (src/middleware.ts throws
+// from `first`, the outermost, outside its error middleware). A thrown
+// Response, or the Response a thrown respond() envelope carries, is the
+// response in dev and production alike. Production builds contain
+// everything else in the generated handler: the configureServerErrors hook
+// (or console.error without one) hears it once and the client gets a
+// bodyless 500, carrying the stub's cookies while the response head is still
+// open, so no host sees a rejection. Dev rethrows it to Vite's error
+// middleware (the overlay). `hooked`: the server runs with
+// SSR_SERVER_ERRORS=1, so middleware.ts registered a recording hook.
+// `setup`: app.setup is wired (SSR_SETUP=1), so /setup-throw fails there.
+async function runContainmentChecks(
+  mode,
+  origin,
+  { dev = false, hooked = false, setup = false, getLog } = {},
+) {
+  const marker = 'mw-throw-secret';
+  const markers = ['mw-throw-secret', 'late-throw-secret', 'direct-throw-secret'];
+  if (setup) markers.push('setup-throw-secret');
+  // Only what the server logs from here on (the log may span servers).
+  const logStart = getLog ? getLog().length : 0;
+  const logSince = () => getLog().slice(logStart);
+  const heardErrors = async () => {
+    const res = await fetch(origin + '/api/server-errors', {
+      headers: { accept: 'application/json' },
+    });
+    return res.ok ? await res.json() : null;
+  };
+  const get = (pathname) =>
+    fetch(origin + pathname, { redirect: 'manual', headers: { accept: 'text/html' } });
+
+  // Thrown control responses: the response itself, on every surface.
+  const redirected = await get('/mw-redirect');
+  await redirected.arrayBuffer();
+  record(
+    mode,
+    'contain',
+    'thrown redirect() becomes the response (302 + Location)',
+    redirected.status === 302 && redirected.headers.get('location') === '/redirected-target',
+    `status ${redirected.status}, location ${JSON.stringify(redirected.headers.get('location'))}`,
+  );
+  const enveloped = await get('/mw-envelope');
+  const envelopeBody = await enveloped.text();
+  record(
+    mode,
+    'contain',
+    'thrown respond() envelope answers its Response (status, header, JSON body)',
+    enveloped.status === 409 &&
+      enveloped.headers.get('x-envelope') === '1' &&
+      envelopeBody === JSON.stringify({ contained: 'envelope' }),
+    `status ${enveloped.status}, x-envelope ${enveloped.headers.get('x-envelope')}, body ${JSON.stringify(envelopeBody.slice(0, 80))}`,
+  );
+
+  const thrown = await get('/mw-throw');
+  const thrownBody = await thrown.text();
+  if (dev) {
+    record(
+      mode,
+      'contain',
+      'dev: an escaping middleware throw still reaches the Vite overlay (500 with the error)',
+      thrown.status === 500 && thrownBody.includes(marker),
+      `status ${thrown.status}, body ${JSON.stringify(thrownBody.slice(0, 80))}`,
+    );
+    if (hooked) {
+      const heard = await heardErrors();
+      record(
+        mode,
+        'contain',
+        'dev: the handler reports nothing itself (the hook never hears the throw)',
+        Array.isArray(heard) && !heard.some((e) => e.message.includes(marker)),
+        JSON.stringify(heard),
+      );
+    }
+    return;
+  }
+  record(
+    mode,
+    'contain',
+    'escaping middleware throw answers a generic 500 (no body, no error details)',
+    thrown.status === 500 && thrownBody === '',
+    `status ${thrown.status}, body ${JSON.stringify(thrownBody.slice(0, 80))}`,
+  );
+  const thrownCookies = (thrown.headers.getSetCookie ? thrown.headers.getSetCookie() : []).filter(
+    (cookie) => cookie.startsWith('mw-throw='),
+  );
+  record(
+    mode,
+    'contain',
+    'stub cookie written before the throw arrives exactly once',
+    thrownCookies.length === 1 && thrownCookies[0].startsWith('mw-throw=1'),
+    `set-cookie: ${JSON.stringify(thrownCookies)}`,
+  );
+  // The other escaping shapes all answer the same generic 500: a throw
+  // after next() returned the page, Response.error() (not a response to
+  // send), an uncaught in-process server-function failure, and a
+  // app.setup failure.
+  const generic = [
+    ['/mw-throw-late', 'a throw after next() returned the page'],
+    ['/mw-response-error', 'thrown Response.error()'],
+    ['/mw-direct-throw', 'an uncaught in-process server-function failure'],
+    ...(setup ? [['/setup-throw', 'a app.setup failure']] : []),
+  ];
+  for (const [pathname, label] of generic) {
+    const res = await get(pathname);
+    const body = await res.text();
+    record(
+      mode,
+      'contain',
+      `${label} answers the generic 500`,
+      res.status === 500 && body === '',
+      `status ${res.status}, body ${JSON.stringify(body.slice(0, 80))}`,
+    );
+  }
+  if (hooked) {
+    const heard = await heardErrors();
+    const heardFor = (secret) =>
+      Array.isArray(heard) ? heard.filter((e) => e.message.includes(secret)) : [];
+    const failedOnce = (secret) => {
+      const failures = heardFor(secret);
+      return (
+        failures.length === 1 &&
+        failures[0].kind === 'request' &&
+        failures[0].handling === 'failed' &&
+        failures[0].event === true
+      );
+    };
+    record(
+      mode,
+      'contain',
+      'configureServerErrors hook hears the failure once (request/failed, with the event)',
+      failedOnce('mw-throw-secret') && failedOnce('late-throw-secret'),
+      JSON.stringify(heard),
+    );
+    if (setup) {
+      record(
+        mode,
+        'contain',
+        'a app.setup failure reaches the hook once (request/failed, with the event)',
+        failedOnce('setup-throw-secret'),
+        JSON.stringify(heard),
+      );
+    }
+    // The runtime reported the direct call first (server-function/thrown);
+    // the handler's report of the same error object must not repeat it.
+    const direct = heardFor('direct-throw-secret');
+    record(
+      mode,
+      'contain',
+      'an in-process server-function failure is heard once, as the runtime first reported it',
+      direct.length === 1 &&
+        direct[0].kind === 'server-function' &&
+        direct[0].handling === 'thrown',
+      JSON.stringify(direct),
+    );
+    record(
+      mode,
+      'contain',
+      'thrown Responses and envelopes are not reported; Response.error() is',
+      Array.isArray(heard) &&
+        !heard.some(
+          (e) => e.message === 'Response 302' || e.message.startsWith('ResponseEnvelope'),
+        ) &&
+        heard.filter((e) => e.message === 'Response 0').length === 1,
+      JSON.stringify(heard),
+    );
+    // The hook replaced the log: give stderr a moment, then no original
+    // may be in it.
+    await new Promise((r) => setTimeout(r, 250));
+    record(
+      mode,
+      'contain',
+      'with a hook, the original errors stay out of the server log',
+      !markers.some((secret) => logSince().includes(secret)),
+      logSince().slice(-300),
+    );
+  } else {
+    let logged = false;
+    for (let i = 0; i < 20 && !logged; i++) {
+      logged = markers.every((secret) => logSince().includes(secret));
+      if (!logged) await new Promise((r) => setTimeout(r, 100));
+    }
+    record(
+      mode,
+      'contain',
+      'without a hook, the original errors go to console.error',
+      logged,
+      logSince().slice(-300),
+    );
+  }
 }
 
 async function runMiddlewareMode() {
@@ -2682,7 +3881,18 @@ async function runMiddlewareMode() {
   // SSR_SETUP rides the middleware mode: the hook's contract (ordering
   // after the chain, shared locals) is only observable with a middleware
   // in front anyway.
-  const env = { ...process.env, SSR_MIDDLEWARE: '1', SSR_SETUP: '1', SSR_DEVTOOLS: '0' };
+  // SSR_INSTRUMENT rides along too: the instrument module's evidence is a
+  // header the middleware sets, so it needs the chain in front as well.
+  // SSR_SERVER_ERRORS: the recording configureServerErrors hook the
+  // containment checks read back.
+  const env = {
+    ...process.env,
+    SSR_MIDDLEWARE: '1',
+    SSR_SETUP: '1',
+    SSR_INSTRUMENT: '1',
+    SSR_SERVER_ERRORS: '1',
+    SSR_DEVTOOLS: '0',
+  };
 
   let server;
   let serverLog = '';
@@ -2701,12 +3911,36 @@ async function runMiddlewareMode() {
     // mutation stays possible through the whole unwind.
     process.env.SSR_MIDDLEWARE = '1';
     process.env.SSR_SETUP = '1';
+    process.env.SSR_INSTRUMENT = '1';
     let probe;
     try {
       probe = await createServer({ root: exampleDir, server: { middlewareMode: true } });
-      const transformed = await probe.environments.ssr.transformRequest('virtual:solid-ssr-handler');
+      // ---- Codegen: app.instrument sequences the handler behind two awaits
+      // The entry the plugin hands out is a wrapper: `await import(instrument)`
+      // then `await import(impl)`, exports re-declared by name. Static
+      // imports would be hoisted and defeat the ordering.
+      const wrapper = (await probe.environments.ssr.transformRequest('virtual:solid-ssr-handler'))?.code || '';
+      const instrumentAt = wrapper.indexOf('instrument.ts');
+      const implAt = wrapper.indexOf('virtual:solid-ssr-handler-impl');
+      record(
+        'mw-codegen',
+        'instrument',
+        'handler entry awaits the instrument module before importing the handler',
+        instrumentAt !== -1 && implAt !== -1 && instrumentAt < implAt && /await\s+__vite_ssr_dynamic_import__|await\s+import/.test(wrapper),
+        wrapper.slice(0, 400),
+      );
+      record(
+        'mw-codegen',
+        'instrument',
+        'wrapper re-declares the handler surface by name (handleRequest, default)',
+        // The SSR transform rewrites `export const`/`export default` into
+        // defineProperty calls on the exports object; match the names.
+        /["']?handleRequest["']?/.test(wrapper) && /["']default["']|export\s+default/.test(wrapper),
+        wrapper.slice(0, 400),
+      );
+      const transformed = await probe.environments.ssr.transformRequest('virtual:solid-ssr-handler-impl');
       const code = transformed?.code || '';
-      const unwind = code.indexOf('runMiddleware(request');
+      const unwind = code.indexOf('runMiddleware(event');
       // The SSR transform rewrites the imported binding to a member access
       // on the vite import handle (`(0, handle.commitEventResponse)(...)`),
       // so match the rewritten call site rather than the source text.
@@ -2723,6 +3957,18 @@ async function runMiddlewareMode() {
         'edge fold runs after the middleware chain unwinds',
         unwind !== -1 && fold !== -1 && fold > unwind,
         `runMiddleware @ ${unwind}, fold @ ${fold}`,
+      );
+      // Dev containment is the thrown-Response half only: the catch answers
+      // a thrown Response or envelope and rethrows everything else to
+      // Vite's error middleware. Reporting (reportRequestFailure) and the
+      // bodyless 500 are build-only.
+      record(
+        'mw-codegen',
+        'gen',
+        'dev handler catch rethrows failures (no reportRequestFailure, no synthesized 500)',
+        code.includes('function containFailure') &&
+          code.includes('throw error') &&
+          !code.includes('reportRequestFailure'),
       );
       // The generated entry-server threads app.setup: awaited with the
       // request event before renderToStream, its result (or App) rendered.
@@ -2782,6 +4028,7 @@ async function runMiddlewareMode() {
       await probe?.close();
       delete process.env.SSR_MIDDLEWARE;
       delete process.env.SSR_SETUP;
+      delete process.env.SSR_INSTRUMENT;
     }
 
     // ---- Dev: the chain fronts the dev middlewares -----------------------
@@ -2795,6 +4042,7 @@ async function runMiddlewareMode() {
     const clientModule = await (await fetch(devOrigin + '/src/api.ts')).text();
     functionId = extractFunctionId(clientModule, 'whoAmI');
     await runMiddlewareChecksOverHttp('mw-dev', devOrigin, functionId);
+    await runContainmentChecks('mw-dev', devOrigin, { dev: true, hooked: true });
     // Dev-only: a non-page request the chain does NOT handle falls back to
     // Vite's pipeline (its 404) instead of getting the page rendered at it.
     const unhandledPost = await fetch(devOrigin + '/no-such-route', { method: 'POST' });
@@ -2837,9 +4085,14 @@ async function runMiddlewareMode() {
     });
     captureLog(server);
     await waitForHttp(prodOrigin + '/', 30000, { headers: { accept: 'text/html' } });
-    // Prod ids drop the dev-only trailing `-name` segment.
-    const prodId = functionId ? functionId.replace(/-whoAmI$/, '') : null;
+    // Identity-keyed ids are the same in dev and prod (solidjs/solid#3109).
+    const prodId = functionId;
     await runMiddlewareChecksOverHttp('mw-prod', prodOrigin, prodId);
+    await runContainmentChecks('mw-prod', prodOrigin, {
+      hooked: true,
+      setup: true,
+      getLog: () => serverLog,
+    });
     await runHttpChecks('mw-prod', prodOrigin);
   } catch (e) {
     record(
@@ -2874,7 +4127,17 @@ async function runPreviewMode() {
   // SSR_SETUP rides along like in middleware mode: the shared chain checks
   // assert the per-request setup hook, and preview must serve the built
   // entry that threads it exactly like dev and prod.
-  const env = { ...process.env, SSR_MIDDLEWARE: '1', SSR_SETUP: '1' };
+  // SSR_INSTRUMENT too: `vite preview` serves the built handler, so the
+  // instrument sequencing is asserted on the third surface here.
+  // SSR_SERVER_ERRORS: the containment checks' recording hook, as in
+  // middleware mode.
+  const env = {
+    ...process.env,
+    SSR_MIDDLEWARE: '1',
+    SSR_SETUP: '1',
+    SSR_INSTRUMENT: '1',
+    SSR_SERVER_ERRORS: '1',
+  };
 
   let server;
   let serverLog = '';
@@ -2920,8 +4183,105 @@ async function runPreviewMode() {
     }
 
     // The endpoint dispatches through the same handler.
-    const bogus = await fetch(origin + '/_server?id=bogus-0', { method: 'POST' });
+    const bogus = await fetch(origin + '/_server/bogus-0', { method: 'POST' });
     record(mode, 'sf', 'preview dispatches /_server (unknown id rejected)', bogus.status === 404);
+
+    // ---- Streamed shapes pass preview's compression untouched -----------
+    // Preview's compression middleware sizes a response up on its first
+    // write and, at ≥1KiB, pipes the rest through zlib — which holds small
+    // writes until its buffer fills. A live event stream (@solidjs/web
+    // 2.0.0-rc.10, `<endpoint>/live/<id>`) stays open, so a held event is
+    // one never delivered; the plugin passes `text/event-stream` and
+    // everything under the server-function mount through as identity, like
+    // it already did for the streamed page. Answers big enough to trip the
+    // threshold, at both scripted shapes: without the exemption they come
+    // back gzip/br (fetch decodes transparently — the header is the tell).
+    // The registrations sit in the handler chunk — split out of server.js
+    // under `app.instrument` (this mode's env) — so scan the whole
+    // server build.
+    const serverDist = path.join(exampleDir, 'dist/server');
+    const serverAssetsDir = path.join(serverDist, 'assets');
+    const previewBundle = [
+      path.join(serverDist, 'server.js'),
+      ...(existsSync(serverAssetsDir)
+        ? readdirSync(serverAssetsDir)
+            .filter((f) => f.endsWith('.js'))
+            .map((f) => path.join(serverAssetsDir, f))
+        : []),
+    ]
+      .map((file) => readFileSync(file, 'utf-8'))
+      .join('\n');
+    const registeredId = (name) =>
+      previewBundle.match(new RegExp(`registerServerReference\\w*\\("(${name}-[^"]+)"`))?.[1] ??
+      null;
+    // `greet` answers an object (via respond(), status 201): a value the
+    // live address frames as an event. A string result has a natural HTTP
+    // body and takes the ordinary road even there, so `getServerMessage`
+    // is the data-address probe below, not this one.
+    const greetId = registeredId('greet');
+    const messageId = registeredId('getServerMessage');
+    const bigName = 'x'.repeat(2000);
+    const bigArgs = `?args=${encodeURIComponent(JSON.stringify([bigName]))}`;
+    const compressible = { method: 'POST', headers: { 'accept-encoding': 'gzip, br' } };
+    const notCompressed = (res) =>
+      !/\b(gzip|br|deflate)\b/.test(res.headers.get('content-encoding') || '');
+    const liveRes = greetId
+      ? await fetch(`${origin}/_server/live/${encodeURIComponent(greetId)}${bigArgs}`, compressible)
+      : null;
+    const liveText = liveRes
+      ? await Promise.race([
+          liveRes.text(),
+          new Promise((resolve) => setTimeout(() => resolve(null), 10000)),
+        ])
+      : null;
+    record(
+      mode,
+      'sf',
+      'live event stream passes preview compression as identity',
+      !!liveRes &&
+        liveRes.status === 201 &&
+        (liveRes.headers.get('content-type') || '').startsWith('text/event-stream') &&
+        notCompressed(liveRes) &&
+        typeof liveText === 'string' &&
+        /^data: /m.test(liveText) &&
+        liveText.includes(bigName),
+      greetId
+        ? `status ${liveRes.status}, content-type ${JSON.stringify(liveRes.headers.get('content-type'))}, content-encoding ${JSON.stringify(liveRes.headers.get('content-encoding'))}, body ${liveText === null ? 'timed out' : `${liveText.length} chars`}`
+        : 'could not find greet in the server bundle',
+    );
+    // The data address answers a string result as a plain body — a shape
+    // the content type alone would not exempt; the mount rule does.
+    const dataRes = messageId
+      ? await fetch(
+          `${origin}/_server/data/${encodeURIComponent(messageId)}${bigArgs}`,
+          compressible,
+        )
+      : null;
+    const dataText = dataRes ? await dataRes.text() : '';
+    record(
+      mode,
+      'sf',
+      'server-function endpoint answers pass preview compression as identity',
+      !!dataRes && dataRes.status === 200 && notCompressed(dataRes) && dataText.includes(bigName),
+      dataRes
+        ? `status ${dataRes.status}, content-type ${JSON.stringify(dataRes.headers.get('content-type'))}, content-encoding ${JSON.stringify(dataRes.headers.get('content-encoding'))}`
+        : 'could not find getServerMessage in the server bundle',
+    );
+    // Static assets keep compressing — the exemption is scoped to the
+    // streamed shapes, not a preview-wide switch.
+    if (entryMatch) {
+      const compressedAsset = await fetch(origin + entryMatch[1], {
+        headers: { 'accept-encoding': 'gzip, br' },
+      });
+      await compressedAsset.arrayBuffer();
+      record(
+        mode,
+        'static',
+        'hashed client asset still compressed under preview',
+        /\b(gzip|br)\b/.test(compressedAsset.headers.get('content-encoding') || ''),
+        `content-encoding ${JSON.stringify(compressedAsset.headers.get('content-encoding'))}`,
+      );
+    }
 
     // Middleware fronts preview exactly like dev and prod.
     record(
@@ -2935,6 +4295,11 @@ async function runPreviewMode() {
     // The full chain contract — API GETs/POSTs and no-JS form POSTs
     // included — holds under preview like dev and prod.
     await runMiddlewareChecksOverHttp(mode, origin, null);
+    await runContainmentChecks(mode, origin, {
+      hooked: true,
+      setup: true,
+      getLog: () => serverLog,
+    });
 
     await runHttpChecks(mode, origin);
   } catch (e) {
@@ -2954,6 +4319,659 @@ async function runPreviewMode() {
     // Leave dist in the standard state for anyone poking at it.
     try {
       execSync('pnpm run build', { cwd: exampleDir, stdio: 'pipe' });
+    } catch {}
+  }
+}
+
+// `app.renderMode` (SSR_RENDER_MODE in vite.config.ts): the fix for
+// solidjs/solid#3280 — streaming leaves `<Loading>` fallbacks unresolved for
+// clients that never run the swap scripts. Asserted in dev, prod, and on
+// direct handler dispatch:
+// - 'async' (static config): the handler adopts the renderToStream
+//   thenable, so one complete document goes out — no Loading fallback
+//   markup, no swap templates/scripts, every boundary's content in place —
+//   with hydration data still serialized (the same browser checks as the
+//   streamed page: clean hydration, interactivity, server functions),
+// - the response-head lifecycle under async: httpStatus/httpHeader still
+//   reach the wire (the generated entry commits the head at completion,
+//   before the runtime disposes the render), and a Location written
+//   mid-render — the post-flush script fallback in stream mode — becomes a
+//   real 3xx with no body,
+// - stream mode is byte-for-byte the streaming story it always was (the
+//   default: dev/prod modes above; here re-asserted next to async),
+// - `event.renderMode` set in middleware (src/middleware.ts) switches modes
+//   within one server — a header, a crawler user agent, `?nojs` → async;
+//   everyone else streams,
+// - the `handleRequest(request, { renderMode })` runtime override wins over
+//   both the module function and the static config, and rejects an invalid
+//   value with an actionable error,
+// - authored entries get the same treatment (their renderToStream result
+//   has the same thenable), the prod client-entry rewrite included,
+// - config validation: an unknown literal and a missing module path are
+//   rejected at config time with the fix in the message.
+async function runRenderModeMode() {
+  const mode = 'render-mode';
+  console.log(`\n=== ${mode.toUpperCase()} ===`);
+
+  // A settled document, as a no-JS client sees it: no fallback markup, no
+  // swap machinery, the streamed boundary's content sitting where the
+  // fallback would have been — and still hydratable.
+  const assertComplete = (tag, phase, html, { app = true } = {}) => {
+    record(
+      tag,
+      phase,
+      'complete document (doctype … </html> in one piece)',
+      html.startsWith('<!DOCTYPE html><html') && html.trimEnd().endsWith('</html>'),
+    );
+    record(
+      tag,
+      phase,
+      'no Loading fallback markup',
+      !html.includes('stream-fallback') && !html.includes('streaming…'),
+    );
+    record(
+      tag,
+      phase,
+      'no swap templates or swap scripts',
+      !/<template id=/.test(html) && !html.includes('$df(') && !html.includes('$dfj('),
+    );
+    if (app) {
+      record(
+        tag,
+        phase,
+        'boundary content rendered in place',
+        /<p[^>]*id="streamed"[^>]*>STREAMED-ASYNC-CONTENT<\/p>/.test(html),
+      );
+      record(
+        tag,
+        phase,
+        'hydration data serialized',
+        html.includes('_$HY') && /_\$HY\.r\[|_\$HY\.set\(/.test(html),
+      );
+    }
+  };
+  // The streamed shape, from the full body alone (works for in-process
+  // Responses too): the fallback markup and the swap template both present.
+  const isStreamedMarkup = (html) =>
+    html.includes('stream-fallback') && /<template id=/.test(html) && html.includes('STREAMED-ASYNC-CONTENT');
+  const readAll = async (response) => {
+    const chunks = [];
+    if (response.body) {
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(decoder.decode(value));
+      }
+    }
+    return { status: response.status, headers: response.headers, chunks, html: chunks.join('') };
+  };
+  // The redirect surfaces under async: both the pre-flush one (httpHeader,
+  // ledgered — reverted at disposal unless the head was committed first)
+  // and the mid-render one (a direct stub write 300ms into the render, the
+  // script fallback in stream mode) must be real 3xx responses.
+  const assertAsyncHttp = async (tag, origin, { ledgered = true } = {}) => {
+    if (ledgered) {
+      const missing = await fetchStreamed(origin + '/missing');
+      record(
+        tag,
+        'http',
+        'httpStatus(404) survives to the wire under async',
+        missing.status === 404 && missing.html.includes('NOT-FOUND-PAGE'),
+        `status ${missing.status}`,
+      );
+      record(
+        tag,
+        'http',
+        'httpHeader lands on the async response',
+        missing.headers.get('x-page') === 'missing',
+        `x-page: ${JSON.stringify(missing.headers.get('x-page'))}`,
+      );
+      const pre = await fetch(origin + '/redirect-pre', {
+        headers: { accept: 'text/html' },
+        redirect: 'manual',
+      });
+      record(
+        tag,
+        'http',
+        'pre-flush Location stays a real 3xx under async',
+        pre.status === 302 && pre.headers.get('location') === '/redirected-target',
+        `status ${pre.status}, location ${JSON.stringify(pre.headers.get('location'))}`,
+      );
+      await pre.arrayBuffer();
+    }
+    const post = await fetch(origin + '/redirect-post', {
+      headers: { accept: 'text/html' },
+      redirect: 'manual',
+    });
+    const postBody = await post.text();
+    record(
+      tag,
+      'http',
+      'mid-render Location becomes a real 3xx under async (no script fallback)',
+      post.status === 302,
+      `status ${post.status}`,
+    );
+    record(
+      tag,
+      'http',
+      'mid-render redirect keeps its Location and ships no body',
+      post.headers.get('location') === '/redirected-target' && postBody === '',
+      `location ${JSON.stringify(post.headers.get('location'))}, body ${JSON.stringify(postBody.slice(0, 60))}`,
+    );
+  };
+  const spawnDev = (port, env) =>
+    startProcess('pnpm', ['exec', 'vite', '--port', String(port), '--strictPort'], {
+      cwd: exampleDir,
+      env: { ...process.env, SSR_DEVTOOLS: '0', ...env },
+    });
+  const spawnProd = (port, env) =>
+    startProcess('node', ['server.js'], {
+      cwd: exampleDir,
+      env: { ...process.env, ...env, PORT: String(port), NODE_ENV: 'production' },
+    });
+  // Builds pin NODE_ENV: an in-process `createServer`/`resolveConfig(...,
+  // 'serve')` (the probes below, and earlier modes' probes in a full run)
+  // sets process.env.NODE_ENV to 'development' for the rest of this
+  // process, and a spawned `vite build` inheriting it resolves the
+  // `development` export conditions — the authored fixture's DevToolbar
+  // import would then ship the toolbar into "production" assets.
+  const build = (env) =>
+    execSync('pnpm run build', {
+      cwd: exampleDir,
+      stdio: 'pipe',
+      env: { ...process.env, NODE_ENV: 'production', ...env },
+    });
+  // And the probes themselves put NODE_ENV back the way they found it.
+  const withNodeEnvRestored = async (fn) => {
+    const before = process.env.NODE_ENV;
+    try {
+      return await fn();
+    } finally {
+      if (before === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = before;
+    }
+  };
+  const kill = (child) => {
+    if (!child) return;
+    try {
+      process.kill(-child.pid, 'SIGTERM');
+    } catch {}
+  };
+
+  let server;
+  let serverLog = '';
+  const captureLog = (child) => {
+    child.stdout.on('data', (d) => (serverLog += d));
+    child.stderr.on('data', (d) => (serverLog += d));
+  };
+
+  // ---- Config validation --------------------------------------------------
+  // Resolved in-process: the plugin's config hook must reject an unknown
+  // literal and a missing module path with the fix in the message.
+  for (const [value, label] of [
+    ['bogus', 'unknown literal'],
+    ['./src/no-such-render-mode.ts', 'missing module path'],
+    ['./src/middleware.ts', 'retired module form (existing file)'],
+  ]) {
+    process.env.SSR_RENDER_MODE = value;
+    let error = '';
+    try {
+      await withNodeEnvRestored(() => resolveConfig({ root: exampleDir }, 'serve'));
+    } catch (e) {
+      error = String(e && e.message ? e.message : e);
+    } finally {
+      delete process.env.SSR_RENDER_MODE;
+    }
+    record(
+      mode,
+      'config',
+      `${label} rejected at config time with an actionable message`,
+      error.includes('app.renderMode') &&
+        error.includes("'stream'") &&
+        error.includes("'async'") &&
+        error.includes('event.renderMode') &&
+        error.includes('app.middleware') &&
+        error.includes(value),
+      error ? error.slice(0, 300) : 'config resolved without error',
+    );
+  }
+
+  // ---- Direct dispatch: the runtime override (default config = stream) -----
+  // A host driving the handler itself (in-process module runner, like the
+  // external/detect modes): the per-call option decides, and an invalid
+  // value is rejected rather than silently streamed.
+  let probe;
+  try {
+    probe = await withNodeEnvRestored(() =>
+      createServer({ root: exampleDir, server: { middlewareMode: true } }),
+    );
+    const handler = await probe.environments.ssr.runner.import('virtual:solid-ssr-handler');
+    const page = (init) =>
+      new Request('http://localhost/', { headers: { accept: 'text/html', ...(init || {}) } });
+    const overridden = await readAll(await handler.handleRequest(page(), { renderMode: 'async' }));
+    record(
+      mode,
+      'override',
+      'handleRequest({ renderMode: "async" }) beats the stream default',
+      overridden.status === 200 && !isStreamedMarkup(overridden.html),
+      `status ${overridden.status}`,
+    );
+    assertComplete(mode, 'override', overridden.html);
+    const plain = await readAll(await handler.handleRequest(page()));
+    record(
+      mode,
+      'override',
+      'without the option the default still streams (fallback + swap template)',
+      plain.status === 200 && isStreamedMarkup(plain.html),
+    );
+    let rejection = '';
+    try {
+      await handler.handleRequest(page(), { renderMode: 'bogus' });
+    } catch (e) {
+      rejection = String(e && e.message ? e.message : e);
+    }
+    record(
+      mode,
+      'override',
+      'invalid runtime renderMode rejected with an actionable error',
+      rejection.includes('renderMode') && rejection.includes("'stream' or 'async'") && rejection.includes('bogus'),
+      rejection.slice(0, 200) || 'resolved without error',
+    );
+    // Codegen: with no option configured, the handler carries no module
+    // import for a render-mode policy (pure codegen, like setup/middleware).
+    const transformed = await probe.environments.ssr.transformRequest('virtual:solid-ssr-handler');
+    record(
+      mode,
+      'codegen',
+      'no middleware import without the option',
+      !!transformed && !transformed.code.includes('middleware.ts'),
+    );
+  } catch (e) {
+    record(mode, 'override', 'direct dispatch completed', false, String(e));
+  } finally {
+    await probe?.close();
+  }
+
+  // ---- Direct dispatch: override beats the per-request module too -----------
+  process.env.SSR_RENDER_MODE = 'middleware';
+  try {
+    probe = await withNodeEnvRestored(() =>
+      createServer({ root: exampleDir, server: { middlewareMode: true } }),
+    );
+    const handler = await probe.environments.ssr.runner.import('virtual:solid-ssr-handler');
+    const asyncHeader = { accept: 'text/html', 'x-render-mode': 'async' };
+    const viaModule = await readAll(
+      await handler.handleRequest(new Request('http://localhost/', { headers: asyncHeader })),
+    );
+    record(
+      mode,
+      'override',
+      'middleware event.renderMode answers per request (header → async)',
+      viaModule.status === 200 && !isStreamedMarkup(viaModule.html) && viaModule.html.includes('STREAMED-ASYNC-CONTENT'),
+    );
+    const forcedStream = await readAll(
+      await handler.handleRequest(new Request('http://localhost/', { headers: asyncHeader }), {
+        renderMode: 'stream',
+      }),
+    );
+    record(
+      mode,
+      'override',
+      'handleRequest({ renderMode: "stream" }) beats event.renderMode (precedence)',
+      forcedStream.status === 200 && isStreamedMarkup(forcedStream.html),
+    );
+    // The throw happens inside next(), so the example's error middleware
+    // turns it into a caught 500 whose body names the field. Without that
+    // catch, dev rethrows and production contains it the same way.
+    let invalid = '';
+    try {
+      const invalidResponse = await handler.handleRequest(
+        new Request('http://localhost/', { headers: { accept: 'text/html', 'x-render-mode': 'bogus' } }),
+      );
+      const invalidBody = await invalidResponse.text();
+      invalid = invalidResponse.status === 500 ? invalidBody : '';
+    } catch (e) {
+      invalid = String(e && e.message ? e.message : e);
+    }
+    record(
+      mode,
+      'override',
+      'an invalid event.renderMode is rejected naming the field',
+      invalid.includes('event.renderMode') && invalid.includes('bogus'),
+      invalid.slice(0, 200) || 'resolved without error',
+    );
+  } catch (e) {
+    record(mode, 'override', 'middleware-policy direct dispatch completed', false, String(e));
+  } finally {
+    await probe?.close();
+    delete process.env.SSR_RENDER_MODE;
+  }
+
+  // ---- Dev: static async --------------------------------------------------
+  const devAsyncPort = 3178;
+  const devAsyncOrigin = `http://localhost:${devAsyncPort}`;
+  try {
+    server = spawnDev(devAsyncPort, { SSR_RENDER_MODE: 'async' });
+    captureLog(server);
+    await waitForHttp(devAsyncOrigin + '/src/api.ts', 30000);
+    const page = await fetchStreamed(devAsyncOrigin + '/');
+    record('rm-dev-async', 'ssr', 'responds 200', page.status === 200, `status ${page.status}`);
+    record('rm-dev-async', 'ssr', 'app server-rendered', page.html.includes('SSR App Mode'));
+    assertComplete('rm-dev-async', 'ssr', page.html);
+    const hasViteClient = page.html.includes('/@vite/client');
+    const hasClientEntry = page.html.includes('virtual:solid-ssr-entry-client.tsx');
+    const hasAppCss = /<style[^>]*data-vite-dev-id="[^"]*App\.css"/.test(page.html);
+    record(
+      'rm-dev-async',
+      'dev',
+      'dev head still injected on the string path (Vite client + entry CSS)',
+      hasViteClient && hasClientEntry && hasAppCss,
+      `vite client ${hasViteClient}, entry ${hasClientEntry}, app css ${hasAppCss}; head ${page.html.slice(0, 500)}`,
+    );
+    await assertAsyncHttp('rm-dev-async', devAsyncOrigin);
+    // The async document must still hydrate and be interactive — the same
+    // browser checks the streamed page passes (clean hydration, counter,
+    // server functions, clientOnly swap, styles).
+    await runBrowserChecks('rm-dev-async', devAsyncOrigin, { devCss: true });
+  } catch (e) {
+    record(
+      'rm-dev-async',
+      'run',
+      'dev async completed',
+      false,
+      String(e) + (serverLog ? `\nserver: ${serverLog.slice(-2000)}` : ''),
+    );
+  } finally {
+    kill(server);
+    server = undefined;
+    serverLog = '';
+  }
+
+  // ---- Dev: per-request module --------------------------------------------
+  const devModulePort = 3179;
+  const devModuleOrigin = `http://localhost:${devModulePort}`;
+  const perRequestChecks = async (tag, origin) => {
+    const plain = await fetchStreamed(origin + '/');
+    const contentAt = plain.chunks.findIndex((c) => c.includes('STREAMED-ASYNC-CONTENT'));
+    record(
+      tag,
+      'per-request',
+      'default request streams (shell with fallback first, content later)',
+      plain.chunks.length > 1 &&
+        contentAt > 0 &&
+        plain.chunks.slice(0, contentAt).join('').includes('stream-fallback'),
+      `${plain.chunks.length} chunk(s), content in chunk ${contentAt}`,
+    );
+    const viaHeader = await fetch(origin + '/', {
+      headers: { accept: 'text/html', 'x-render-mode': 'async' },
+    });
+    const viaHeaderHtml = await viaHeader.text();
+    record(tag, 'per-request', 'x-render-mode: async → complete document', viaHeader.status === 200);
+    assertComplete(tag, 'per-request(header)', viaHeaderHtml);
+    const viaUa = await fetch(origin + '/', {
+      headers: {
+        accept: 'text/html',
+        'user-agent': 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)',
+      },
+    });
+    const viaUaHtml = await viaUa.text();
+    record(
+      tag,
+      'per-request',
+      'crawler user agent → complete document',
+      viaUa.status === 200 && !isStreamedMarkup(viaUaHtml) && viaUaHtml.includes('STREAMED-ASYNC-CONTENT'),
+    );
+    const viaFlag = await fetch(origin + '/?nojs', { headers: { accept: 'text/html' } });
+    const viaFlagHtml = await viaFlag.text();
+    record(
+      tag,
+      'per-request',
+      '?nojs → complete document',
+      viaFlag.status === 200 && !isStreamedMarkup(viaFlagHtml) && viaFlagHtml.includes('STREAMED-ASYNC-CONTENT'),
+    );
+    const forced = await fetchStreamed(origin + '/');
+    record(
+      tag,
+      'per-request',
+      'same server keeps streaming for the next plain request',
+      forced.chunks.length > 1 && isStreamedMarkup(forced.html),
+      `${forced.chunks.length} chunk(s)`,
+    );
+  };
+  try {
+    server = spawnDev(devModulePort, { SSR_RENDER_MODE: 'middleware' });
+    captureLog(server);
+    await waitForHttp(devModuleOrigin + '/src/api.ts', 30000);
+    await perRequestChecks('rm-dev-module', devModuleOrigin);
+  } catch (e) {
+    record(
+      'rm-dev-module',
+      'run',
+      'dev module completed',
+      false,
+      String(e) + (serverLog ? `\nserver: ${serverLog.slice(-2000)}` : ''),
+    );
+  } finally {
+    kill(server);
+    server = undefined;
+    serverLog = '';
+  }
+
+  // ---- Prod: static async ---------------------------------------------------
+  const prodAsyncPort = 3180;
+  const prodAsyncOrigin = `http://localhost:${prodAsyncPort}`;
+  try {
+    console.log('  building (async)…');
+    build({ SSR_RENDER_MODE: 'async' });
+    const serverBundle = readFileSync(path.join(exampleDir, 'dist/server/server.js'), 'utf-8');
+    record(
+      'rm-prod-async',
+      'build',
+      'static mode baked into the handler bundle',
+      serverBundle.includes('"async"') && serverBundle.includes('assertRenderMode'),
+    );
+    // Override on the built handler, before the server boots: the static
+    // config is async, the per-call option streams anyway.
+    const built = await import(
+      pathToFileURL(path.join(exampleDir, 'dist/server/server.js')).href + `?rm=${Date.now()}`
+    );
+    const forcedStream = await readAll(
+      await built.handleRequest(new Request(prodAsyncOrigin + '/', { headers: { accept: 'text/html' } }), {
+        renderMode: 'stream',
+      }),
+    );
+    record(
+      'rm-prod-async',
+      'override',
+      'handleRequest({ renderMode: "stream" }) beats the static async config',
+      forcedStream.status === 200 && isStreamedMarkup(forcedStream.html),
+    );
+    // A bad per-call option is the host's own error: the built handler
+    // rejects it up front instead of containing it as a request failure.
+    let prodRejection = '';
+    try {
+      await built.handleRequest(
+        new Request(prodAsyncOrigin + '/', { headers: { accept: 'text/html' } }),
+        { renderMode: 'bogus' },
+      );
+    } catch (e) {
+      prodRejection = String(e && e.message ? e.message : e);
+    }
+    record(
+      'rm-prod-async',
+      'override',
+      'invalid runtime renderMode still rejects from the built handler (not contained)',
+      prodRejection.includes('renderMode') && prodRejection.includes('bogus'),
+      prodRejection.slice(0, 200) || 'resolved without error',
+    );
+
+    server = spawnProd(prodAsyncPort, { SSR_RENDER_MODE: 'async' });
+    captureLog(server);
+    await waitForHttp(prodAsyncOrigin + '/', 30000, { headers: { accept: 'text/html' } });
+    const page = await fetchStreamed(prodAsyncOrigin + '/');
+    record('rm-prod-async', 'ssr', 'responds 200', page.status === 200, `status ${page.status}`);
+    assertComplete('rm-prod-async', 'ssr', page.html);
+    record(
+      'rm-prod-async',
+      'prod',
+      'hashed client entry + css injected on the string path',
+      /<script type="module" src="\/assets\/[^"]+\.js" async><\/script>/.test(page.html) &&
+        /<link rel="stylesheet" href="\/assets\/[^"]+\.css">/.test(page.html),
+    );
+    record('rm-prod-async', 'prod', 'no dev injections leaked', !page.html.includes('/@vite/client'));
+    await assertAsyncHttp('rm-prod-async', prodAsyncOrigin);
+    await runBrowserChecks('rm-prod-async', prodAsyncOrigin, { devtools: false });
+  } catch (e) {
+    record(
+      'rm-prod-async',
+      'run',
+      'prod async completed',
+      false,
+      String(e) + (serverLog ? `\nserver: ${serverLog.slice(-2000)}` : ''),
+    );
+  } finally {
+    kill(server);
+    server = undefined;
+    serverLog = '';
+  }
+
+  // ---- Prod: per-request module ----------------------------------------------
+  const prodModulePort = 3181;
+  const prodModuleOrigin = `http://localhost:${prodModulePort}`;
+  try {
+    console.log('  building (module)…');
+    build({ SSR_RENDER_MODE: 'middleware' });
+    const serverBundle = readFileSync(path.join(exampleDir, 'dist/server/server.js'), 'utf-8');
+    record(
+      'rm-prod-module',
+      'build',
+      'render-mode policy (middleware) bundled into the handler chunk',
+      serverBundle.includes('x-render-mode'),
+    );
+    const assetsDir = path.join(exampleDir, 'dist/client/assets');
+    const leaks = readdirSync(assetsDir).filter((f) =>
+      readFileSync(path.join(assetsDir, f), 'utf-8').includes('x-render-mode'),
+    );
+    record(
+      'rm-prod-module',
+      'build',
+      'render-mode policy (middleware) absent from client assets',
+      leaks.length === 0,
+      leaks.join(', '),
+    );
+    server = spawnProd(prodModulePort, { SSR_RENDER_MODE: 'middleware' });
+    captureLog(server);
+    await waitForHttp(prodModuleOrigin + '/', 30000, { headers: { accept: 'text/html' } });
+    await perRequestChecks('rm-prod-module', prodModuleOrigin);
+  } catch (e) {
+    record(
+      'rm-prod-module',
+      'run',
+      'prod module completed',
+      false,
+      String(e) + (serverLog ? `\nserver: ${serverLog.slice(-2000)}` : ''),
+    );
+  } finally {
+    kill(server);
+    server = undefined;
+    serverLog = '';
+  }
+
+  // ---- Authored entries -----------------------------------------------------
+  // The same thenable adoption for an authored `render()` (the classic
+  // renderToStream entry): dev with the static async config, and the module
+  // form switching per request; prod with the async config, where the
+  // string path still rewrites the authored client-entry reference.
+  const authoredDevPort = 3182;
+  const authoredDevOrigin = `http://localhost:${authoredDevPort}`;
+  const authoredProdPort = 3183;
+  const authoredProdOrigin = `http://localhost:${authoredProdPort}`;
+  for (const [file, source] of Object.entries(ENTRY_FIXTURES)) {
+    writeFileSync(path.join(exampleDir, file), source);
+  }
+  try {
+    server = spawnDev(authoredDevPort, { SSR_RENDER_MODE: 'async' });
+    captureLog(server);
+    await waitForHttp(authoredDevOrigin + '/src/api.ts', 30000);
+    const page = await fetchStreamed(authoredDevOrigin + '/');
+    record(
+      'rm-authored',
+      'dev',
+      'authored entry rendered (custom title)',
+      page.status === 200 && page.html.includes('<title>Authored Entries</title>'),
+    );
+    assertComplete('rm-authored', 'dev', page.html);
+    // The mid-render redirect is a direct stub write, so it holds for
+    // authored entries too; the ledgered httpStatus/httpHeader surfaces are
+    // covered by the generated-entry runs (see the README note).
+    await assertAsyncHttp('rm-authored', authoredDevOrigin, { ledgered: false });
+    kill(server);
+    server = undefined;
+
+    server = spawnDev(authoredDevPort, { SSR_RENDER_MODE: 'middleware' });
+    captureLog(server);
+    await waitForHttp(authoredDevOrigin + '/src/api.ts', 30000);
+    const streamed = await fetchStreamed(authoredDevOrigin + '/');
+    record(
+      'rm-authored',
+      'per-request',
+      'authored entry streams by default under the middleware policy',
+      streamed.chunks.length > 1 && isStreamedMarkup(streamed.html),
+      `${streamed.chunks.length} chunk(s)`,
+    );
+    const settled = await fetch(authoredDevOrigin + '/?nojs', { headers: { accept: 'text/html' } });
+    const settledHtml = await settled.text();
+    record(
+      'rm-authored',
+      'per-request',
+      'authored entry settles for ?nojs under the middleware policy',
+      settled.status === 200 && !isStreamedMarkup(settledHtml) && settledHtml.includes('STREAMED-ASYNC-CONTENT'),
+    );
+    kill(server);
+    server = undefined;
+
+    console.log('  building (authored, async)…');
+    build({ SSR_RENDER_MODE: 'async' });
+    server = spawnProd(authoredProdPort, { SSR_RENDER_MODE: 'async' });
+    captureLog(server);
+    await waitForHttp(authoredProdOrigin + '/', 30000, { headers: { accept: 'text/html' } });
+    const prod = await fetchStreamed(authoredProdOrigin + '/');
+    record(
+      'rm-authored',
+      'prod',
+      'authored entry rendered in prod',
+      prod.status === 200 && prod.html.includes('<title>Authored Entries</title>'),
+    );
+    assertComplete('rm-authored', 'prod', prod.html);
+    record(
+      'rm-authored',
+      'prod',
+      'authored client entry reference rewritten on the string path',
+      !prod.html.includes('/src/entry-client.tsx') &&
+        /<script type="module" src="\/assets\/[^"]+\.js" async>/.test(prod.html),
+    );
+    await runBrowserChecks('rm-authored', authoredProdOrigin, { devtools: false });
+  } catch (e) {
+    record(
+      'rm-authored',
+      'run',
+      'authored completed',
+      false,
+      String(e) +
+        (e && e.cause ? ` cause: ${e.cause}` : '') +
+        (serverLog ? `\nserver: ${serverLog.slice(-2000)}` : ''),
+    );
+  } finally {
+    kill(server);
+    server = undefined;
+    for (const file of Object.keys(ENTRY_FIXTURES)) {
+      rmSync(path.join(exampleDir, file), { force: true });
+    }
+    // Leave dist in the standard state for anyone poking at it.
+    try {
+      build();
     } catch {}
   }
 }
@@ -3035,7 +5053,7 @@ async function runBaseMode() {
     const functionId = extractFunctionId(clientModule, 'getServerMessage');
     const call = functionId
       ? await fetch(
-          `${devOrigin}${basePrefix}/_server?id=${encodeURIComponent(functionId)}&args=${encodeURIComponent('["base"]')}`,
+          `${devOrigin}${basePrefix}/_server/${encodeURIComponent(functionId)}?args=${encodeURIComponent('["base"]')}`,
           { method: 'POST' },
         )
       : null;
@@ -3098,7 +5116,7 @@ async function runBaseMode() {
     // #300: the server-function endpoint must dispatch through the built
     // handler even though preview stripped the base from req.url. Under the
     // bug this request fell through to page rendering (200 text/html).
-    const bogus = await fetch(previewOrigin + basePrefix + '/_server?id=bogus-0', {
+    const bogus = await fetch(previewOrigin + basePrefix + '/_server/bogus-0', {
       method: 'POST',
     });
     record(
@@ -3119,7 +5137,7 @@ async function runBaseMode() {
     )?.[1];
     const call = prodId
       ? await fetch(
-          `${previewOrigin}${basePrefix}/_server?id=${encodeURIComponent(prodId)}&args=${encodeURIComponent('["preview"]')}`,
+          `${previewOrigin}${basePrefix}/_server/${encodeURIComponent(prodId)}?args=${encodeURIComponent('["preview"]')}`,
           { method: 'POST' },
         )
       : null;
@@ -3212,6 +5230,308 @@ async function runBabelHmrMode() {
   }
 }
 
+// `observe: true` (SOLID_OBSERVE=1, src/App.tsx unchanged): a production
+// build on Solid's observe tier. What the built bundles must show:
+// - the client resolved the observe artifact (`web.observe` chunk) and every
+//   component call carries its source label — `createComponent(Comp, props,
+//   "Comp")` survives minification as a string, which is what lets owner
+//   paths read `<App> › <Feed>` in a minified app;
+// - the server resolved solid-js's observe build (findings and boundary
+//   records need it);
+// - the server bundle carries component labels in its SSR output and
+//   @solidjs/web's observe server build. Both landed in Solid after
+//   2.0.0-rc.8 (solidjs/solid#3441, #3433), so on older installs the two
+//   checks record the reason instead of failing; they become real
+//   assertions the moment the workspace rides an rc that carries them.
+async function runObserveMode() {
+  const mode = 'observe';
+  console.log(`\n=== ${mode.toUpperCase()} ===`);
+  // Pin NODE_ENV like every other build in this runner: the in-process dev
+  // server of a preceding mode leaves 'development' behind, which would make
+  // this build resolve the dev tier instead of the observe one.
+  const env = { ...process.env, NODE_ENV: 'production', SOLID_OBSERVE: '1' };
+  console.log('  building…');
+  execSync('pnpm run build', { cwd: exampleDir, stdio: 'pipe', env });
+
+  const clientDir = path.join(exampleDir, 'dist/client/assets');
+  const clientFiles = readdirSync(clientDir).filter((f) => f.endsWith('.js'));
+  const entryFile = clientFiles.find((f) => f.startsWith('virtual_solid-ssr-entry-client-'));
+  const entry = entryFile ? readFileSync(path.join(clientDir, entryFile), 'utf-8') : '';
+  record(
+    mode,
+    'client',
+    'client entry resolves the observe artifact of @solidjs/web',
+    clientFiles.some((f) => f.startsWith('web.observe-')) && /web\.observe-/.test(entry),
+    clientFiles.join(', '),
+  );
+  // `performanceTracks` is a dev-server feature by decision: an observe
+  // build — the tier whose adapter DOES paint in production — still gets no
+  // injection (the app enables its own tracks there).
+  const observeTracksLeaks = clientFiles.filter((f) =>
+    perfTracksMarkersIn(readFileSync(path.join(clientDir, f), 'utf-8')),
+  );
+  record(
+    mode,
+    'perf-tracks',
+    'observe build carries no performance-tracks injection',
+    observeTracksLeaks.length === 0,
+    observeTracksLeaks.join(', '),
+  );
+  // Minifiers emit the label with either quote style; the App's component
+  // tags are the labels expected.
+  const labelsIn = (code) =>
+    [...code.matchAll(/,\s*(["'`])([A-Z][A-Za-z]*)\1\)/g)].map((m) => m[2]);
+  const clientLabels = new Set(labelsIn(entry));
+  record(
+    mode,
+    'client',
+    'client components compile with their source labels (sourceNames)',
+    clientLabels.has('HmrTarget') && clientLabels.size >= 5,
+    `labels: ${[...clientLabels].join(', ') || 'none'}`,
+  );
+
+  const serverBundle = readFileSync(path.join(exampleDir, 'dist/server/server.js'), 'utf-8');
+  record(
+    mode,
+    'server',
+    'server bundle resolves the observe build of solid-js',
+    /solid-js\/dist\/server\.observe\.js|server\.observe/.test(serverBundle),
+  );
+  // The two rc.9 checks: what the installed Solid can and cannot do yet.
+  const exampleRequire = createRequire(path.join(exampleDir, 'package.json'));
+  const prereleaseOf = (pkg) => {
+    // `package.json` may not be exported; resolve the entry and walk up.
+    let dir = path.dirname(exampleRequire.resolve(pkg));
+    while (!existsSync(path.join(dir, 'package.json'))) dir = path.dirname(dir);
+    const v = JSON.parse(readFileSync(path.join(dir, 'package.json'), 'utf-8')).version;
+    const m = /-rc\.(\d+)$/.exec(v);
+    return { version: v, rc: m ? Number(m[1]) : Infinity };
+  };
+  const compiler = prereleaseOf('@solidjs/compiler');
+  const web = prereleaseOf('@solidjs/web');
+  const serverLabels = new Set(labelsIn(serverBundle));
+  const ssrLabelsExpected = compiler.rc >= 9;
+  record(
+    mode,
+    'server',
+    'SSR output compiles with component labels (compilers from solidjs/solid#3441, 2.0.0-rc.9)',
+    ssrLabelsExpected ? serverLabels.has('HmrTarget') : true,
+    ssrLabelsExpected
+      ? `labels: ${[...serverLabels].join(', ') || 'none'}`
+      : `not asserted: @solidjs/compiler ${compiler.version} predates SSR sourceNames`,
+  );
+  const webObserveExpected = web.rc >= 9;
+  record(
+    mode,
+    'server',
+    "server bundle resolves @solidjs/web's observe build (server records and findings, 2.0.0-rc.9)",
+    webObserveExpected ? /@solidjs\/web\/dist\/server\.observe\.js/.test(serverBundle) : true,
+    webObserveExpected
+      ? 'expected @solidjs/web/dist/server.observe.js in the bundle'
+      : `not asserted: @solidjs/web ${web.version} has no server observe build`,
+  );
+}
+
+// `performanceTracks` beyond the default the dev mode asserts: the opt-out
+// and the options form on app-mode entries (in-process dev servers,
+// SOLID_PERF_TRACKS), test mode's exclusion, a `dev: true` build
+// (SOLID_DEV_BUILD — the development runtime built for production, which
+// must still carry no injection), and the plain-app path: an index.html app
+// (no app mode) gets the module as a head-prepended script, before its own
+// entry script, and `false` gets nothing.
+async function runPerfTracksMode() {
+  const mode = 'perf-tracks';
+  console.log(`\n=== ${mode.toUpperCase()} ===`);
+  const ENTRY = 'virtual:solid-ssr-entry-client.tsx';
+  // The plugin container's load hook, not transformRequest: the raw codegen
+  // is what is under test, and a client transform of the entry kicks off
+  // the dep optimizer, whose in-flight run keeps `server.close()` from
+  // settling in this in-process shape.
+  const loadCode = async (server, id) => {
+    const loaded = await server.environments.client.pluginContainer.load(id);
+    return (typeof loaded === 'string' ? loaded : loaded?.code) || '';
+  };
+  const entryCode = (server) => loadCode(server, ENTRY);
+
+  let server;
+  try {
+    // ---- performanceTracks: false — no import, no module -----------------
+    process.env.SOLID_PERF_TRACKS = '0';
+    server = await createServer({ root: exampleDir, server: { middlewareMode: true } });
+    const offEntry = await entryCode(server);
+    record(
+      mode,
+      'off',
+      'performanceTracks: false leaves the generated client entry without the import',
+      offEntry.length > 0 && !offEntry.includes(PERF_TRACKS_ID),
+    );
+    const offResolved =
+      await server.environments.client.pluginContainer.resolveId(PERF_TRACKS_ID);
+    record(
+      mode,
+      'off',
+      'performanceTracks: false serves no performance-tracks module',
+      offResolved === null,
+      `resolved to ${JSON.stringify(offResolved)} although the option is off`,
+    );
+    await server.close();
+    server = undefined;
+
+    // ---- object form — options serialized into the enable call -----------
+    process.env.SOLID_PERF_TRACKS = JSON.stringify({ minMs: 2, rich: false });
+    server = await createServer({ root: exampleDir, server: { middlewareMode: true } });
+    const onEntry = await entryCode(server);
+    record(
+      mode,
+      'options',
+      'object form keeps the import in the generated client entry',
+      onEntry.includes(PERF_TRACKS_ID),
+    );
+    const tracksModule = await loadCode(server, PERF_TRACKS_ID);
+    record(
+      mode,
+      'options',
+      'object form serializes the options into enablePerformanceTracks()',
+      tracksModule.includes(`from '@solidjs/web/performance-tracks'`) &&
+        tracksModule.includes('enablePerformanceTracks({"minMs":2,"rich":false})'),
+      tracksModule.slice(0, 300),
+    );
+    await server.close();
+    server = undefined;
+    delete process.env.SOLID_PERF_TRACKS;
+
+    // ---- test mode — vitest runs a dev serve; no injection there ---------
+    server = await createServer({
+      root: exampleDir,
+      mode: 'test',
+      server: { middlewareMode: true },
+    });
+    const testEntry = await entryCode(server);
+    record(
+      mode,
+      'test-mode',
+      'mode "test" leaves the generated client entry without the import',
+      testEntry.length > 0 && !testEntry.includes(PERF_TRACKS_ID),
+    );
+    await server.close();
+    server = undefined;
+
+    // ---- plain app (index.html, no app mode) ---------------------------
+    // Written inside the example so the plugin finds the app's @solidjs/web
+    // walking up from the root, as it would in a real project.
+    const plainRoot = path.join(exampleDir, '.perf-tracks-plain-app');
+    const plainHtml = [
+      '<!doctype html>',
+      '<html><head><meta charset="utf-8" /></head>',
+      '<body><div id="app"></div><script type="module" src="/src/main.tsx"></script></body>',
+      '</html>',
+    ].join('\n');
+    try {
+      rmSync(plainRoot, { recursive: true, force: true });
+      mkdirSync(path.join(plainRoot, 'src'), { recursive: true });
+      writeFileSync(path.join(plainRoot, 'index.html'), plainHtml);
+      writeFileSync(
+        path.join(plainRoot, 'src/main.tsx'),
+        [
+          `import { render } from '@solidjs/web';`,
+          `render(() => <p>plain</p>, document.getElementById('app'));`,
+          ``,
+        ].join('\n'),
+      );
+      const { default: solidPlugin } = await import('@solidjs/vite-plugin');
+      const plainServer = async (options) =>
+        createServer({
+          root: plainRoot,
+          configFile: false,
+          plugins: [solidPlugin(options)],
+          server: { middlewareMode: true },
+        });
+
+      server = await plainServer({});
+      const html = await server.transformIndexHtml('/index.html', plainHtml);
+      const scriptAt = html.indexOf(`/@id/${PERF_TRACKS_ID}`);
+      const headEnd = html.indexOf('</head>');
+      const appAt = html.indexOf('/src/main.tsx');
+      record(
+        mode,
+        'plain',
+        'index.html app gets the performance-tracks module script in <head>, ahead of its entry',
+        scriptAt !== -1 && scriptAt < headEnd && scriptAt < appAt,
+        `script@${scriptAt} </head>@${headEnd} entry@${appAt}`,
+      );
+      record(
+        mode,
+        'plain',
+        'the injected script is a module script (deferred, document order)',
+        html.includes(`<script type="module" src="/@id/${PERF_TRACKS_ID}"`),
+      );
+      const plainModule = await loadCode(server, PERF_TRACKS_ID);
+      record(
+        mode,
+        'plain',
+        'index.html app: the module enables the tracks',
+        /enablePerformanceTracks\(\{\}\)/.test(plainModule),
+        plainModule.slice(0, 300),
+      );
+      await server.close();
+      server = undefined;
+
+      server = await plainServer({ performanceTracks: false });
+      const offHtml = await server.transformIndexHtml('/index.html', plainHtml);
+      record(
+        mode,
+        'plain',
+        'performanceTracks: false injects nothing into index.html',
+        !offHtml.includes(PERF_TRACKS_ID),
+      );
+      await server.close();
+      server = undefined;
+    } finally {
+      rmSync(plainRoot, { recursive: true, force: true });
+    }
+
+    // ---- dev: true build — the development runtime, still no injection ---
+    console.log('  building (dev: true)…');
+    execSync('pnpm run build', {
+      cwd: exampleDir,
+      stdio: 'pipe',
+      env: { ...process.env, NODE_ENV: 'production', SOLID_DEV_BUILD: '1' },
+    });
+    const assetsDir = path.join(exampleDir, 'dist/client/assets');
+    const clientFiles = readdirSync(assetsDir).filter((f) => f.endsWith('.js'));
+    record(
+      mode,
+      'dev-build',
+      'dev: true build resolves the development artifact of @solidjs/web',
+      clientFiles.some((f) => f.startsWith('web.dev-')),
+      clientFiles.join(', '),
+    );
+    const devBuildLeaks = clientFiles.filter((f) =>
+      perfTracksMarkersIn(readFileSync(path.join(assetsDir, f), 'utf-8')),
+    );
+    record(
+      mode,
+      'dev-build',
+      'dev: true build carries no performance-tracks injection',
+      devBuildLeaks.length === 0,
+      devBuildLeaks.join(', '),
+    );
+  } catch (e) {
+    record(mode, 'run', 'mode completed', false, String(e));
+  } finally {
+    await server?.close();
+    delete process.env.SOLID_PERF_TRACKS;
+    // Leave dist in the plain production state for anyone poking at it.
+    try {
+      execSync('pnpm run build', {
+        cwd: exampleDir,
+        stdio: 'pipe',
+        env: { ...process.env, NODE_ENV: 'production' },
+      });
+    } catch {}
+  }
+}
+
 async function runExternalMode() {
   const mode = 'external';
   console.log(`\n=== ${mode.toUpperCase()} ===`);
@@ -3241,7 +5561,7 @@ async function runExternalMode() {
     const functionResponse = functionId
       ? await handler.handleRequest(
           new Request(
-            `http://localhost/_server?id=${encodeURIComponent(functionId)}&args=${encodeURIComponent('["external"]')}`,
+            `http://localhost/_server/${encodeURIComponent(functionId)}?args=${encodeURIComponent('["external"]')}`,
             // The composing host forwards the browser's fetch metadata; the
             // runtime's same-origin protection rejects dispatches without it.
             { method: 'POST', headers: { 'Sec-Fetch-Site': 'same-origin' } },
@@ -3310,7 +5630,7 @@ async function runDetectMode() {
     await new Promise((resolve) => httpServer.listen(0, '127.0.0.1', resolve));
     const origin = `http://127.0.0.1:${httpServer.address().port}`;
 
-    const endpointResponse = await fetch(`${origin}/_server?id=x&args=%5B%5D`, { method: 'POST' });
+    const endpointResponse = await fetch(`${origin}/_server/x?args=%5B%5D`, { method: 'POST' });
     record(
       mode,
       'sf',
@@ -3351,9 +5671,743 @@ async function runDetectMode() {
   }
 }
 
+// `app.node` (node mode, APP_NODE=1 in vite.config.ts): the build emits a
+// ready-to-run Node server, dist/server/node.js, beside server.js — the
+// generic node<->web bridge the templates used to ship as a hand-written
+// server.js, now produced by the build so fixes reach every app. Asserts:
+//   - gating: without the option no node.js is emitted, and server.js is
+//     byte-identical with and without it (the entry is an emitted asset,
+//     never a second build input); the emitted file imports ./server.js
+//     relatively, depends on nothing but node:*, and carries the emit-time
+//     constants (client dir relative to the server dir, assetsDir, base),
+//   - `node dist/server/node.js` listens on PORT and logs the URL; the page
+//     SSRs and streams with the hashed client entry injected; the lifecycle
+//     surfaces (httpStatus/httpHeader/redirects) hold,
+//   - statics: hashed /assets/* files serve with the right MIME and an
+//     immutable Cache-Control, a non-asset file (robots.txt, written into
+//     dist/client by the test) serves must-revalidate + Last-Modified, HEAD
+//     returns the headers (Content-Length) with no body, dot-segment paths
+//     (.vite/manifest.json) are not served (as under `vite preview`), and
+//     encoded/raw `..` traversal never escapes dist/client (falls through to
+//     the handler, never file contents),
+//   - the handler path: `nativeEvent` is the Node IncomingMessage (the 4th
+//     surface after dev, preview, and the hand-written entry — /api/native
+//     via the middleware chain), the /_server endpoint dispatches (unknown id
+//     404, cross-site 403, a real call sees middleware locals), a HEAD on a
+//     streamed page answers with no body, a client abort mid-stream leaves
+//     the process responsive, and the browser hydrates and round-trips every
+//     server function through the entry,
+//   - the `listener` export mounts into a plain http.createServer (a script
+//     in a temp dir imports node.js — which must NOT auto-listen when
+//     imported — and serves pages and assets through it); `serve` is
+//     exported too; `createListener({ static: false, event })` mounted
+//     behind a framework-style handler still renders and dispatches server
+//     functions, never touches dist/client, and the `event` fields show up
+//     next to nativeEvent,
+//   - with `app.instrument`, node.js has no static imports: it awaits
+//     ./server.js (and so the instrument) before node:http loads (#418),
+//     still listens as the program and still exports without listening,
+//   - a Cloudflare-shaped setup (ssr `noExternal: true` + a config-level
+//     server-first `builder.buildApp`) emits nothing without the option and
+//     behaves as before; with it, node.js is still emitted and points at the
+//     client dir (the client build lands after the ssr build there, so the
+//     entry's client dir comes from the resolved outDirs).
+async function runNodeMode() {
+  const mode = 'node';
+  console.log(`\n=== ${mode.toUpperCase()} ===`);
+  // The middleware chain provides the bridge surfaces (/api/native,
+  // /api/abort-probe, /api/echo) and the whoAmI locals probe.
+  const env = { ...process.env, SSR_MIDDLEWARE: '1' };
+  const distDir = path.join(exampleDir, 'dist');
+  const serverJs = path.join(distDir, 'server/server.js');
+  const nodeJs = path.join(distDir, 'server/node.js');
+  let server;
+  let serverLog = '';
+  let tmpDir;
+  const rawPath = (origin, reqPath, method = 'GET') =>
+    new Promise((resolve, reject) => {
+      // http.request with an options object keeps the path verbatim (a URL
+      // string would normalize the dot segments away before they are sent).
+      const { hostname, port } = new URL(origin);
+      const req = http.request({ hostname, port, path: reqPath, method }, (res) => {
+        let text = '';
+        res.setEncoding('utf8');
+        res.on('data', (chunk) => (text += chunk));
+        res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, text }));
+      });
+      req.on('error', reject);
+      req.end();
+    });
+  const waitForLog = async (getLog, pattern, timeoutMs = 30000) => {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      const match = getLog().match(pattern);
+      if (match) return match;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    return null;
+  };
+  try {
+    // ---- Gating: no option, no entry; the server bundle is untouched -----
+    rmSync(distDir, { recursive: true, force: true });
+    console.log('  building (without app.node)…');
+    execSync('pnpm run build', { cwd: exampleDir, stdio: 'pipe', env });
+    record(mode, 'gate', 'no app.node: no dist/server/node.js', !existsSync(nodeJs));
+    const serverWithout = readFileSync(serverJs, 'utf-8');
+
+    rmSync(distDir, { recursive: true, force: true });
+    console.log('  building (with app.node)…');
+    execSync('pnpm run build', {
+      cwd: exampleDir,
+      stdio: 'pipe',
+      env: { ...env, APP_NODE: '1' },
+    });
+    record(mode, 'build', 'dist/server/node.js emitted beside server.js', existsSync(nodeJs));
+    // The one thing that legitimately differs between two builds is the
+    // per-build random deployment secret the server-function handler bakes
+    // in (`globalThis.__SOLID_SECRET__ ??= "<hex>"`); everything else must
+    // be byte-identical — the entry is an emitted asset, not a build input.
+    const withoutSecret = (source) =>
+      source.replace(/__SOLID_SECRET__ \?\?= "[0-9a-f]+"/, '__SOLID_SECRET__ ??= "<per-build>"');
+    const serverWith = readFileSync(serverJs, 'utf-8');
+    record(
+      mode,
+      'build',
+      'server.js byte-identical with and without app.node (modulo the per-build secret)',
+      withoutSecret(serverWithout) === withoutSecret(serverWith) &&
+        serverWithout.length === serverWith.length,
+      `${serverWithout.length} vs ${serverWith.length} bytes`,
+    );
+    const nodeSource = existsSync(nodeJs) ? readFileSync(nodeJs, 'utf-8') : '';
+    record(
+      mode,
+      'build',
+      'entry imports the sibling server bundle relatively',
+      nodeSource.includes("from './server.js'"),
+    );
+    const specifiers = [...nodeSource.matchAll(/^import\b[^'"]*['"]([^'"]+)['"]/gm)].map(
+      (m) => m[1],
+    );
+    record(
+      mode,
+      'build',
+      'entry depends on nothing but node:* and ./server.js',
+      specifiers.length > 0 &&
+        specifiers.every((s) => s.startsWith('node:') || s === './server.js'),
+      specifiers.join(', '),
+    );
+    const configMatch = nodeSource.match(/^const SOLID_NODE_CONFIG = (\{.*\});$/m);
+    let entryConfig = null;
+    try {
+      entryConfig = configMatch && JSON.parse(configMatch[1]);
+    } catch {}
+    record(
+      mode,
+      'build',
+      'entry carries the emit-time constants (client dir relative to server dir, assetsDir, base)',
+      !!entryConfig &&
+        entryConfig.clientDir === '../client' &&
+        entryConfig.assetsDir === 'assets' &&
+        entryConfig.base === '/' &&
+        entryConfig.spa === false,
+      JSON.stringify(entryConfig),
+    );
+    record(
+      mode,
+      'build',
+      'entry exports listener, createListener and serve',
+      /export \{[^}]*\blistener\b[^}]*\}/.test(nodeSource) &&
+        /export \{[^}]*\bcreateListener\b[^}]*\}/.test(nodeSource) &&
+        /export \{[^}]*\bserve\b[^}]*\}/.test(nodeSource),
+    );
+    record(
+      mode,
+      'build',
+      'entry ships without the bridge source comments (only the generated header)',
+      !nodeSource.includes('/*') &&
+        nodeSource.split('\n').filter((line) => line.trimStart().startsWith('//')).length === 2,
+      `${nodeSource.length} bytes`,
+    );
+    const serverBundle = readFileSync(serverJs, 'utf-8');
+    const registeredId = serverBundle.match(/registerServerReference\w*\("([^"]+)"/)?.[1] ?? null;
+    const whoAmIId =
+      serverBundle.match(/registerServerReference\w*\("(whoAmI-[^"]*)"/)?.[1] ?? null;
+    // A non-asset static file for the must-revalidate branch (the example
+    // has no public dir; Vite would copy one into dist/server as well).
+    writeFileSync(path.join(distDir, 'client/robots.txt'), 'User-agent: *\nAllow: /\n');
+    const manifest = JSON.parse(
+      readFileSync(path.join(distDir, 'client/.vite/manifest.json'), 'utf-8'),
+    );
+    const entryRecord =
+      manifest[manifest._entry] ?? Object.values(manifest).find((r) => r?.isEntry);
+    const entryAsset = entryRecord?.file ?? null;
+    const cssAsset = Object.values(manifest).find((r) => r?.css?.length)?.css?.[0] ?? null;
+
+    // ---- Run: node dist/server/node.js ------------------------------------
+    // PORT=0 asks the OS for a free port; the entry logs the bound URL.
+    server = startProcess('node', ['dist/server/node.js'], {
+      cwd: exampleDir,
+      env: { ...env, PORT: '0', NODE_ENV: 'production' },
+    });
+    server.stdout.on('data', (d) => (serverLog += d));
+    server.stderr.on('data', (d) => (serverLog += d));
+    const listening = await waitForLog(() => serverLog, /Listening on (http:\/\/localhost:\d+)/);
+    record(mode, 'run', 'listens on PORT and logs the URL', !!listening, serverLog.slice(-300));
+    if (!listening) throw new Error('node entry did not start');
+    const origin = listening[1];
+    await waitForHttp(origin + '/', 30000, { headers: { accept: 'text/html' } });
+
+    const html = await runSsrChecks(mode, origin);
+    record(
+      mode,
+      'prod',
+      'hashed client entry script injected',
+      /<script type="module" src="\/assets\/[^"]+\.js" async><\/script>/.test(html),
+    );
+    record(mode, 'prod', 'no dev injections leaked', !html.includes('/@vite/client'));
+    await runHttpChecks(mode, origin);
+
+    // ---- Statics ------------------------------------------------------------
+    const asset = await fetch(`${origin}/${entryAsset}`);
+    const assetBody = await asset.text();
+    record(
+      mode,
+      'static',
+      'hashed asset serves 200 with a JavaScript MIME type',
+      asset.status === 200 &&
+        (asset.headers.get('content-type') || '').startsWith('text/javascript'),
+      `status ${asset.status}, type ${asset.headers.get('content-type')}`,
+    );
+    record(
+      mode,
+      'static',
+      'hashed asset is immutable',
+      asset.headers.get('cache-control') === 'public, max-age=31536000, immutable',
+      `cache-control: ${asset.headers.get('cache-control')}`,
+    );
+    record(
+      mode,
+      'static',
+      'hashed asset body is the file',
+      !!entryAsset && assetBody === readFileSync(path.join(distDir, 'client', entryAsset), 'utf-8'),
+    );
+    const css = await fetch(`${origin}/${cssAsset}`);
+    record(
+      mode,
+      'static',
+      'stylesheet serves text/css',
+      css.status === 200 && (css.headers.get('content-type') || '').startsWith('text/css'),
+      `status ${css.status}, type ${css.headers.get('content-type')}`,
+    );
+    const robots = await fetch(`${origin}/robots.txt`);
+    record(
+      mode,
+      'static',
+      'non-asset static file serves must-revalidate with Last-Modified',
+      robots.status === 200 &&
+        (robots.headers.get('content-type') || '').startsWith('text/plain') &&
+        robots.headers.get('cache-control') === 'public, max-age=0, must-revalidate' &&
+        !!robots.headers.get('last-modified') &&
+        (await robots.text()).startsWith('User-agent'),
+      `status ${robots.status}, cache-control ${robots.headers.get('cache-control')}`,
+    );
+    const headAsset = await rawPath(origin, `/${entryAsset}`, 'HEAD');
+    record(
+      mode,
+      'static',
+      'HEAD on an asset returns the headers and no body',
+      headAsset.status === 200 &&
+        headAsset.text === '' &&
+        headAsset.headers['cache-control'] === 'public, max-age=31536000, immutable' &&
+        Number(headAsset.headers['content-length']) === Buffer.byteLength(assetBody),
+      `status ${headAsset.status}, content-length ${headAsset.headers['content-length']}`,
+    );
+    const headRobots = await rawPath(origin, '/robots.txt', 'HEAD');
+    record(
+      mode,
+      'static',
+      'HEAD on a non-asset file returns the headers and no body',
+      headRobots.status === 200 &&
+        headRobots.text === '' &&
+        headRobots.headers['cache-control'] === 'public, max-age=0, must-revalidate' &&
+        !!headRobots.headers['last-modified'],
+      `status ${headRobots.status}`,
+    );
+    // Traversal: none of these may ever answer with the project's
+    // package.json (the static handler refuses; the request falls through to
+    // the handler, which renders a page at it).
+    const traversals = [
+      '/../package.json',
+      '/../../package.json',
+      '/%2e%2e/package.json',
+      '/%2e%2e/%2e%2e/package.json',
+      '/assets/../../package.json',
+      '/assets/..%2f..%2fpackage.json',
+      '/..%2Fpackage.json',
+    ];
+    const escaped = [];
+    for (const reqPath of traversals) {
+      const res = await rawPath(origin, reqPath);
+      if (res.text.includes('"name": "example-app-ssr"') || res.text.includes('"private"')) {
+        escaped.push(`${reqPath} (${res.status})`);
+      }
+    }
+    record(
+      mode,
+      'static',
+      'encoded and raw `..` traversal never escapes the client dir',
+      escaped.length === 0,
+      escaped.join(', '),
+    );
+    const dotfile = await fetch(`${origin}/.vite/manifest.json`);
+    const dotfileBody = await dotfile.text();
+    record(
+      mode,
+      'static',
+      'dot-segment paths are not served (.vite/manifest.json falls through)',
+      !dotfileBody.trimStart().startsWith('{') && !dotfileBody.includes('"isEntry"'),
+      `status ${dotfile.status}, body ${JSON.stringify(dotfileBody.slice(0, 40))}`,
+    );
+
+    // ---- Handler path -------------------------------------------------------
+    // The 4th nativeEvent surface (after dev, preview, and a hand-written
+    // Node entry): the emitted entry passes the IncomingMessage.
+    const native = await fetch(origin + '/api/native', { headers: { accept: 'application/json' } });
+    const nativeBody = native.ok ? await native.json() : null;
+    record(
+      mode,
+      'event',
+      'request event exposes nativeEvent (Node req, readable remote address)',
+      native.status === 200 &&
+        nativeBody?.hasNativeEvent === true &&
+        typeof nativeBody?.remoteAddress === 'string' &&
+        nativeBody.remoteAddress.length > 0 &&
+        // The default listener adds nothing beyond nativeEvent.
+        nativeBody.custom === null,
+      `status ${native.status}, body ${JSON.stringify(nativeBody)}`,
+    );
+    const echo = await fetch(origin + '/api/echo', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ via: 'node-entry' }),
+    });
+    const echoBody = echo.ok ? await echo.json() : null;
+    record(
+      mode,
+      'event',
+      'POST body round-trips through the bridge',
+      echo.status === 200 && echoBody?.echoed?.via === 'node-entry',
+      `status ${echo.status}, body ${JSON.stringify(echoBody)}`,
+    );
+    // The handler contains a middleware failure before the entry's own
+    // catch could; no hook registered here, so the fallback log is asserted.
+    await runContainmentChecks(mode, origin, { getLog: () => serverLog });
+    const bogus = await fetch(origin + '/_server/bogus-0', { method: 'POST' });
+    record(
+      mode,
+      'sf',
+      'endpoint dispatches through the entry (unknown id 404)',
+      bogus.status === 404,
+    );
+    await runCsrfChecks(mode, origin, registeredId);
+    if (whoAmIId) {
+      const fn = await fetch(
+        `${origin}/_server/${encodeURIComponent(whoAmIId)}?args=${encodeURIComponent('[]')}`,
+        { method: 'POST' },
+      );
+      const fnBody = await fn.text();
+      record(
+        mode,
+        'sf',
+        'server function call through the entry (sees middleware locals)',
+        fn.status === 200 && fnBody === 'mw-user',
+        `status ${fn.status}, body ${JSON.stringify(fnBody.slice(0, 60))}`,
+      );
+    } else {
+      record(
+        mode,
+        'sf',
+        'server function call through the entry',
+        false,
+        'whoAmI id not found in server bundle',
+      );
+    }
+    // HEAD on a streamed page: the bridge ends the response with the head
+    // only and cancels the body.
+    const headPage = await rawPath(origin, '/', 'HEAD');
+    record(
+      mode,
+      'bridge',
+      'HEAD on a streamed page answers with no body',
+      headPage.status === 200 &&
+        headPage.text === '' &&
+        (headPage.headers['content-type'] || '').includes('text/html'),
+      `status ${headPage.status}, body ${JSON.stringify(headPage.text.slice(0, 40))}`,
+    );
+    // Client abort mid-stream (the never-ending /api/abort-probe): the
+    // process must stay responsive afterwards — the bridge's drain wait
+    // settles on 'close' and the reader is cancelled.
+    await new Promise((resolve, reject) => {
+      const { hostname, port } = new URL(origin);
+      const req = http.request({ hostname, port, path: '/api/abort-probe' }, (res) => {
+        res.once('data', () => {
+          req.destroy();
+          resolve();
+        });
+      });
+      req.on('error', reject);
+      req.end();
+    });
+    const afterAbort = await Promise.race([
+      fetch(origin + '/', { headers: { accept: 'text/html' } }).then((res) => res.status),
+      new Promise((resolve) => setTimeout(() => resolve('timeout'), 5000)),
+    ]);
+    record(
+      mode,
+      'bridge',
+      'client abort mid-stream leaves the server responsive',
+      afterAbort === 200,
+      `next request: ${afterAbort}`,
+    );
+
+    // Browser: hydration + every server function round-trip rides the entry.
+    await runBrowserChecks(mode, origin, { devtools: false });
+
+    const exited = new Promise((resolve) => {
+      server.once('exit', () => resolve(true));
+      setTimeout(() => resolve(false), 5000);
+    });
+    try {
+      process.kill(-server.pid, 'SIGTERM');
+    } catch {}
+    record(mode, 'run', 'process exits on SIGTERM', await exited);
+    server = undefined;
+
+    // ---- listener export: mount into a plain http server -------------------
+    tmpDir = mkdtempSync(path.join(os.tmpdir(), 'solid-node-entry-'));
+    const mountScript = path.join(tmpDir, 'mount.mjs');
+    writeFileSync(
+      mountScript,
+      [
+        `import http from 'node:http';`,
+        `import * as entry from ${JSON.stringify(pathToFileURL(nodeJs).href)};`,
+        `console.log('EXPORTS=' + Object.keys(entry).sort().join(','));`,
+        `const server = http.createServer(entry.listener);`,
+        `server.listen(0, () => console.log('MOUNTED=' + server.address().port));`,
+        ``,
+      ].join('\n'),
+    );
+    let mountLog = '';
+    server = startProcess('node', [mountScript], { cwd: tmpDir, env });
+    server.stdout.on('data', (d) => (mountLog += d));
+    server.stderr.on('data', (d) => (mountLog += d));
+    const mounted = await waitForLog(() => mountLog, /MOUNTED=(\d+)/);
+    record(
+      mode,
+      'mount',
+      'listener mounts into http.createServer',
+      !!mounted,
+      mountLog.slice(-300),
+    );
+    if (mounted) {
+      const mountOrigin = `http://localhost:${mounted[1]}`;
+      record(
+        mode,
+        'mount',
+        'importing node.js does not auto-listen (only the program does)',
+        !mountLog.includes('Listening on'),
+        mountLog.slice(-200),
+      );
+      record(
+        mode,
+        'mount',
+        'exports: createListener, listener and serve',
+        /EXPORTS=createListener,listener,serve/.test(mountLog),
+        mountLog.match(/EXPORTS=.*/)?.[0],
+      );
+      const mountedPage = await fetchStreamed(mountOrigin + '/');
+      record(
+        mode,
+        'mount',
+        'mounted listener SSRs the page',
+        mountedPage.status === 200 && mountedPage.html.includes('SSR App Mode'),
+        `status ${mountedPage.status}`,
+      );
+      const mountedAsset = await fetch(`${mountOrigin}/${entryAsset}`);
+      record(
+        mode,
+        'mount',
+        'mounted listener serves the client assets (relative to node.js, not cwd)',
+        mountedAsset.status === 200 &&
+          mountedAsset.headers.get('cache-control') === 'public, max-age=31536000, immutable',
+        `status ${mountedAsset.status}`,
+      );
+    }
+    try {
+      process.kill(-server.pid, 'SIGTERM');
+    } catch {}
+    server = undefined;
+
+    // ---- createListener: a framework owns static files -----------------------
+    // `static: false` leaves every request — assets included — to the handler,
+    // for setups where express.static or a CDN sits in front; `event` merges
+    // extra fields over { nativeEvent } into the request event. The script
+    // plays the framework: it 404s /assets/* itself and hands the rest to
+    // the entry.
+    const factoryScript = path.join(tmpDir, 'factory.mjs');
+    writeFileSync(
+      factoryScript,
+      [
+        `import http from 'node:http';`,
+        `import { createListener } from ${JSON.stringify(pathToFileURL(nodeJs).href)};`,
+        `const behind = createListener({ static: false, event: (req) => ({ custom: 'from-' + req.method }) });`,
+        `const server = http.createServer((req, res) => {`,
+        `  if (req.url.startsWith('/assets/')) {`,
+        `    res.statusCode = 404;`,
+        `    res.setHeader('x-static-owner', 'framework');`,
+        `    return res.end('framework 404');`,
+        `  }`,
+        `  return behind(req, res);`,
+        `});`,
+        `server.listen(0, () => console.log('MOUNTED=' + server.address().port));`,
+        ``,
+      ].join('\n'),
+    );
+    let factoryLog = '';
+    server = startProcess('node', [factoryScript], { cwd: tmpDir, env });
+    server.stdout.on('data', (d) => (factoryLog += d));
+    server.stderr.on('data', (d) => (factoryLog += d));
+    const factoryMounted = await waitForLog(() => factoryLog, /MOUNTED=(\d+)/);
+    record(
+      mode,
+      'factory',
+      'createListener({ static: false, event }) mounts behind a framework handler',
+      !!factoryMounted,
+      factoryLog.slice(-300),
+    );
+    if (factoryMounted) {
+      const factoryOrigin = `http://localhost:${factoryMounted[1]}`;
+      const factoryPage = await fetchStreamed(factoryOrigin + '/');
+      record(
+        mode,
+        'factory',
+        'static: false still SSRs the page',
+        factoryPage.status === 200 && factoryPage.html.includes('SSR App Mode'),
+        `status ${factoryPage.status}`,
+      );
+      if (whoAmIId) {
+        const factoryFn = await fetch(
+          `${factoryOrigin}/_server/${encodeURIComponent(whoAmIId)}?args=${encodeURIComponent('[]')}`,
+          { method: 'POST' },
+        );
+        record(
+          mode,
+          'factory',
+          'static: false still dispatches server functions',
+          factoryFn.status === 200 && (await factoryFn.text()) === 'mw-user',
+          `status ${factoryFn.status}`,
+        );
+      }
+      // The framework answered, so the entry never looked at dist/client.
+      const frameworkAsset = await fetch(`${factoryOrigin}/${entryAsset}`);
+      record(
+        mode,
+        'factory',
+        'static: false leaves /assets/* to the framework (entry does not serve files)',
+        frameworkAsset.status === 404 &&
+          frameworkAsset.headers.get('x-static-owner') === 'framework' &&
+          (await frameworkAsset.text()) === 'framework 404',
+        `status ${frameworkAsset.status}, cache-control ${frameworkAsset.headers.get('cache-control')}`,
+      );
+      // A file the framework does not intercept: with static off, the entry
+      // does not serve it either — the request reaches handleRequest.
+      const factoryRobots = await fetch(`${factoryOrigin}/robots.txt`);
+      const factoryRobotsBody = await factoryRobots.text();
+      record(
+        mode,
+        'factory',
+        'static: false skips the file lookup entirely (robots.txt goes to the handler)',
+        factoryRobots.headers.get('last-modified') === null &&
+          !factoryRobotsBody.startsWith('User-agent'),
+        `status ${factoryRobots.status}, content-type ${factoryRobots.headers.get('content-type')}`,
+      );
+      const factoryNative = await fetch(factoryOrigin + '/api/native', {
+        headers: { accept: 'application/json' },
+      });
+      const factoryNativeBody = factoryNative.ok ? await factoryNative.json() : null;
+      record(
+        mode,
+        'factory',
+        'event option merges fields over nativeEvent (both visible via getRequestEvent)',
+        factoryNative.status === 200 &&
+          factoryNativeBody?.hasNativeEvent === true &&
+          factoryNativeBody?.custom === 'from-GET',
+        `status ${factoryNative.status}, body ${JSON.stringify(factoryNativeBody)}`,
+      );
+    }
+    try {
+      process.kill(-server.pid, 'SIGTERM');
+    } catch {}
+    server = undefined;
+
+    // ---- app.instrument: node:http loads after the instrument (#418) -------
+    rmSync(distDir, { recursive: true, force: true });
+    console.log('  building (with app.node and app.instrument)…');
+    execSync('pnpm run build', {
+      cwd: exampleDir,
+      stdio: 'pipe',
+      env: { ...env, APP_NODE: '1', SSR_INSTRUMENT: '1' },
+    });
+    const instrumentedSource = existsSync(nodeJs) ? readFileSync(nodeJs, 'utf-8') : '';
+    record(
+      mode,
+      'instrument',
+      'instrumented node.js has no static imports and awaits ./server.js first',
+      !/^import\b/m.test(instrumentedSource) &&
+        instrumentedSource.indexOf("await import('./server.js')") !== -1 &&
+        instrumentedSource.indexOf("await import('./server.js')") <
+          instrumentedSource.indexOf("await import('./node-runtime.js')"),
+      instrumentedSource.slice(0, 600),
+    );
+    serverLog = '';
+    server = startProcess('node', ['dist/server/node.js'], {
+      cwd: exampleDir,
+      env: { ...env, SSR_INSTRUMENT: '1', PORT: '0', NODE_ENV: 'production' },
+    });
+    server.stdout.on('data', (d) => (serverLog += d));
+    server.stderr.on('data', (d) => (serverLog += d));
+    const instrumentedListening = await waitForLog(
+      () => serverLog,
+      /Listening on (http:\/\/localhost:\d+)/,
+    );
+    record(
+      mode,
+      'instrument',
+      'instrumented node.js listens when run as the program',
+      !!instrumentedListening,
+      serverLog.slice(-300),
+    );
+    if (instrumentedListening) {
+      const instrumentedPage = await fetchStreamed(instrumentedListening[1] + '/');
+      const instrumentRaw = instrumentedPage.headers.get('x-instrument');
+      let instrument = null;
+      try {
+        instrument = instrumentRaw ? JSON.parse(instrumentRaw) : null;
+      } catch {}
+      record(
+        mode,
+        'instrument',
+        'instrument module ran to completion before node:http loaded',
+        !!instrument &&
+          instrument.order[0] === 'instrument(before:0)' &&
+          instrument.done === true &&
+          instrument.httpLoaded === false,
+        `x-instrument: ${instrumentRaw}`,
+      );
+    }
+    try {
+      process.kill(-server.pid, 'SIGTERM');
+    } catch {}
+    server = undefined;
+    let instrumentedMountLog = '';
+    server = startProcess('node', [mountScript], {
+      cwd: tmpDir,
+      env: { ...env, SSR_INSTRUMENT: '1' },
+    });
+    server.stdout.on('data', (d) => (instrumentedMountLog += d));
+    server.stderr.on('data', (d) => (instrumentedMountLog += d));
+    const instrumentedMounted = await waitForLog(() => instrumentedMountLog, /MOUNTED=(\d+)/);
+    record(
+      mode,
+      'instrument',
+      'instrumented node.js exports createListener, listener and serve without auto-listening',
+      !!instrumentedMounted &&
+        /EXPORTS=createListener,listener,serve/.test(instrumentedMountLog) &&
+        !instrumentedMountLog.includes('Listening on'),
+      instrumentedMountLog.slice(-300),
+    );
+    try {
+      process.kill(-server.pid, 'SIGTERM');
+    } catch {}
+    server = undefined;
+
+    // ---- Cloudflare-shaped setup ---------------------------------------------
+    // ssr `noExternal: true` plus a config-level orchestrator that builds the
+    // ssr environment before the client (the @cloudflare/vite-plugin shape).
+    const { default: solid } = await import('@solidjs/vite-plugin');
+    const { createBuilder } = await import('vite');
+    const cloudflareShaped = async (appOptions) => {
+      rmSync(distDir, { recursive: true, force: true });
+      const builder = await createBuilder({
+        root: exampleDir,
+        configFile: false,
+        logLevel: 'silent',
+        // The example's vite.config.ts is bypassed; App.tsx reads this.
+        define: { __JSX_COMPILER__: JSON.stringify('native') },
+        environments: { ssr: { resolve: { noExternal: true } } },
+        builder: {
+          async buildApp(b) {
+            await b.build(b.environments.ssr);
+            await b.build(b.environments.client);
+          },
+        },
+        plugins: [solid({ app: appOptions, ssr: true, serverFunctions: true })],
+      });
+      await builder.buildApp();
+    };
+    console.log('  building (cloudflare-shaped, without app.node)…');
+    await cloudflareShaped({});
+    record(
+      mode,
+      'cf',
+      'cloudflare-shaped build without app.node emits no node.js',
+      !existsSync(nodeJs),
+    );
+    const cfHandler = await import(pathToFileURL(serverJs).href + `?cf=${Date.now()}`);
+    const cfResponse = await cfHandler.handleRequest(new Request('http://localhost/'));
+    record(
+      mode,
+      'cf',
+      'cloudflare-shaped build behaves as before (server-first order, manifest baked)',
+      cfResponse.status === 200 && (await cfResponse.text()).includes('SSR App Mode'),
+      `status ${cfResponse.status}`,
+    );
+    console.log('  building (cloudflare-shaped, with app.node)…');
+    await cloudflareShaped({ node: true });
+    const cfNodeSource = existsSync(nodeJs) ? readFileSync(nodeJs, 'utf-8') : '';
+    record(
+      mode,
+      'cf',
+      'cloudflare-shaped build with app.node emits node.js pointing at the client dir',
+      cfNodeSource.includes('"clientDir":"../client"') &&
+        cfNodeSource.includes("from './server.js'"),
+      cfNodeSource.match(/^const SOLID_NODE_CONFIG = .*$/m)?.[0] ?? 'no node.js',
+    );
+  } catch (e) {
+    record(
+      mode,
+      'run',
+      'mode completed',
+      false,
+      String(e) + (serverLog ? `\nserver: ${serverLog.slice(-2000)}` : ''),
+    );
+  } finally {
+    if (server) {
+      try {
+        process.kill(-server.pid, 'SIGTERM');
+      } catch {}
+    }
+    if (tmpDir) rmSync(tmpDir, { recursive: true, force: true });
+    // Leave dist in the standard state for anyone poking at it.
+    try {
+      execSync('pnpm run build', { cwd: exampleDir, stdio: 'pipe' });
+    } catch {}
+  }
+}
+
 // Vitest posture: even though this app is `ssr: true`, tests compile and
 // resolve with the client posture — dom codegen, non-hydratable, browser
-// conditions, jsdom default — with no `test` block and no
+// conditions — with only `environment: 'jsdom'` and no
 // `ssr: mode !== 'test'` workaround in the config. src/posture.test.tsx
 // carries the actual assertions (isServer false, non-hydratable codegen, a
 // DOM component rendering and updating under jsdom); this mode just runs it.
@@ -3385,6 +6439,44 @@ async function runVitestMode() {
     // Attach output on ANY failure: exit 0 with unmatched output previously
     // recorded an empty detail, leaving CI failures undiagnosable.
     testPass ? undefined : out.slice(-2000),
+  );
+
+  // Runtime-consuming packages in the client posture (#369). An externalized
+  // package's own imports are resolved by the host runtime, not by Vite.
+  // Node gets the `browser` condition from vitest's worker `--conditions`;
+  // Deno does not, and `@solidjs/testing-library` then loaded the server
+  // build of `@solidjs/web`. test/deno-conditions.mjs makes the workers
+  // resolve the way Deno does, so this fails unless the plugin inlines the
+  // runtime and its consumers.
+  let consumersOut = '';
+  let consumersOk = false;
+  try {
+    consumersOut = execSync('pnpm exec vitest run src/testing-library.test.tsx --pool=forks', {
+      cwd: exampleDir,
+      stdio: 'pipe',
+      timeout: 180000,
+      env: {
+        ...process.env,
+        NO_COLOR: '1',
+        NODE_OPTIONS: [
+          process.env.NODE_OPTIONS,
+          `--import=${pathToFileURL(path.join(exampleDir, 'test', 'deno-conditions.mjs')).href}`,
+        ]
+          .filter(Boolean)
+          .join(' '),
+      },
+    }).toString();
+    consumersOk = true;
+  } catch (e) {
+    consumersOut = String(e.stdout || '') + String(e.stderr || '');
+  }
+  const consumersPass = consumersOk && /2 passed/.test(consumersOut);
+  record(
+    mode,
+    'runtime-consumers',
+    '@solidjs/testing-library renders with the browser build when the host runtime ignores `browser`',
+    consumersPass,
+    consumersPass ? undefined : consumersOut.slice(-2000),
   );
 
   // Both postures in ONE workspace (VITEST_PROJECTS=1 adds test.projects to
@@ -3421,17 +6513,15 @@ async function runVitestMode() {
     projectsPass ? undefined : projectsOut.slice(-2000),
   );
 
-  // Browser-mode projects must NOT get the jsdom default: vitest 4 probes
-  // for the environment's package at startup (getEnvPackageName →
-  // ensureInstalled) and sets a failing exit code when jsdom isn't
-  // installed — even though the suite itself runs (and passes) in the real
-  // browser. The gate mirrors the plugin's jest-dom one (`browser.enabled`
-  // skips the injection); everything else keeps the jsdom default. Asserted
-  // at the config-resolution level: jsdom IS installed in this example, so
-  // a full browser run couldn't reproduce the missing-package probe.
+  // The plugin injects no `test.environment`, in any project shape: a
+  // default applied to Node-only suites that loaded the plugin too, and in
+  // browser mode or a projects root vitest probes for the environment's
+  // package at startup and fails the run when it isn't installed (#205).
+  // Resolved without the example's config file, which sets jsdom itself.
+  const { default: solid } = await import('@solidjs/vite-plugin');
   const resolveTestEnvironment = async (testBlock) => {
     const resolved = await resolveConfig(
-      { root: exampleDir, mode: 'test', test: testBlock },
+      { root: exampleDir, mode: 'test', configFile: false, plugins: [solid()], test: testBlock },
       'serve',
     );
     return resolved.test?.environment;
@@ -3447,14 +6537,804 @@ async function runVitestMode() {
   } catch (e) {
     envError = String(e);
   }
-  const browserEnvPass = !envError && browserEnv === undefined && defaultEnv === 'jsdom';
+  const browserEnvPass = !envError && browserEnv === undefined && defaultEnv === undefined;
   record(
     mode,
     'browser-env',
-    'browser-mode project gets no injected jsdom environment (non-browser keeps the jsdom default)',
+    'no injected test environment (browser mode or a plain test block)',
     browserEnvPass,
     browserEnvPass ? undefined : envError || `browser: ${browserEnv}, default: ${defaultEnv}`,
   );
+
+  // A root config that defines `test.projects` runs no tests itself; it
+  // gets no environment either (solidjs/solid-vite-plugin#205).
+  let projectsEnv;
+  let projectsEnvError = '';
+  try {
+    projectsEnv = await resolveTestEnvironment({
+      projects: [{ extends: true, test: { name: 'node', environment: 'node' } }],
+    });
+  } catch (e) {
+    projectsEnvError = String(e);
+  }
+  const projectsEnvPass = !projectsEnvError && projectsEnv === undefined;
+  record(
+    mode,
+    'projects-env',
+    'root config with test.projects gets no injected jsdom environment',
+    projectsEnvPass,
+    projectsEnvPass ? undefined : projectsEnvError || `environment: ${projectsEnv}`,
+  );
+
+  // Vitest 5 defaults `test.sharedViteServer` to true, and a shared inline
+  // project takes its `test` options from the raw root block captured before
+  // any `config` hook runs — so it would never see the posture, jest-dom
+  // setup file, or server.deps the plugin injects (#369). The plugin turns
+  // sharing off when the root declares `test.projects` and the user hasn't
+  // chosen. Asserted at the config-resolution level, which is
+  // version-independent: the examples pin vitest 4, where the option has no
+  // effect, but the resolved value is what Vitest 5's getOwnServerReason
+  // reads.
+  const resolveSharedViteServer = async (testBlock) => {
+    const resolved = await resolveConfig(
+      { root: exampleDir, mode: 'test', test: testBlock },
+      'serve',
+    );
+    return resolved.test?.sharedViteServer;
+  };
+  const projectsBlock = [{ extends: true, test: { name: 'node', environment: 'node' } }];
+  let sharedWithProjects;
+  let sharedWithoutProjects;
+  let sharedExplicit;
+  let sharedError = '';
+  try {
+    sharedWithProjects = await resolveSharedViteServer({ projects: projectsBlock });
+    sharedWithoutProjects = await resolveSharedViteServer({});
+    sharedExplicit = await resolveSharedViteServer({
+      projects: projectsBlock,
+      sharedViteServer: true,
+    });
+  } catch (e) {
+    sharedError = String(e);
+  }
+  const sharedPass =
+    !sharedError &&
+    sharedWithProjects === false &&
+    sharedWithoutProjects === undefined &&
+    sharedExplicit === true;
+  record(
+    mode,
+    'shared-vite-server',
+    'root config with test.projects gets sharedViteServer: false (untouched without projects, explicit true preserved)',
+    sharedPass,
+    sharedPass
+      ? undefined
+      : sharedError ||
+          `projects: ${sharedWithProjects}, none: ${sharedWithoutProjects}, explicit: ${sharedExplicit}`,
+  );
+
+  // The jest-dom setup file is injected only when the PROJECT can resolve
+  // `@testing-library/jest-dom` — by walking node_modules up from the Vite
+  // root, the way vitest itself resolves bare `setupFiles`. Two ways the
+  // probe used to give a false positive (solidjs/solid-vite-plugin#231,
+  // forward-port of #364): it ran from the plugin's own location, which under
+  // pnpm reaches any jest-dom that is a transitive dep somewhere in the tree
+  // (here: the workspace root's copy, which this repo's plugin can always
+  // resolve), and `require.resolve` honours NODE_PATH, which pnpm's bin
+  // shims (`pnpm vitest`) point at the hoisted virtual store. Both are
+  // simulated at once: an empty project outside the repo, resolved in a
+  // child process whose NODE_PATH is the repo's node_modules. Control: the
+  // example root (whose ancestors include the repo's copy) still injects.
+  const repoRoot = path.resolve(exampleDir, '..', '..');
+  const emptyRoot = path.join(os.tmpdir(), `solid-vite-plugin-jest-dom-${process.pid}`);
+  const probe = `
+    import { resolveConfig } from 'vite';
+    import solid from '@solidjs/vite-plugin';
+    const resolved = await resolveConfig(
+      { root: process.argv[1], mode: 'test', configFile: false, logLevel: 'silent', plugins: [solid()] },
+      'serve',
+    );
+    console.log(JSON.stringify(resolved.test?.setupFiles ?? null));
+  `;
+  const resolveSetupFiles = (root) =>
+    JSON.parse(
+      execFileSync(process.execPath, ['--input-type=module', '-e', probe, '--', root], {
+        cwd: exampleDir,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: 60000,
+        env: { ...process.env, NODE_PATH: path.join(repoRoot, 'node_modules') },
+      })
+        .toString()
+        .trim(),
+    );
+  let emptySetupFiles;
+  let exampleSetupFiles;
+  let jestDomError = '';
+  try {
+    rmSync(emptyRoot, { recursive: true, force: true });
+    mkdirSync(emptyRoot, { recursive: true });
+    writeFileSync(path.join(emptyRoot, 'package.json'), '{ "name": "empty", "private": true }\n');
+    emptySetupFiles = resolveSetupFiles(emptyRoot);
+    exampleSetupFiles = resolveSetupFiles(exampleDir);
+  } catch (e) {
+    jestDomError = String(e.stderr || e);
+  } finally {
+    rmSync(emptyRoot, { recursive: true, force: true });
+  }
+  const jestDomPass =
+    !jestDomError &&
+    emptySetupFiles === null &&
+    Array.isArray(exampleSetupFiles) &&
+    exampleSetupFiles.includes('@testing-library/jest-dom/vitest');
+  record(
+    mode,
+    'jest-dom-root',
+    'jest-dom setup file is injected only when the project root resolves it (not the plugin, not NODE_PATH)',
+    jestDomPass,
+    jestDomPass
+      ? undefined
+      : jestDomError ||
+          `empty root: ${JSON.stringify(emptySetupFiles)}, example root: ${JSON.stringify(exampleSetupFiles)}`,
+  );
+
+  // A framework package (one with a `solid` export condition) that only the
+  // workspace root's package.json declares must still be inlined for a
+  // project in that workspace (#157). The crawl used to read only the
+  // project's own package.json, so vitest left the package external and
+  // Node failed on its `.jsx` files with `Unknown file extension ".jsx"`.
+  // The fixture is a workspace outside the repo: the root declares
+  // `fake-solid-lib`, and the project `packages/app` declares nothing.
+  const workspaceDir = path.join(os.tmpdir(), `solid-vite-plugin-workspace-${process.pid}`);
+  const appDir = path.join(workspaceDir, 'packages', 'app');
+  const libDir = path.join(workspaceDir, 'node_modules', 'fake-solid-lib');
+  const noExternalProbe = `
+    import { resolveConfig } from 'vite';
+    import solid from '@solidjs/vite-plugin';
+    const resolved = await resolveConfig(
+      { root: process.argv[1], mode: 'test', configFile: false, logLevel: 'silent', plugins: [solid()] },
+      'serve',
+    );
+    console.log(JSON.stringify(resolved.environments.ssr.resolve.noExternal));
+  `;
+  let workspaceNoExternal;
+  let workspaceError = '';
+  try {
+    rmSync(workspaceDir, { recursive: true, force: true });
+    mkdirSync(appDir, { recursive: true });
+    mkdirSync(libDir, { recursive: true });
+    writeFileSync(
+      path.join(workspaceDir, 'package.json'),
+      JSON.stringify({
+        name: 'workspace',
+        private: true,
+        workspaces: ['packages/*'],
+        dependencies: { 'fake-solid-lib': '1.0.0' },
+      }),
+    );
+    writeFileSync(path.join(appDir, 'package.json'), '{ "name": "app", "private": true }\n');
+    writeFileSync(
+      path.join(libDir, 'package.json'),
+      JSON.stringify({
+        name: 'fake-solid-lib',
+        version: '1.0.0',
+        type: 'module',
+        exports: { '.': { solid: './index.jsx', default: './index.js' } },
+      }),
+    );
+    writeFileSync(path.join(libDir, 'index.jsx'), 'export const Lib = () => <p>lib</p>;\n');
+    writeFileSync(path.join(libDir, 'index.js'), 'export const Lib = () => null;\n');
+    workspaceNoExternal = JSON.parse(
+      execFileSync(process.execPath, ['--input-type=module', '-e', noExternalProbe, '--', appDir], {
+        cwd: exampleDir,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: 60000,
+      })
+        .toString()
+        .trim(),
+    );
+  } catch (e) {
+    workspaceError = String(e.stderr || e);
+  } finally {
+    rmSync(workspaceDir, { recursive: true, force: true });
+  }
+  const workspacePass =
+    !workspaceError &&
+    Array.isArray(workspaceNoExternal) &&
+    workspaceNoExternal.includes('fake-solid-lib');
+  record(
+    mode,
+    'workspace-root-pkgs',
+    'framework packages declared only in the workspace root are inlined for a workspace project',
+    workspacePass,
+    workspacePass
+      ? undefined
+      : workspaceError || `noExternal: ${JSON.stringify(workspaceNoExternal)}`,
+  );
+
+  // Vitest passes the `ssr` environment's conditions to Node as
+  // `--conditions` for the packages it leaves external. A jsdom run used to
+  // put `browser` there, so Node-only packages failed to load: `msw/node`
+  // imports `@mswjs/interceptors/ClientRequest`, whose `browser` export is
+  // `null` (#125). jsdom: `client` keeps `browser` and `ssr` does not.
+  // node: neither gets it (server posture, unchanged).
+  const conditionsProbe = `
+    import { resolveConfig } from 'vite';
+    import solid from '@solidjs/vite-plugin';
+    const out = {};
+    for (const environment of ['jsdom', 'node']) {
+      const resolved = await resolveConfig(
+        { mode: 'test', configFile: false, logLevel: 'silent', plugins: [solid()], test: { environment } },
+        'serve',
+      );
+      out[environment] = {
+        client: resolved.environments.client.resolve.conditions,
+        ssr: resolved.environments.ssr.resolve.conditions,
+      };
+    }
+    console.log(JSON.stringify(out));
+  `;
+  let testConditions;
+  let conditionsError = '';
+  try {
+    testConditions = JSON.parse(
+      execFileSync(process.execPath, ['--input-type=module', '-e', conditionsProbe], {
+        cwd: exampleDir,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: 60000,
+      })
+        .toString()
+        .trim(),
+    );
+  } catch (e) {
+    conditionsError = String(e.stderr || e);
+  }
+  const conditionsPass =
+    !conditionsError &&
+    testConditions.jsdom.client.includes('browser') &&
+    !testConditions.jsdom.ssr.includes('browser') &&
+    !testConditions.node.ssr.includes('browser');
+  record(
+    mode,
+    'ssr-conditions',
+    'jsdom tests keep the browser condition out of the ssr environment (Node --conditions)',
+    conditionsPass,
+    conditionsPass ? undefined : conditionsError || JSON.stringify(testConditions),
+  );
+}
+
+// The CSP nonce on the request event (SSR_NONCE=1 wires src/middleware.ts,
+// whose `renderPolicy` copies the test's nonce headers onto `event.nonce`
+// before next() and sets the CSP header on HTML responses). Asserted on
+// in-process dispatch against the dev handler and against a build (named
+// handleRequest and the default Fetchable). Also covers the event-first
+// chain's request substitution and the next(request) migration error.
+async function runNonceMode() {
+  const mode = 'nonce';
+  console.log(`\n=== ${mode.toUpperCase()} ===`);
+  const page = (headers = {}, pathname = '/') =>
+    new Request('http://localhost' + pathname, { headers: { accept: 'text/html', ...headers } });
+  const escaped = (value) =>
+    value.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+  const tags = (html, name) => html.match(new RegExp(`<${name}(?=[\\s>])[^>]*>`, 'g')) || [];
+  // Every tag of a kind carries the expected nonce attribute (and there is
+  // at least one of them).
+  const allCarry = (html, name, nonce) => {
+    const found = tags(html, name);
+    const missing = found.filter((tag) => !tag.includes(` nonce="${escaped(nonce)}"`));
+    return { ok: found.length > 0 && missing.length === 0, detail: `${found.length} <${name}>, missing: ${missing.slice(0, 3).join(' ')}` };
+  };
+  const assertNonced = (tag, phase, response, html, { script, style }) => {
+    const scripts = allCarry(html, 'script', script);
+    record(tag, phase, `every <script> carries nonce=${JSON.stringify(script)}`, scripts.ok, scripts.detail);
+    record(
+      tag,
+      phase,
+      'csp-nonce meta carries the style nonce',
+      html.includes(`<meta property="csp-nonce" nonce="${escaped(style)}">`),
+    );
+    const preloads = tags(html, 'link').filter((l) => /rel="?modulepreload/.test(l));
+    record(
+      tag,
+      phase,
+      'modulepreload links carry the script nonce',
+      preloads.every((l) => l.includes(` nonce="${escaped(script)}"`)),
+      `${preloads.length} preload(s)`,
+    );
+    return scripts;
+  };
+
+  // ---- Dev handler, in process ---------------------------------------------
+  process.env.SSR_NONCE = '1';
+  let probe;
+  try {
+    probe = await createServer({ root: exampleDir, server: { middlewareMode: true }, logLevel: 'error' });
+    const handler = await probe.environments.ssr.runner.import('virtual:solid-ssr-handler');
+
+    const impl =
+      (await probe.environments.ssr.transformRequest('virtual:solid-ssr-handler-impl'))?.code || '';
+    record(
+      mode,
+      'authored',
+      'handler passes the resolved nonce to render() as context.nonce',
+      impl.includes('renderContext.nonce = nonce'),
+      impl.includes('renderContext') ? 'renderContext present' : impl.slice(0, 200),
+    );
+
+    const res = await handler.handleRequest(page({ 'x-csp-nonce': 'mw"<&' }));
+    const html = await res.text();
+    assertNonced(mode, 'dev', res, html, { script: 'mw"<&', style: 'mw"<&' });
+    record(
+      mode,
+      'dev',
+      'the hydration bootstrap, the Vite client and the client entry are nonced',
+      html.includes(`<script nonce="${escaped('mw"<&')}">window._$HY`) &&
+        /<script type="module" nonce="[^"]+" src="[^"]*@vite\/client"/.test(html) &&
+        /<script type="module" nonce="[^"]+" src="[^"]*entry-client/.test(html),
+    );
+    record(
+      mode,
+      'dev',
+      'middleware set the CSP header on the HTML response',
+      (res.headers.get('content-security-policy') || '').includes(`'nonce-mw"<&'`),
+    );
+
+    const pair = await handler.handleRequest(
+      page({ 'x-csp-nonce-json': JSON.stringify({ script: 'sss', style: 'ttt' }) }),
+    );
+    const pairHtml = await pair.text();
+    assertNonced(mode, 'dev-pair', pair, pairHtml, { script: 'sss', style: 'ttt' });
+
+    const none = await (await handler.handleRequest(page())).text();
+    record(
+      mode,
+      'dev',
+      'no nonce anywhere (and no meta) without one',
+      !none.includes('nonce=') && !none.includes('csp-nonce'),
+    );
+
+    const hosted = await handler.handleRequest(
+      page({ 'x-csp-nonce': 'from-mw', 'x-csp-host': '1' }),
+      { nonce: 'host' },
+    );
+    const hostedHtml = await hosted.text();
+    record(
+      mode,
+      'precedence',
+      'handleRequest nonce wins over a middleware write',
+      allCarry(hostedHtml, 'script', 'host').ok && !hostedHtml.includes('from-mw'),
+    );
+    record(
+      mode,
+      'precedence',
+      'middleware sees the host nonce on the event before next()',
+      hosted.headers.get('x-seen-nonce') === '"host"',
+      `x-seen-nonce: ${hosted.headers.get('x-seen-nonce')}`,
+    );
+
+    // The example's error middleware turns a throw under next() into a
+    // `caught: <message>` 500; either way the message must name the cause.
+    const failure = async (request) => {
+      try {
+        const response = await handler.handleRequest(request);
+        const body = await response.text();
+        return response.status === 500 ? body : '';
+      } catch (e) {
+        return String(e && e.message ? e.message : e);
+      }
+    };
+    const invalid = await failure(page({ 'x-csp-nonce-json': '42' }));
+    record(
+      mode,
+      'validation',
+      'an invalid event.nonce is rejected naming the field',
+      invalid.includes('event.nonce') && invalid.includes('number'),
+      invalid.slice(0, 200) || 'resolved without error',
+    );
+    let invalidHost = '';
+    try {
+      await handler.handleRequest(page(), { nonce: { script: 'x' } });
+    } catch (e) {
+      invalidHost = String(e && e.message ? e.message : e);
+    }
+    record(
+      mode,
+      'validation',
+      'an invalid handleRequest nonce is rejected up front',
+      invalidHost.includes('handleRequest options.nonce'),
+      invalidHost.slice(0, 200) || 'resolved without error',
+    );
+
+    const warnings = [];
+    const warn = console.warn;
+    console.warn = (...args) => warnings.push(args.join(' '));
+    try {
+      await (await handler.handleRequest(page({ 'x-csp-nonce': 'early', 'x-late-nonce': '1' }))).text();
+      await (await handler.handleRequest(page({ 'x-csp-nonce': 'early' }))).text();
+    } finally {
+      console.warn = warn;
+    }
+    record(
+      mode,
+      'footgun',
+      'dev warns once when event.nonce is written after the render read it',
+      warnings.length === 1 && warnings[0].includes('event.nonce') && warnings[0].includes('before calling next()'),
+      JSON.stringify(warnings).slice(0, 300),
+    );
+
+    const rewritten = await handler.handleRequest(page({}, '/rewrite-me'));
+    const rewrittenBody = await rewritten.text();
+    record(
+      mode,
+      'substitution',
+      'event.request assigned before next() is what downstream sees',
+      rewritten.status === 200 && rewrittenBody.includes('mw-user'),
+      `${rewritten.status} ${rewrittenBody.slice(0, 120)}`,
+    );
+    const nextArg = await failure(page({}, '/next-arg'));
+    record(
+      mode,
+      'substitution',
+      'next(request) rejects with the migration message',
+      nextArg.includes('next() takes no arguments') && nextArg.includes('event.request'),
+      nextArg.slice(0, 200) || 'resolved without error',
+    );
+
+    const redirect = await handler.handleRequest(page({ 'x-csp-nonce': 'rd' }, '/redirect-post'));
+    const redirectHtml = await redirect.text();
+    record(
+      mode,
+      'dev',
+      'post-flush redirect fallback carries the nonce',
+      redirectHtml.includes('<script nonce="rd">window.location='),
+    );
+  } catch (e) {
+    record(mode, 'dev', 'dev dispatch completed', false, String(e && e.stack ? e.stack : e));
+  } finally {
+    await probe?.close();
+  }
+
+  // ---- Dev server end to end: the dev head's collected styles ---------------
+  // The built-in dev middleware hands the handler the entry CSS as
+  // `<style data-asset>` tags; with a nonce they carry the style half.
+  const devPort = 3186;
+  let server;
+  let serverLog = '';
+  try {
+    server = startProcess('pnpm', ['exec', 'vite', '--port', String(devPort), '--strictPort'], {
+      cwd: exampleDir,
+      env: { ...process.env, SSR_DEVTOOLS: '0', SSR_NONCE: '1' },
+    });
+    server.stdout.on('data', (d) => (serverLog += d));
+    server.stderr.on('data', (d) => (serverLog += d));
+    await waitForHttp(`http://localhost:${devPort}/src/api.ts`, 30000);
+    const pairRes = await fetch(`http://localhost:${devPort}/`, {
+      headers: { accept: 'text/html', 'x-csp-nonce-json': JSON.stringify({ script: 'sss', style: 'ttt' }) },
+    });
+    const html = await pairRes.text();
+    const styles = allCarry(html, 'style', 'ttt');
+    record(mode, 'dev-server', 'every dev <style> carries the style nonce', styles.ok, styles.detail);
+    const scripts = allCarry(html, 'script', 'sss');
+    record(mode, 'dev-server', 'every <script> carries the script nonce', scripts.ok, scripts.detail);
+    record(
+      mode,
+      'dev-server',
+      'csp-nonce meta for the Vite client',
+      html.includes('<meta property="csp-nonce" nonce="ttt">'),
+    );
+  } catch (e) {
+    record(mode, 'dev-server', 'dev server completed', false, String(e) + `\nserver: ${serverLog.slice(-1500)}`);
+  } finally {
+    if (server) {
+      try {
+        process.kill(-server.pid, 'SIGTERM');
+      } catch {}
+    }
+  }
+
+  // ---- Build: named handleRequest and the default Fetchable -----------------
+  try {
+    console.log('  building (nonce)…');
+    execSync('pnpm run build', {
+      cwd: exampleDir,
+      stdio: 'pipe',
+      env: { ...process.env, NODE_ENV: 'production', SSR_NONCE: '1' },
+    });
+    const built = await import(
+      pathToFileURL(path.join(exampleDir, 'dist/server/server.js')).href + '?nonce=' + Date.now()
+    );
+    const res = await built.handleRequest(page({ 'x-csp-nonce': 'prod' }));
+    const html = await res.text();
+    assertNonced(mode, 'prod', res, html, { script: 'prod', style: 'prod' });
+    const viaFetch = await built.default.fetch(page({ 'x-csp-nonce': 'fetchable' }));
+    const viaFetchHtml = await viaFetch.text();
+    record(
+      mode,
+      'prod',
+      'the default Fetchable (no options) gets the middleware nonce',
+      allCarry(viaFetchHtml, 'script', 'fetchable').ok &&
+        (viaFetch.headers.get('content-security-policy') || '').includes("'nonce-fetchable'"),
+    );
+    const plain = await (await built.handleRequest(page())).text();
+    record(mode, 'prod', 'no nonce and no meta without one', !plain.includes('nonce=') && !plain.includes('csp-nonce'));
+    const asyncRes = await built.handleRequest(page({ 'x-csp-nonce': 'settled', 'x-render-mode': 'async' }));
+    const asyncHtml = await asyncRes.text();
+    record(
+      mode,
+      'prod',
+      'event.renderMode + event.nonce from one middleware: settled document, nonced',
+      !/<template id=/.test(asyncHtml) && allCarry(asyncHtml, 'script', 'settled').ok,
+    );
+  } catch (e) {
+    record(mode, 'prod', 'build dispatch completed', false, String(e && e.stack ? e.stack : e));
+  } finally {
+    delete process.env.SSR_NONCE;
+  }
+}
+
+// `app.clientSetup` (SSR_CLIENT_SETUP=1, src/client-setup.ts wrapped by
+// src/ClientSetupApp.tsx): the generated client entry runs the setup module
+// before hydrate(), in dev and in a build. What must hold:
+// - codegen: the entry imports the module ahead of the app and of the
+//   hydrate()/render() call, in both app modes, and without the option
+//   the entry carries no such import,
+// - config: an authored entry-client together with the option is an error,
+//   and so is a missing file,
+// - browser (dev and prod): the setup module starts before the app graph
+//   evaluates, hydrate() waits for its top-level await, it runs once, and
+//   hydration stays clean and interactive,
+// - dev: editing the module reloads the page with the new code (it has no
+//   HMR accept boundary, and neither does the entry).
+async function runClientSetupMode() {
+  const mode = 'client-setup';
+  console.log(`\n=== ${mode.toUpperCase()} ===`);
+  const devPort = 3187;
+  const prodPort = 3188;
+  const setupFile = path.join(exampleDir, 'src/client-setup.ts');
+  const setupSource = readFileSync(setupFile, 'utf-8');
+  const env = { ...process.env, SSR_CLIENT_SETUP: '1', SSR_DEVTOOLS: '0' };
+  const ENTRY = 'virtual:solid-ssr-entry-client.tsx';
+  const loadEntry = async (server) => {
+    const loaded = await server.environments.client.pluginContainer.load(ENTRY);
+    return (typeof loaded === 'string' ? loaded : loaded?.code) || '';
+  };
+  const { default: solidPlugin } = await import('@solidjs/vite-plugin');
+  const inlineServer = (options) =>
+    createServer({
+      root: exampleDir,
+      configFile: false,
+      logLevel: 'silent',
+      plugins: [solidPlugin(options)],
+      server: { middlewareMode: true },
+    });
+
+  // ---- Codegen and config validation (in process, no browser) ----------
+  let probe;
+  try {
+    for (const ssr of [true, false]) {
+      const phase = ssr ? 'codegen-ssr' : 'codegen-client';
+      probe = await inlineServer({
+        ssr,
+        app: { clientSetup: './src/client-setup.ts', devtools: false },
+      });
+      const code = await loadEntry(probe);
+      const setupAt = code.indexOf('/src/client-setup.ts');
+      const appAt = code.indexOf('import App from');
+      const callAt = code.indexOf(ssr ? 'hydrate(() =>' : 'render(() =>');
+      record(
+        mode,
+        phase,
+        `generated entry imports the setup module before the app and ${ssr ? 'hydrate' : 'render'}()`,
+        setupAt !== -1 && appAt !== -1 && callAt !== -1 && setupAt < appAt && setupAt < callAt,
+        code.slice(0, 600),
+      );
+      record(
+        mode,
+        phase,
+        'the setup module is a static side-effect import (no dynamic import)',
+        /^import\s+"[^"]*\/src\/client-setup\.ts";$/m.test(code) && !code.includes('import('),
+        code.slice(0, 600),
+      );
+      await probe.close();
+      probe = await inlineServer({ ssr, app: { devtools: false } });
+      const plain = await loadEntry(probe);
+      record(
+        mode,
+        phase,
+        'without the option the entry has no setup import',
+        plain.length > 0 && !plain.includes('client-setup'),
+        plain.slice(0, 400),
+      );
+      await probe.close();
+      probe = undefined;
+    }
+
+    const configError = async (app) => {
+      try {
+        const server = await inlineServer({ ssr: true, app });
+        await server.close();
+        return '';
+      } catch (e) {
+        return String(e?.message ?? e);
+      }
+    };
+    const authored = await configError({
+      clientSetup: './src/client-setup.ts',
+      entries: { server: './src/api.ts', client: './src/api.ts' },
+    });
+    record(
+      mode,
+      'config',
+      'an authored entry-client together with clientSetup is an error',
+      authored.includes('app.clientSetup only applies to a generated client entry'),
+      authored || 'no error',
+    );
+    const missing = await configError({ clientSetup: './src/no-such-setup.ts' });
+    record(
+      mode,
+      'config',
+      'a missing clientSetup file is an error',
+      missing.includes('app.clientSetup does not exist'),
+      missing || 'no error',
+    );
+  } catch (e) {
+    record(mode, 'codegen', 'codegen checks completed', false, String(e?.stack ?? e));
+  } finally {
+    await probe?.close();
+  }
+
+  // ---- Browser: dev, then the build -------------------------------------
+  const browserChecks = async (phase, cdp, origin) => {
+    cdp.exceptions.length = 0;
+    await cdp.send('Page.navigate', { url: origin + '/' });
+    await cdp.waitFor('document.readyState === "complete"');
+    await cdp.waitFor('window.__solidClientSetup?.order.some((s) => s.startsWith("app:render"))');
+    await new Promise((r) => setTimeout(r, 500));
+    const state = await cdp.evalJs('JSON.stringify(window.__solidClientSetup ?? null)');
+    const parsed = state ? JSON.parse(state) : null;
+    const order = parsed?.order ?? [];
+    record(
+      mode,
+      phase,
+      'setup module starts before the app graph evaluates',
+      order[0] === 'setup:start(before:0)' &&
+        order.indexOf('app:module') > order.indexOf('setup:start(before:0)'),
+      state,
+    );
+    const doneAt = order.indexOf('setup:done');
+    const renderAt = order.findIndex((s) => s.startsWith('app:render'));
+    record(
+      mode,
+      phase,
+      'hydrate() waits for the setup module (async top-level await settled first)',
+      doneAt !== -1 &&
+        renderAt > doneAt &&
+        order.every((s) => !s.startsWith('app:render') || s === 'app:render(setupDone:true)'),
+      state,
+    );
+    record(mode, phase, 'setup module evaluated once', parsed?.evaluations === 1, state);
+    const hydrationErrs = cdp.exceptions.filter((e) => /hydrat|mismatch/i.test(e));
+    record(
+      mode,
+      phase,
+      'clean hydration (no hydration console errors)',
+      hydrationErrs.length === 0,
+      hydrationErrs.join(' | '),
+    );
+    await cdp.evalJs('document.querySelector("#increment").click()');
+    record(
+      mode,
+      phase,
+      'hydrated app is interactive (counter)',
+      await cdp.waitFor('document.querySelector("#count")?.textContent === "1"'),
+    );
+  };
+
+  const withChrome = async (run) => {
+    const chrome = startProcess(CHROME, [
+      '--headless=new',
+      `--remote-debugging-port=${CDP_PORT}`,
+      `--user-data-dir=/tmp/app-ssr-chrome-${mode}`,
+      '--no-first-run',
+      '--disable-extensions',
+      'about:blank',
+    ]);
+    const cdp = await connectChrome();
+    try {
+      await run(cdp);
+    } finally {
+      cdp.close();
+      const exited = new Promise((r) => chrome.once('exit', r));
+      try {
+        process.kill(-chrome.pid, 'SIGTERM');
+      } catch {}
+      await Promise.race([exited, new Promise((r) => setTimeout(r, 3000))]);
+      try {
+        rmSync(`/tmp/app-ssr-chrome-${mode}`, { recursive: true, force: true, maxRetries: 5 });
+      } catch {}
+    }
+  };
+
+  let server;
+  let serverLog = '';
+  const captureLog = (child) => {
+    child.stdout.on('data', (d) => (serverLog += d));
+    child.stderr.on('data', (d) => (serverLog += d));
+  };
+  try {
+    const devOrigin = `http://localhost:${devPort}`;
+    server = startProcess('pnpm', ['exec', 'vite', '--port', String(devPort), '--strictPort'], {
+      cwd: exampleDir,
+      env,
+    });
+    captureLog(server);
+    await waitForHttp(devOrigin + '/src/api.ts', 30000);
+    await withChrome(async (cdp) => {
+      await browserChecks('dev', cdp, devOrigin);
+      // The module has no accept boundary and neither has the generated
+      // entry, so an edit must reload the page and run the new code.
+      writeFileSync(setupFile, setupSource.replace("'client-setup-v1'", "'client-setup-v2'"));
+      const reloaded = await cdp.waitFor(
+        'window.__solidClientSetup?.marker === "client-setup-v2" && window.__solidClientSetup.done',
+        15000,
+      );
+      const after = await cdp.evalJs('JSON.stringify(window.__solidClientSetup ?? null)');
+      record(
+        mode,
+        'dev',
+        'editing the setup module reloads the page with the new code (setup runs again first)',
+        // evaluations === 1: a fresh page, not a hot update into the old
+        // one (whose global register would count a second evaluation).
+        reloaded &&
+          JSON.parse(after)?.evaluations === 1 &&
+          JSON.parse(after)?.order[0] === 'setup:start(before:0)' &&
+          JSON.parse(after)?.order.includes('app:render(setupDone:true)'),
+        after,
+      );
+    });
+    writeFileSync(setupFile, setupSource);
+    try {
+      process.kill(-server.pid, 'SIGTERM');
+    } catch {}
+    server = undefined;
+
+    console.log('  building…');
+    execSync('pnpm run build', { cwd: exampleDir, stdio: 'pipe', env });
+    const prodOrigin = `http://localhost:${prodPort}`;
+    server = startProcess('node', ['server.js'], {
+      cwd: exampleDir,
+      env: { ...env, PORT: String(prodPort), NODE_ENV: 'production' },
+    });
+    captureLog(server);
+    await waitForHttp(prodOrigin + '/', 30000, { headers: { accept: 'text/html' } });
+    const { html } = await fetchStreamed(prodOrigin + '/');
+    record(
+      mode,
+      'prod',
+      "the app's stylesheet is still linked (the app stays in the entry's static graph)",
+      /<link[^>]+rel="stylesheet"[^>]+\.css"/.test(html),
+      html.slice(0, 800),
+    );
+    await withChrome((cdp) => browserChecks('prod', cdp, prodOrigin));
+  } catch (e) {
+    record(
+      mode,
+      'run',
+      'mode completed',
+      false,
+      String(e) + (serverLog ? `\nserver: ${serverLog.slice(-2000)}` : ''),
+    );
+  } finally {
+    writeFileSync(setupFile, setupSource);
+    if (server) {
+      try {
+        process.kill(-server.pid, 'SIGTERM');
+      } catch {}
+    }
+    // Leave dist in the standard state for anyone poking at it.
+    try {
+      execSync('pnpm run build', { cwd: exampleDir, stdio: 'pipe' });
+    } catch {}
+  }
 }
 
 const ALL_MODES = [
@@ -3468,14 +7348,22 @@ const ALL_MODES = [
   'no-middleware',
   'middleware',
   'preview',
+  'render-mode',
+  'nonce',
   'base',
   'builder-order',
   'builder-prepare',
+  'extra-input',
+  'file-names',
   'frames',
   'babel-hmr',
   'external',
+  'observe',
+  'perf-tracks',
   'detect',
   'vitest',
+  'node',
+  'client-setup',
 ];
 const arg = process.argv[2];
 const modes = ALL_MODES.includes(arg) ? [arg] : ALL_MODES;
@@ -3490,13 +7378,21 @@ for (const mode of modes) {
   else if (mode === 'no-middleware') await runNoMiddlewareMode();
   else if (mode === 'middleware') await runMiddlewareMode();
   else if (mode === 'preview') await runPreviewMode();
+  else if (mode === 'render-mode') await runRenderModeMode();
+  else if (mode === 'nonce') await runNonceMode();
   else if (mode === 'base') await runBaseMode();
   else if (mode === 'builder-order') await runBuilderOrderMode();
   else if (mode === 'builder-prepare') await runBuilderPrepareMode();
+  else if (mode === 'extra-input') await runExtraInputMode();
+  else if (mode === 'file-names') await runFileNamesMode();
   else if (mode === 'frames') await runFramesMode();
   else if (mode === 'babel-hmr') await runBabelHmrMode();
   else if (mode === 'external') await runExternalMode();
+  else if (mode === 'observe') await runObserveMode();
+  else if (mode === 'perf-tracks') await runPerfTracksMode();
   else if (mode === 'vitest') await runVitestMode();
+  else if (mode === 'node') await runNodeMode();
+  else if (mode === 'client-setup') await runClientSetupMode();
   else await runDetectMode();
 }
 

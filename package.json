@@ -1,10 +1,10 @@
 {
   "name": "@solidjs/vite-plugin",
-  "version": "3.0.0-next.32",
+  "version": "3.0.0-next.51",
   "description": "solid-js integration plugin for Vite",
   "type": "module",
   "engines": {
-    "node": "^20.19.0 || >=22.12.0"
+    "node": ">=22.12.0"
   },
   "files": [
     "dist",
@@ -35,7 +35,9 @@
     "prepublishOnly": "pnpm build",
     "release": "pnpm build && changeset publish",
     "check": "package-check",
-    "test": "node scripts/test-examples.ts"
+    "test": "node scripts/test-examples.ts",
+    "test:unit": "vitest run",
+    "test:ecosystem": "node scripts/test-ecosystem.mjs"
   },
   "repository": {
     "type": "git",
@@ -61,9 +63,9 @@
   "dependencies": {
     "@ampproject/remapping": "^2.3.0",
     "@babel/core": "^7.23.3",
-    "@dom-expressions/compiler": "^0.50.0-next.44",
+    "@solidjs/babel-plugin": "^2.0.0-rc.16",
+    "@solidjs/compiler": "^2.0.0-rc.16",
     "@types/babel__core": "^7.20.4",
-    "babel-preset-solid": "^2.0.0-rc.0",
     "merge-anything": "^5.1.7",
     "vitefu": "^1.0.4"
   },
@@ -75,7 +77,9 @@
     "@rollup/plugin-commonjs": "^25.0.7",
     "@rollup/plugin-node-resolve": "^15.2.3",
     "@skypack/package-check": "^0.2.2",
+    "@solidjs/diagnostics": "2.0.0-rc.16",
     "@solidjs/start-devtools": "^1.0.0-next.3",
+    "@solidjs/web": "^2.0.0-rc.16",
     "@types/node": "^24.0.0",
     "cypress": "^14.0.0",
     "cypress-visual-regression": "^5.2.2",
@@ -84,15 +88,16 @@
     "prettier": "^3.1.0",
     "rollup": "^4.5.0",
     "rollup-plugin-cleaner": "^1.0.0",
-    "solid-js": "^2.0.0-rc.0",
+    "solid-js": "^2.0.0-rc.16",
     "typescript": "^5.2.2",
-    "vite": "^8.2.1"
+    "vite": "^8.2.1",
+    "vitest": "^4.1.11"
   },
   "peerDependencies": {
     "@solidjs/start-devtools": "^1.0.0-next.2",
-    "@solidjs/web": "^2.0.0-rc.0",
-    "@testing-library/jest-dom": "^5.16.6 || ^5.17.0 || ^6.*",
-    "solid-js": "^2.0.0-rc.0",
+    "@solidjs/web": "^2.0.0-rc.16",
+    "@testing-library/jest-dom": "^5.16.6 || ^5.17.0 || ^6.0.0 || ^7.0.0",
+    "solid-js": "^2.0.0-rc.16",
     "vite": "^8.0.0 || ^9.0.0"
   },
   "peerDependenciesMeta": {

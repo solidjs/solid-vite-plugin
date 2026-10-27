@@ -31,6 +31,13 @@
 //   it, and page responses go through the runtime's `createSSRResponse`
 //   head lifecycle (commit at shell flush, real pre-flush redirects, the
 //   script fallback post-flush).
+// - Per-request render inputs live on the request event: middleware sets
+//   `event.nonce` (the CSP nonce, read by @solidjs/web's renderer and by the
+//   tags the handler injects) and `event.renderMode` (`'stream'` flushes the
+//   shell with fallbacks and streams boundaries in behind it; `'async'`
+//   awaits the settled document — complete for no-JS clients) before
+//   calling `next()`. `app.renderMode` is the static default, and
+//   `handleRequest(request, { nonce, renderMode })` seeds and overrides both.
 // - `vite preview` serves dist/client statically and dispatches everything
 //   else through the built handler — the production path, middleware
 //   included, with no server file needed.
@@ -38,11 +45,12 @@
 // Client mode (`app` without `ssr: true`) rides the same machinery with
 // three deltas: the generated server entry renders the document shell
 // WITHOUT the app (dev serving doubles as history fallback, and a
-// post-build hook prerenders it once into dist/client/index.html), the
-// generated client entry render()s instead of hydrating, and dist/server is
-// dropped from the output unless `serverFunctions` needs it for the
-// endpoint. Client code compiles non-hydratable, exactly like a plain SPA.
-import { existsSync, rmSync, writeFileSync } from 'fs';
+// post-build hook prerenders it once into the client emit directory), the
+// generated client entry render()s instead of hydrating, and the server
+// bundle is dropped unless `serverFunctions` needs it or another plugin
+// owns the app build. Client code compiles non-hydratable, exactly like a
+// plain SPA.
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import path from 'path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
@@ -59,6 +67,11 @@ import {
   DEVTOOLS_PACKAGE,
   devtoolsMountModuleCode,
 } from '../devtools/index.js';
+import { DIAGNOSTICS_CLIENT_ID, detectDiagnosticsPackage } from '../diagnostics/index.js';
+import {
+  PERFORMANCE_TRACKS_CLIENT_ID,
+  detectPerformanceTracksSubpath,
+} from '../performance-tracks/index.js';
 import {
   collectDevStyles,
   collectDevStyleSources,
@@ -82,7 +95,7 @@ export interface AppOptions {
    * Root component module for generated entries (the zero-config path).
    * Resolved relative to the Vite root.
    *
-   * @default "src/App.{tsx,jsx,ts,js}" (also probes lowercase "src/app.*")
+   * @default "src/App.{tsx,jsx,ts,js,tsrx}" (also probes lowercase "src/app.*")
    */
   root?: string;
   /** Options for development CSS crawling. */
@@ -111,16 +124,27 @@ export interface AppOptions {
   /** Explicit rendering entries. Conventional entry files are used when omitted. */
   entries?: {
     /**
-     * Client entry module. In SSR mode it hydrates; in client mode it mounts.
+     * Client entry module. In SSR mode it hydrates; in client mode it mounts
+     * (a generated one calls `render()`), and it stands alone — no pairing
+     * rule with a server entry.
      *
-     * @default "src/entry-client.{tsx,jsx,ts,js,mjs}" when present, else a generated entry
+     * @default "src/entry-client.{tsx,jsx,ts,js,mjs,tsrx}" when present, else a
+     * generated entry
      */
     client?: string;
     /**
-     * Server entry module. Must export `render(request?, context?)`.
-     * Ignored in client mode, where the server entry renders only the shell.
+     * Server entry module. Must export `render(request?, context?)` returning
+     * a `renderToStream` result, an HTML string, or a `Response`.
+     * `context.clientEntry` carries the resolved client entry URL.
+     * `context.nonce` is this request's CSP nonce — forward it into `renderToStream`.
      *
-     * @default "src/entry-server.{tsx,jsx,ts,js,mjs}" when present, else a generated entry
+     * Server mode only — ignored in client mode, where the server entry is
+     * always generated (it renders the document shell without the app, for
+     * dev serving and the build-time prerender). Conventional
+     * `src/entry-server.*` files are likewise ignored there.
+     *
+     * @default "src/entry-server.{tsx,jsx,ts,js,mjs,tsrx}" when present, else a
+     * generated entry rendering `<Document><App /></Document>`
      */
     server?: string;
   };
@@ -132,22 +156,30 @@ export interface AppOptions {
    * Document costs nothing across the flip; the built-in shell omits it per
    * mode). Only used when the server entry is generated.
    *
-   * @default "src/Document.{tsx,jsx}" when present, else a built-in shell
+   * @default "src/Document.{tsx,jsx,tsrx}" when present, else a built-in shell
    */
   document?: string;
   /**
    * Path to a server-only module (resolved relative to the Vite root) whose
-   * default export is one fetch-style middleware function — `(request,
-   * next) => Response | Promise<Response>` — or an array of them, composed
-   * in order. The chain fronts every request the plugin dispatches — page
-   * SSR, the server-function endpoint, dev and production, `vite preview` —
-   * and runs inside the request-event scope, so `getRequestEvent()` works
-   * exactly as it does in application code (decorate `locals`, write the
-   * `response` stub). `next()` advances the chain (pass a `Request` to
-   * substitute it downstream); nothing reaches the wire until the outermost
-   * middleware returns, so headers on the returned `Response` stay mutable
-   * after `next()` — streamed bodies included — and error middleware is a
-   * plain `try { return await next(); } catch { ... }`.
+   * default export is one middleware function — `(event, next) => Response
+   * | Promise<Response>`, the request at `event.request` — or an array of
+   * them, composed in order. The chain fronts every request the plugin
+   * dispatches — page SSR, the server-function endpoint, dev and
+   * production, `vite preview` — and runs inside the request-event scope,
+   * so `getRequestEvent()` answers with the same event in application code
+   * (decorate `locals`, write the `response` stub). `next()` advances the
+   * chain and takes no arguments: assign `event.request` before calling it
+   * to substitute the request downstream. Nothing reaches the wire until
+   * the outermost middleware returns, so headers on the returned `Response`
+   * stay mutable after `next()` — streamed bodies included — and error
+   * middleware is a plain `try { return await next(); } catch { ... }`.
+   *
+   * The page render happens inside `next()`, so per-request render inputs
+   * go on the event before calling it: `event.nonce` (the CSP nonce — the
+   * runtime's scripts, preloads and styles, the injected client-entry tag,
+   * the redirect fallback and the dev head tags all carry it) and
+   * `event.renderMode` (`'stream'` or `'async'`, overriding
+   * `app.renderMode` for this request).
    *
    * All methods and accept types dispatch through the chain — API routes
    * and no-JS form POSTs included, in dev exactly as in production. A
@@ -158,6 +190,29 @@ export interface AppOptions {
    * @default undefined
    */
   middleware?: string;
+  /**
+   * Path to a server-only module (resolved relative to the Vite root) that
+   * runs to completion before anything else in the server graph loads — the
+   * app, the middleware, `@solidjs/web`, every dependency. The seam for
+   * instrumentation that must patch the runtime before the modules it
+   * patches are loaded: an APM's OpenTelemetry setup (`Sentry.init()`,
+   * `NodeSDK.start()`), a profiler, a custom `module.register` hook.
+   * Replaces the per-host `node --import instrument.mjs` dance with one
+   * option the plugin honors on every surface: `vite dev`, `vite build`,
+   * `vite preview`, and a host consuming the handler entry directly.
+   *
+   * How: the generated handler entry becomes `await import(instrument);
+   * await import(handler)` — top-level await sequencing is the only thing
+   * in ESM that guarantees the order, since static imports are hoisted and
+   * evaluated in dependency order regardless of where they are written.
+   * The module may be async (top-level `await` is honored) and needs no
+   * exports. The server build must keep code splitting on (the default) —
+   * inlining dynamic imports would hoist the handler graph back above the
+   * instrument.
+   *
+   * @default undefined
+   */
+  instrument?: string;
   /**
    * Path to a server-only module (resolved relative to the Vite root) whose
    * default export runs once per request in the generated server entry,
@@ -180,6 +235,63 @@ export interface AppOptions {
    * @default undefined
    */
   setup?: string;
+  /**
+   * Path to a client module (resolved relative to the Vite root) that the
+   * generated client entry runs before it hydrates (SSR mode) or mounts
+   * (client mode) the app. The browser-side seam for setup that must be in
+   * place before the first render: a server-function transport wrapper or
+   * request-header hook, a `vite:preloadError` listener, an error reporter's
+   * `init()`.
+   *
+   * How: the generated entry imports the module for its side effects ahead
+   * of the app, so a synchronous module finishes before the app's own
+   * modules evaluate. The module may be async (top-level `await` is
+   * honored): `hydrate()` / `render()` waits for it to settle, which lets it
+   * wait for the DOM, for example for a global that a classic `<script>` in
+   * `<body>` defines. While it awaits, the app's modules may already
+   * evaluate, but nothing renders. No exports are needed. The module stays
+   * in the entry's static graph, so the build preloads it and the app's
+   * chunks and stylesheets as before. Editing it reloads the page.
+   *
+   * Only meaningful with a generated client entry: an authored
+   * `entry-client` runs its own code before `hydrate()` already, so
+   * configuring both is an error. Applies to both app modes.
+   *
+   * @default undefined
+   */
+  clientSetup?: string;
+  /**
+   * How the generated handler turns a page render into a response body.
+   *
+   * - `'stream'` (default): the document shell flushes as soon as it is
+   *   ready, with `<Loading>` fallbacks in place; boundary content follows
+   *   in later chunks and is swapped in by inline scripts. Best TTFB, but
+   *   a client that never runs JavaScript (crawlers, `curl`, no-JS
+   *   browsers) is left looking at the fallbacks (solidjs/solid#3280).
+   * - `'async'`: the handler awaits the render until every boundary has
+   *   settled and sends one complete document. Nothing has flushed, so
+   *   each resolved boundary is spliced in place of its placeholder — no
+   *   fallback markup, no swap templates or scripts — while hydration data
+   *   still serializes, so JavaScript clients hydrate exactly as before.
+   *   The tradeoffs are inherent: time-to-first-byte waits for the slowest
+   *   boundary, and the whole page buffers in memory before it is sent.
+   *   `deferStream` is moot here (everything defers), and a `Location`
+   *   header written mid-render becomes a real 3xx instead of the
+   *   post-flush script fallback.
+   *
+   * This is the static default. To decide per request (e.g. `'async'` for
+   * crawler user agents or a `?nojs` flag), set `event.renderMode` in
+   * `app.middleware` before calling `next()`. Hosts driving the handler
+   * directly can override both per call with `handleRequest(request, {
+   * renderMode })`; precedence is that option, then `event.renderMode`,
+   * then this value. Applies to generated and authored entries alike (an
+   * authored `render()` returning a `renderToStream` result is awaited the
+   * same way). Server mode only — ignored in client mode, where the served
+   * shell has no boundaries to settle.
+   *
+   * @default 'stream'
+   */
+  renderMode?: 'stream' | 'async';
   /**
    * Enable the development toolbar. By default it is enabled when
    * `@solidjs/start-devtools` is installed. Setting this to `true` requires
@@ -222,6 +334,35 @@ export interface AppOptions {
    * @default false
    */
   external?: boolean;
+  /**
+   * Emit a ready-to-run Node server next to the server bundle:
+   * `dist/server/node.js` (same outDir as `server.js`). It serves the
+   * client build statically — hashed files under `build.assetsDir` as
+   * `Cache-Control: immutable`, everything else `must-revalidate` — and
+   * dispatches every other request through `handleRequest`, passing the raw
+   * Node request as `nativeEvent` (readable via `getRequestEvent()`), with
+   * the plugin's own node<->web bridge (HTTP/2, abort propagation, HEAD,
+   * backpressure — the same code the dev and preview middlewares run).
+   * `node dist/server/node.js` listens on `PORT` (default 3000) and `HOST`;
+   * the file also exports `listener` (the `(req, res)` function, for
+   * `http.createServer` / Express / Fastify), `createListener({ static?,
+   * event? })` (`static: false` leaves files and the client-mode fallback
+   * to the framework; `event` adds request-event fields next to
+   * `nativeEvent`) and `serve({ port?, host?, static?, event? })`.
+   *
+   * Applies to both app modes. In SSR mode the entry renders pages; in
+   * client mode (with `serverFunctions`, which keeps `dist/server`) it
+   * serves `dist/client` with an `index.html` history fallback for HTML
+   * navigations plus the server-function endpoint. Nothing is emitted when
+   * no server bundle exists — client mode without `serverFunctions`, or
+   * `app.external` — and the build warns. `server.js` and its
+   * `handleRequest` / `{ fetch }` contracts are unchanged: the entry is an
+   * extra emitted asset, not a second build input. Node only — every other
+   * mainstream runtime consumes the server bundle's `{ fetch }` directly.
+   *
+   * @default false
+   */
+  node?: boolean;
 }
 
 // Server-only app-mode request handler; also the server bundle's entry so a
@@ -231,6 +372,13 @@ export interface AppOptions {
 // chain and one request event across both dispatch paths).
 export const SSR_HANDLER_ID = 'virtual:solid-ssr-handler';
 const HANDLER_ID = SSR_HANDLER_ID;
+// With `app.instrument`, the handler id becomes a thin wrapper that awaits
+// the instrument module and only THEN imports the real handler under this
+// id — the one way ESM can run something to completion before the rest of
+// the graph is even fetched (static imports are hoisted and evaluated in
+// dependency order, so `import './instrument'` first would still evaluate
+// AFTER `@solidjs/web` and every module it pulls in).
+const HANDLER_IMPL_ID = 'virtual:solid-ssr-handler-impl';
 // Dev-only response marker: the generated dev handler answers non-page
 // requests that fell through the whole middleware chain to the terminal
 // page dispatch with a marked 404 instead of rendering HTML at them, and
@@ -257,9 +405,74 @@ const MANIFEST_ID = 'virtual:solid-manifest';
 const SERVER_FUNCTION_HANDLER_ID = 'virtual:solid-server-function-handler';
 const STORAGE_SOURCE = '@solidjs/web/storage';
 
-const ENTRY_EXTENSIONS = ['.tsx', '.jsx', '.ts', '.js', '.mjs'];
-const APP_EXTENSIONS = ['.tsx', '.jsx', '.ts', '.js'];
-const DOCUMENT_EXTENSIONS = ['.tsx', '.jsx'];
+const ENTRY_EXTENSIONS = ['.tsx', '.jsx', '.ts', '.js', '.mjs', '.tsrx'];
+const APP_EXTENSIONS = ['.tsx', '.jsx', '.ts', '.js', '.tsrx'];
+const DOCUMENT_EXTENSIONS = ['.tsx', '.jsx', '.tsrx'];
+
+// The server bundle's entry file name (app mode's `entryFileNames` below) and
+// the Node entry `app.node` emits beside it.
+const SERVER_ENTRY_FILE = 'server.js';
+const NODE_ENTRY_FILE = 'node.js';
+// With `app.instrument`, node.js only sequences and the runtime moves here.
+const NODE_RUNTIME_FILE = 'node-runtime.js';
+// The Node entry's runtime, built by rollup.config.js as a separate artifact
+// of this package (dist/node-entry.mjs) from src/node-entry/index.ts plus
+// the shared bridge in src/http.ts. Located relative to the plugin module
+// itself — both plugin builds (dist/esm/index.mjs, dist/cjs/index.cjs) sit
+// one directory below it.
+const NODE_ENTRY_RUNTIME = new URL('../node-entry.mjs', import.meta.url);
+
+/** Emit-time constants the runtime reads off its generated header. */
+interface NodeEntryConfig {
+  /** Client outDir relative to the server outDir (posix). */
+  clientDir: string;
+  /** The client build's `assetsDir` (immutable caching). */
+  assetsDir: string;
+  /** The resolved Vite `base`. */
+  base: string;
+  /** Client app mode: index.html fallback for HTML navigations. */
+  spa: boolean;
+  /** The file whose run listens (node.js even when the runtime sits beside it). */
+  entry: string;
+}
+
+/**
+ * dist/server/node.js: a header carrying the emit-time constants, then the
+ * runtime artifact verbatim (its `./server.js` import resolves to the
+ * sibling server bundle in the user's dist).
+ */
+function nodeEntryCode(config: NodeEntryConfig, serverOutDir: string): string {
+  let runtime: string;
+  try {
+    runtime = readFileSync(NODE_ENTRY_RUNTIME, 'utf-8');
+  } catch (error) {
+    throw new Error(
+      `[@solidjs/vite-plugin] app.node: the Node entry runtime is missing from the plugin ` +
+        `package (expected ${fileURLToPath(NODE_ENTRY_RUNTIME)}). Reinstall @solidjs/vite-plugin; ` +
+        `if you run the plugin from a checkout, run its build first. ` +
+        `Cause: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  return [
+    `// Generated by @solidjs/vite-plugin (app.node): the Node server for this build.`,
+    `// Run \`node ${serverOutDir}/${NODE_ENTRY_FILE}\` (env: PORT, HOST), or import { listener, createListener, serve }.`,
+    `const SOLID_NODE_CONFIG = ${JSON.stringify(config)};`,
+    runtime.trimEnd(),
+    ``,
+  ].join('\n');
+}
+
+// With `app.instrument`, node.js has no static imports so node:http loads after it (#418).
+function instrumentedNodeEntryCode(serverOutDir: string): string {
+  return [
+    `// Generated by @solidjs/vite-plugin (app.node): the Node server for this build.`,
+    `// Run \`node ${serverOutDir}/${NODE_ENTRY_FILE}\` (env: PORT, HOST), or import { listener, createListener, serve }.`,
+    `await import('./${SERVER_ENTRY_FILE}');`,
+    `const entry = await import('./${NODE_RUNTIME_FILE}');`,
+    `export const { listener, createListener, serve } = entry;`,
+    ``,
+  ].join('\n');
+}
 
 function probe(root: string, stem: string, extensions: string[]): string | null {
   for (const ext of extensions) {
@@ -279,6 +492,37 @@ function normalizeUserPath(root: string, spec: string, option: string): string {
     throw new Error(`[@solidjs/vite-plugin] app.${option} must live inside the Vite root: ${spec}`);
   }
   return relative;
+}
+
+/** True when `directory` is nested inside `parent` and is not `parent` itself. */
+function isStrictSubdirectory(parent: string, directory: string): boolean {
+  const relative = path.relative(parent, directory);
+  return (
+    relative !== '' &&
+    relative !== '..' &&
+    !relative.startsWith(`..${path.sep}`) &&
+    !path.isAbsolute(relative)
+  );
+}
+
+type RenderMode = 'stream' | 'async';
+
+/**
+ * Validates `app.renderMode` at config time: `'stream'` or `'async'`.
+ * The per-request module form shipped in 3.0.0-next prereleases is gone —
+ * per-request decisions are `event.renderMode` in middleware — so a path
+ * (or anything else) is a config error carrying the migration.
+ */
+function resolveRenderMode(value: unknown): RenderMode {
+  if (value === undefined) return 'stream';
+  if (value === 'stream' || value === 'async') return value;
+  const got = typeof value === 'string' ? JSON.stringify(value) : typeof value;
+  throw new Error(
+    `[@solidjs/vite-plugin] app.renderMode must be 'stream' (the default) or 'async'; got ${got}. ` +
+      `The per-request module form was removed: decide per request in app.middleware instead, ` +
+      `by setting the mode on the request event before calling next() — ` +
+      `\`export default (event, next) => { if (isCrawler(event.request)) event.renderMode = 'async'; return next(); }\`.`,
+  );
 }
 
 interface ResolvedEntries {
@@ -365,8 +609,8 @@ function resolveEntries(root: string, options: AppOptions, clientMode: boolean):
     : (probe(root, 'src/App', APP_EXTENSIONS) ?? probe(root, 'src/app', APP_EXTENSIONS));
   if (!app) {
     throw new Error(
-      `[@solidjs/vite-plugin] the \`app\` option needs a root component: add src/App.tsx ` +
-        `(or set app.root), or provide src/entry-server.* and src/entry-client.* entries.`,
+        `[@solidjs/vite-plugin] the \`app\` option needs a root component: add src/App.tsx ` +
+          `(or set app.root), or provide src/entry-server.* and src/entry-client.* entries.`,
     );
   }
   const document = options.document
@@ -386,9 +630,39 @@ export function appServe(
   options: AppOptions,
   internal: {
     serverFunctions?: boolean;
+    /**
+     * The server-function endpoint as the runtime is configured with it
+     * (leading slash, no `base`); present when `serverFunctions` is on.
+     * The preview middleware exempts everything under it from compression.
+     */
+    serverFunctionsEndpoint?: string;
     serverComponents?: boolean;
     ssr?: boolean;
     styleFilter?: DevStyleFilter;
+    /** `'auto'` = enable when the app has `@solidjs/diagnostics` installed. */
+    diagnostics?: boolean | 'auto';
+    /**
+     * Import the Chrome Performance panel tracks module
+     * (`virtual:solid-performance-tracks`, served by the
+     * `solid:performance-tracks` plugin) at the top of the client entry
+     * under dev serve. Skipped, like that plugin, when the app's
+     * `@solidjs/web` lacks the subpath.
+     */
+    performanceTracks?: boolean;
+    /**
+     * Reports the resolved document shell path (absolute, or null when the
+     * built-in virtual document is used) back to the main plugin, which
+     * declines HMR for that module's client compile (solidjs/solid#3151).
+     */
+    onDocumentResolved?: (documentPath: string | null) => void;
+    /**
+     * Reports the client entry this plugin adds to the client build's input
+     * (the virtual generated entry id, or the authored entry's absolute
+     * path) back to the main plugin, which stamps it as `_entry` on
+     * `virtual:solid-manifest` so the built handler and the runtime never
+     * have to guess the entry among other configured inputs (#353).
+     */
+    onClientEntryResolved?: (entryId: string) => void;
   } = {},
 ): Plugin[] {
   // Client mode (the `app` option without `ssr: true`) rides this exact
@@ -412,22 +686,58 @@ export function appServe(
   const serverComponents = !!internal.serverComponents;
   const productionErrorBoundary = options.productionErrorBoundary !== false;
   const styleFilter = internal.styleFilter;
+  // `'auto'` resolves against the project root in configResolved, before
+  // any of the (lazy) uses in entry codegen and the entry transform.
+  let diagnostics = internal.diagnostics === true;
+  // Resolved in configResolved (dev serve, non-test, subpath present) —
+  // the performance-tracks import is the first line of the client entry.
+  let performanceTracks = false;
   let devtoolsEnabled = false;
-  let devtoolsResolutions: Partial<
-    Record<'client' | 'server', Promise<string | null>>
-  > = {};
-  let devtoolsIds: Partial<Record<'client' | 'server', string | null>> = {};
+  // Toolbar detection, memoized per consumer: whether @solidjs/start-devtools
+  // resolves at all, and the app importer it was probed from. Only the
+  // verdict is kept — the resolved id is deliberately not (see resolveId).
+  let devtoolsDetections: Partial<Record<'client' | 'server', Promise<boolean>>> = {};
+  let devtoolsImporters: Partial<Record<'client' | 'server', string>> = {};
   // `external` is server-mode-only (documented no-op in client mode, so a
   // host-integrated config survives the `ssr` boolean flip untouched).
   const externalServer = !clientMode && !!options.external;
+  // `app.node` emits dist/server/node.js beside the server bundle — only
+  // where a server bundle exists to wrap. Client mode without server
+  // functions keeps no dist/server (the prerender hook removes it), and
+  // `app.external` hands the server build to a host; both warn at build
+  // time and emit nothing.
+  const nodeEntry = !!options.node;
+  const nodeEntryApplies =
+    nodeEntry && !externalServer && (!clientMode || !!internal.serverFunctions);
+  // Resolved build outDirs (absolute) of the client and ssr environments,
+  // for the entry's client-directory constant. The client's generateBundle
+  // overrides with the directory it actually wrote to (a host orchestrator
+  // may relocate it) when both environments build in one process.
+  let clientOutDir: string | null = null;
+  let serverOutDir: string | null = null;
+  let clientAssetsDir = 'assets';
   let root = process.cwd();
   let base = '/';
   let isBuild = false;
+  // Set from the config hook, before Vite installs the default no-op
+  // `builder.buildApp`. A user or host callback here means the SSR service
+  // must survive client-mode prerender even with server functions off.
+  let configBuildApp = false;
   let entries: ResolvedEntries | undefined;
   /** Absolute path of the user's middleware module, when configured. */
   let middlewarePath: string | null = null;
+  /** Absolute path of the instrument module awaited before the handler graph, when configured. */
+  let instrumentPath: string | null = null;
   /** Absolute path of the per-request setup module, when configured (server mode). */
   let setupPath: string | null = null;
+  /** Absolute path of the client setup module run before hydrate/render, when configured. */
+  let clientSetupPath: string | null = null;
+  /**
+   * `app.renderMode`, resolved at config time: the static mode baked into
+   * the handler (server mode only — a documented no-op in client mode,
+   * whose shell has no boundaries to settle).
+   */
+  let renderMode: RenderMode = 'stream';
 
   function requireEntries(): ResolvedEntries {
     // config() always runs before resolveId/load/configureServer.
@@ -435,37 +745,49 @@ export function appServe(
     return entries;
   }
 
+  type DevtoolsResolve = (source: string, importer: string) => Promise<{ id: string } | null>;
+
+  /**
+   * Resolve @solidjs/start-devtools for generated code: from the app graph
+   * first (the documented install location), then from the plugin's own
+   * file — in pnpm-isolated apps a copy that is only a dependency of the
+   * plugin is not reachable from the app's importers. Resolving from the
+   * plugin's own file never yields null when the package is absent: it is
+   * declared an optional peer dependency, so Vite answers with its
+   * `__vite-optional-peer-dep:` stub (an empty module). That stub counts as
+   * "not installed".
+   */
+  async function resolveDevtoolsId(
+    resolve: DevtoolsResolve,
+    importer: string,
+  ): Promise<string | null> {
+    const realId = (resolved: { id: string } | null) =>
+      resolved && !resolved.id.startsWith('__vite-optional-peer-dep:') ? resolved.id : null;
+    return (
+      realId(await resolve(DEVTOOLS_PACKAGE, importer)) ??
+      realId(await resolve(DEVTOOLS_PACKAGE, fileURLToPath(import.meta.url)))
+    );
+  }
+
   async function resolveDevtools(
-    resolve: (source: string, importer: string) => Promise<{ id: string } | null>,
+    resolve: DevtoolsResolve,
     importer: string,
     consumer: 'client' | 'server',
   ): Promise<boolean> {
     if (!devtoolsEnabled) return false;
-    // Detect from the app graph first (the documented install location), then
-    // from the plugin's own file: in pnpm-isolated apps a copy that is only a
-    // dependency of the plugin is not reachable from the app's importers. The
-    // resolved id is kept so imports from generated modules can use it.
-    devtoolsResolutions[consumer] ??= (async () => {
-      // Resolving from the plugin's own file never yields null when the
-      // package is absent: it is declared an optional peer dependency, so
-      // Vite answers with its `__vite-optional-peer-dep:` stub (an empty
-      // module). Treat that stub as "not installed".
-      const realId = (resolved: { id: string } | null) =>
-        resolved && !resolved.id.startsWith('__vite-optional-peer-dep:') ? resolved.id : null;
-      return (
-        realId(await resolve(DEVTOOLS_PACKAGE, importer)) ??
-        realId(await resolve(DEVTOOLS_PACKAGE, fileURLToPath(import.meta.url)))
-      );
-    })();
-    const id = await devtoolsResolutions[consumer];
-    devtoolsIds[consumer] = id;
-    if (!id && options.devtools === true) {
+    // An install cannot change under a running server, so the verdict is
+    // memoized per consumer. The id it was reached with is not reused for
+    // generated imports: resolveId resolves afresh from the same importer.
+    devtoolsImporters[consumer] ??= importer;
+    devtoolsDetections[consumer] ??= resolveDevtoolsId(resolve, importer).then((id) => id !== null);
+    const detected = await devtoolsDetections[consumer];
+    if (!detected && options.devtools === true) {
       throw new Error(
         '[@solidjs/vite-plugin] app.devtools requires @solidjs/start-devtools. ' +
           'Install it as a development dependency or set app.devtools to false.',
       );
     }
-    return id !== null;
+    return detected;
   }
 
   /**
@@ -596,7 +918,7 @@ export function appServe(
       // and once at build time into dist/client/index.html. The client
       // entry script is injected by the handler, exactly like SSR mode.
       return [
-        `import { renderToStream } from '@solidjs/web';`,
+        `import { renderToStream${isBuild ? '' : ', getRequestEvent'} } from '@solidjs/web';`,
         `import manifest from ${JSON.stringify(MANIFEST_ID)};`,
         `import Document from ${JSON.stringify(documentSpec())};`,
         ...errorBoundaryImport(),
@@ -610,14 +932,20 @@ export function appServe(
               `  </DefaultErrorBoundary>`,
             ]
           : [`  <Document />`]),
-        `  ), { manifest });`,
+        // A build prerenders this shell once into dist/client/index.html,
+        // so it must not carry a request's nonce; dev renders it per
+        // request, so the request's nonce applies there.
+        `  ), { manifest${isBuild ? '' : ', nonce: getRequestEvent()?.nonce'} });`,
         `}`,
       ].join('\n');
     }
     const { app } = requireEntries();
-    const streamOptions = `{ manifest${serverComponents ? ', plugins: [ServerComponentPlugin]' : ''} }`;
+    // `event.nonce` was validated (and host-overridden) by the handler
+    // before the render; @solidjs/web reads the nonce from the options only,
+    // so the entry hands it over explicitly.
+    const streamOptions = `{ manifest, nonce: getRequestEvent()?.nonce${serverComponents ? ', plugins: [ServerComponentPlugin]' : ''} }`;
     return [
-      `import { renderToStream${setupPath ? ', getRequestEvent' : ''} } from '@solidjs/web';`,
+      `import { renderToStream, getRequestEvent } from '@solidjs/web';`,
       ...(serverComponents
         ? [
             `import { configureServerFunctionsServer } from '@solidjs/web/server-functions';`,
@@ -686,6 +1014,30 @@ export function appServe(
 
   function generatedEntryClientCode(toolbar: boolean): string {
     const { app } = requireEntries();
+    // Dev-only: the diagnostics bridge fronts dev-mode channels, so builds
+    // never see this import (mirrors the plugin's own serve-only `apply`).
+    const diagnosticsImport =
+      diagnostics && !isBuild ? [`import ${JSON.stringify(DIAGNOSTICS_CLIENT_ID)};`] : [];
+    // Dev-serve-only likewise, and FIRST: the tracks must be enabled before
+    // anything renders — the module's side effect runs in import order, so
+    // it precedes the toolbar's and the app's module evaluation and the
+    // render/hydration call below, which land on the timeline. (The JSX
+    // compiler hoists its own runtime helper import above it; evaluating
+    // `@solidjs/web` renders nothing.) `performanceTracks` is already false
+    // on builds (configResolved), so the import can never reach a bundle.
+    const performanceTracksImport =
+      performanceTracks && !isBuild
+        ? [`import ${JSON.stringify(PERFORMANCE_TRACKS_CLIENT_ID)};`]
+        : [];
+    // `app.clientSetup`: imported for its side effects ahead of the app,
+    // after the dev-only tooling above so its failures reach the overlay.
+    // A static import, not `await import()` like `app.instrument`: a
+    // dynamic import would move the app into a separate chunk the server
+    // neither preloads nor links CSS for. The entry body (hydrate/render)
+    // still waits for an async module's top-level await to settle.
+    const clientSetupImport = clientSetupPath
+      ? [`import ${JSON.stringify(clientSetupPath)};`]
+      : [];
     if (clientMode) {
       // render(), not hydrate(): the shell's body is empty, the app mounts
       // fresh. Client code compiles non-hydratable in client mode, so the
@@ -693,6 +1045,9 @@ export function appServe(
       // without `async` (plain module = deferred), so document.body is
       // complete when this runs.
       return [
+        ...performanceTracksImport,
+        ...diagnosticsImport,
+        ...clientSetupImport,
         `import { render } from '@solidjs/web';`,
         ...errorBoundaryImport(),
         ...(toolbar ? [`import { DevToolbar } from ${JSON.stringify(DEVTOOLS_PACKAGE)};`] : []),
@@ -708,6 +1063,9 @@ export function appServe(
       ].join('\n');
     }
     return [
+      ...performanceTracksImport,
+      ...diagnosticsImport,
+      ...clientSetupImport,
       `import { hydrate } from '@solidjs/web';`,
       ...(toolbar ? [`import { DevToolbar } from ${JSON.stringify(DEVTOOLS_PACKAGE)};`] : []),
       ...(serverComponents
@@ -793,12 +1151,30 @@ export function appServe(
   // `serverFunctions` is enabled the endpoint is dispatched here on every
   // surface (the runnable-dev middleware routes through this module), so
   // user middleware and the shared request event front it identically.
+  /**
+   * The handler entry with `app.instrument`: sequence the instrument
+   * module to completion, then load the real handler. The two awaits are
+   * the contract — see the option's docs. Exports are re-declared by name
+   * (the handler's surface is fixed: `handleRequest` and the `fetch`
+   * default) because a static `export * from` would be hoisted like any
+   * other static import and defeat the ordering.
+   */
+  function instrumentedHandlerCode(): string {
+    return [
+      `await import(${JSON.stringify(instrumentPath)});`,
+      `const handler = await import(${JSON.stringify(HANDLER_IMPL_ID)});`,
+      `export const handleRequest = handler.handleRequest;`,
+      `export default handler.default;`,
+      ``,
+    ].join('\n');
+  }
+
   function handlerModuleCode(externalDev: boolean): string {
     const { generated, entryClient } = requireEntries();
     const composeServerFunctions = internal.serverFunctions;
 
     const lines = [
-      `import { createRequestEvent, createSSRResponse, commitEventResponse${middlewarePath ? ', composeMiddleware' : ''} } from '@solidjs/web';`,
+      `import { createRequestEvent, createSSRResponse, commitEventResponse, isResponseEnvelope${isBuild ? ', reportRequestFailure' : ''} } from '@solidjs/web';`,
       `import { provideRequestEvent } from ${JSON.stringify(STORAGE_SOURCE)};`,
       `import * as entry from ${JSON.stringify(entryServerSpec())};`,
       ...(middlewarePath
@@ -826,8 +1202,16 @@ export function appServe(
         `function resolveClientEntry() {`,
         `  if (clientEntryUrl !== undefined) return clientEntryUrl;`,
         `  clientEntryUrl = null;`,
-        // The plugin's manifest module normalizes lazy facade chunks
-        // (isDynamicEntry) so exactly one real entry remains flagged.
+        // The plugin's manifest module names the client entry it injected
+        // into the build (`_entry`): every configured input is a genuine
+        // `isEntry` record (a filesystem router's `buildInputs` lists every
+        // route module), so scanning for the first flagged record would pick
+        // whichever sorts first (#353). The scan stays as the fallback for
+        // hand-rolled manifests without the stamp.
+        `  const stamped = manifest._entry && manifest[manifest._entry];`,
+        `  if (stamped && stamped.file) {`,
+        `    return (clientEntryUrl = joinAssetPath(manifest._base, stamped.file));`,
+        `  }`,
         `  for (const key in manifest) {`,
         `    const chunk = manifest[key];`,
         `    if (chunk && chunk.isEntry && chunk.file) {`,
@@ -839,15 +1223,26 @@ export function appServe(
         `}`,
       );
     } else {
-      const devHead =
-        `<script>${devStylePatch}</script>` +
-        `<script type="module" src="${joinBase(base, '/@vite/client')}"></script>`;
-      lines.push(``, `const DEV_HEAD = ${JSON.stringify(devHead)};`);
+      // Built per request from the nonce attributes: under a nonce-based CSP
+      // the two scripts carry the script nonce (`'strict-dynamic'` then
+      // trusts the modules the Vite client loads) and the collected dev
+      // styles carry the style nonce.
+      lines.push(
+        ``,
+        `function devHead(nonceAttr) {`,
+        `  return '<script' + nonceAttr + '>' + ${JSON.stringify(devStylePatch)} + '</' + 'script>' +`,
+        `    '<script type="module"' + nonceAttr + ' src=' + ${JSON.stringify(JSON.stringify(joinBase(base, '/@vite/client')))} + '></' + 'script>';`,
+        `}`,
+        ``,
+        `function devStyles(html, styleAttr) {`,
+        `  return styleAttr ? html.split('<style data-asset=').join('<style' + styleAttr + ' data-asset=') : html;`,
+        `}`,
+      );
     }
 
-    // Middleware: the user module default-exports one fetch-style function
-    // or an array, composed in order. Without one, the chain degenerates to
-    // the terminal dispatch.
+    // Middleware: the user module default-exports one `(event, next)`
+    // function or an array, composed in order. Without one, the chain
+    // degenerates to the terminal dispatch.
     lines.push(``);
     if (middlewarePath) {
       lines.push(
@@ -857,11 +1252,81 @@ export function appServe(
         `    throw new Error('[@solidjs/vite-plugin] app.middleware must default-export a function or an array of functions: ' + ${JSON.stringify(middlewarePath)});`,
         `  }`,
         `}`,
-        `const runMiddleware = composeMiddleware(middlewares);`,
+        // The plugin's own composition (event-first, unlike @solidjs/web's
+        // request-first composeMiddleware): each middleware receives the
+        // event, and next() takes no arguments — the request a later
+        // middleware, the server-function endpoint and the render see is
+        // always `event.request`, so substituting it is an assignment.
+        `function runMiddleware(event, last) {`,
+        `  let index = -1;`,
+        `  function dispatch(i) {`,
+        `    if (i <= index) return Promise.reject(new Error('[@solidjs/vite-plugin] next() called multiple times in app.middleware'));`,
+        `    index = i;`,
+        `    if (i === middlewares.length) return Promise.resolve(last());`,
+        `    return Promise.resolve(middlewares[i](event, function next() {`,
+        `      if (arguments.length && arguments[0] !== undefined) {`,
+        `        return Promise.reject(new TypeError('[@solidjs/vite-plugin] app.middleware: next() takes no arguments. ' +`,
+        `          'Middleware receives the request event — (event, next) — so to substitute the request, assign ' +`,
+        `          'event.request = newRequest before calling next().'));`,
+        `      }`,
+        `      return dispatch(i + 1);`,
+        `    }));`,
+        `  }`,
+        `  return dispatch(0);`,
+        `}`,
       );
     } else {
-      lines.push(`const runMiddleware = (request, next) => next(request);`);
+      lines.push(`const runMiddleware = (event, next) => next();`);
     }
+
+    // Per-request render inputs live on the request event: `event.renderMode`
+    // and `event.nonce`, set by middleware before next() (the render runs
+    // inside it). Precedence per request: the `handleRequest` option (seeded
+    // onto the event before the chain and reasserted at dispatch), then the
+    // event field, then the static config. Render mode: 'stream' flushes the
+    // shell with fallbacks in place and streams boundary content after it;
+    // 'async' adopts the renderToStream result's thenable — which waits for
+    // the complete render — so one settled document goes out (the fix for
+    // no-JS clients, solidjs/solid#3280). Every source is validated against
+    // the two literals with the offender named.
+    lines.push(
+      ``,
+      `function assertRenderMode(mode, source) {`,
+      `  if (mode !== 'stream' && mode !== 'async') {`,
+      `    throw new Error('[@solidjs/vite-plugin] ' + source + " must be 'stream' or 'async', got " + JSON.stringify(mode));`,
+      `  }`,
+      `  return mode;`,
+      `}`,
+    );
+
+    // CSP nonce: @solidjs/web's `CSPNonce`, a string or a `{ script, style }`
+    // pair with both keys, each a non-empty string or `false`. An empty
+    // value (undefined, null or '') means none, as in the runtime. Anything
+    // else is rejected: projected as is, a typo'd key or a number would
+    // leave the tags without a nonce without a word.
+    lines.push(
+      ``,
+      `function assertNonce(nonce, source) {`,
+      `  if (nonce == null || typeof nonce === 'string') return nonce || undefined;`,
+      `  const prototype = typeof nonce === 'object' ? Object.getPrototypeOf(nonce) : undefined;`,
+      `  const destination = (value) => value === false || (typeof value === 'string' && value !== '');`,
+      `  if (`,
+      `    (prototype === Object.prototype || prototype === null) &&`,
+      `    Object.keys(nonce).every((key) => key === 'script' || key === 'style') &&`,
+      `    destination(nonce.script) &&`,
+      `    destination(nonce.style)`,
+      `  ) {`,
+      `    return nonce;`,
+      `  }`,
+      `  const got = Array.isArray(nonce) ? 'an array' : prototype ? 'an object with keys ' + JSON.stringify(Object.keys(nonce)) : typeof nonce;`,
+      `  throw new Error('[@solidjs/vite-plugin] ' + source + ' must be a string, a { script, style } object (each a non-empty string or false), or undefined; got ' + got);`,
+      `}`,
+      ``,
+      `function assertHostOptions(options) {`,
+      `  if (options.renderMode !== undefined) assertRenderMode(options.renderMode, 'handleRequest options.renderMode');`,
+      `  assertNonce(options.nonce, 'handleRequest options.nonce');`,
+      `}`,
+    );
 
     // No `_$SC` bootstrap injection: the runtime's serialized
     // server-component references self-bootstrap the registry (each
@@ -876,8 +1341,24 @@ export function appServe(
       `  return value.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');`,
       `}`,
       ``,
+      `function nonceAttribute(value) {`,
+      `  return value ? ' nonce="' + escapeAttribute(value) + '"' : '';`,
+      `}`,
+      ``,
+      // One destination of a `CSPNonce` (a string, or a `{ script, style }`
+      // pair with `false` for an un-nonced destination). Kept local: the
+      // matching @solidjs/web helpers are internal.
+      `function destinationNonce(nonce, destination) {`,
+      `  const value = typeof nonce === 'string' ? nonce : nonce && nonce[destination];`,
+      `  return typeof value === 'string' && value ? value : undefined;`,
+      `}`,
+      ``,
+      // The client entry and the dev scripts take the script destination of
+      // a `{ script, style }` pair; the dev styles and the csp-nonce meta the
+      // style destination.
       `function createHtmlChunkTransform(clientEntry, extraHead, nonce) {`,
-      `  const nonceAttr = nonce ? ' nonce="' + escapeAttribute(nonce) + '"' : '';`,
+      `  const nonceAttr = nonceAttribute(destinationNonce(nonce, 'script'));`,
+      `  const styleAttr = nonceAttribute(destinationNonce(nonce, 'style'));`,
       `  let first = true;`,
       `  let injected = false;`,
       `  return (chunk) => {`,
@@ -904,15 +1385,23 @@ export function appServe(
         `      chunk = chunk.replace(/<script(?:\\s[^>]*)?>window\\._\\$HY\\|\\|[\\s\\S]*?<\\/script>(?:<!--xs-->)?/, '');`,
       );
     }
-    const headParts: string[] = [];
+    // The `csp-nonce` meta hands the style nonce to Vite's client code,
+    // which reads `meta[property=csp-nonce]`: in dev for the styles the Vite
+    // client injects on HMR, in a build for the modulepreload and
+    // stylesheet links `__vitePreload` inserts for lazy chunks. (Vite only
+    // writes it itself when it transforms an index.html with
+    // `html.cspNonce`; here the handler writes the head per request.)
+    const headParts: string[] = [
+      `(styleAttr ? '<meta property="csp-nonce"' + styleAttr + '>' : '')`,
+    ];
     // Dev: the style patch + Vite client, then either middleware-provided
     // styles or the external environment's HMR-tracked virtual styles module.
     if (!isBuild) {
       headParts.push(
-        `DEV_HEAD`,
+        `devHead(nonceAttr)`,
         externalDev
-          ? `(extraHead === undefined ? DEV_STYLES_HEAD : extraHead)`
-          : `(extraHead || '')`,
+          ? `devStyles(extraHead === undefined ? DEV_STYLES_HEAD : extraHead, styleAttr)`
+          : `devStyles(extraHead || '', styleAttr)`,
       );
     }
     if (generated || clientMode) {
@@ -926,11 +1415,21 @@ export function appServe(
         `(clientEntry ? '<script type="module"' + nonceAttr + ' src="' + clientEntry + '"${clientMode ? '' : ' async'}></' + 'script>' : '')`,
       );
     }
-    if (headParts.length) {
-      lines.push(`      chunk = chunk.replace('</head>', ${headParts.join(' + ')} + '</head>');`);
+    lines.push(`      chunk = chunk.replace('</head>', ${headParts.join(' + ')} + '</head>');`);
+    lines.push(`    }`);
+    if (clientMode) {
+      // The shell-end marker (@solidjs/web 2.0.0-rc.15, solidjs/solid#4002)
+      // closes every shell that rendered `<HydrationScript />`. It writes to
+      // `_$HY` without a guard, so it goes with the bootstrap stripped above;
+      // left alone it throws `_$HY is not defined`. It follows the shell's
+      // records rather than its head, so it is matched in any chunk.
+      lines.push(
+        `    if (chunk.includes('_$HY.s[')) {`,
+        `      chunk = chunk.replace(/<script(?:\\s[^>]*)?>_\\$HY\\.s\\[[\\s\\S]*?<\\/script>/, '');`,
+        `    }`,
+      );
     }
     lines.push(
-      `    }`,
       `    if (first) { first = false; chunk = '<!DOCTYPE html>' + chunk; }`,
       `    return chunk;`,
       `  };`,
@@ -946,10 +1445,24 @@ export function appServe(
     // (cookies append entry-by-entry, other headers gap-fill, status stays
     // the response's own) and commits the stub. Committed stubs pass
     // through untouched, so the edge applies it unconditionally.
-    lines.push(``, `async function dispatchRequest(request, event, options) {`);
+    lines.push(
+      ``,
+      // `consumed` records the render inputs the page render read, for the
+      // dev check in handleRequest (a write after next() came too late).
+      `async function dispatchRequest(event, options, consumed) {`,
+      // The event is the single source of truth for the request: middleware
+      // substitutes it by assigning `event.request` before next().
+      `  const request = event.request;`,
+    );
     if (composeServerFunctions) {
       lines.push(
-        `  if (new URL(request.url).pathname === endpoint) {`,
+        // A call's address is `<endpoint>/<id>`, `<endpoint>/data/<id>` or
+        // `<endpoint>/live/<id>` (solidjs/solid#3076, #3094; the live shape
+        // since @solidjs/web 2.0.0-rc.10); the prefix gate covers all three,
+        // and the bare mount still routes so a misaddressed request 404s
+        // through the runtime handler instead of rendering a page at it.
+        `  const requestPath = new URL(request.url).pathname;`,
+        `  if (requestPath === endpoint || requestPath.startsWith(endpoint + '/')) {`,
         // The call shares the middleware chain's event (locals decoration,
         // the response stub); an explicit host-provided createEvent wins.
         // No fold here: the runtime's server-function handler runs the
@@ -982,7 +1495,41 @@ export function appServe(
       isBuild
         ? `  const clientEntry = options.clientEntry || resolveClientEntry();`
         : `  const clientEntry = options.clientEntry || ${JSON.stringify(devClientEntryUrl())};`,
-      `  let result = entry.render(request, { clientEntry, ...options.context });`,
+      // Read before the render starts, inside the request scope and after
+      // the middleware chain ran down to here: whatever middleware put on
+      // the event before next() is visible. Host options were seeded onto
+      // the event before the chain; reasserted here, they win over a
+      // middleware write. Generated entries hand `event.nonce` to
+      // renderToStream; authored entries read it the same way.
+      `  if (options.renderMode !== undefined) event.renderMode = options.renderMode;`,
+      `  if (options.nonce !== undefined) event.nonce = options.nonce;`,
+      `  const renderMode = event.renderMode === undefined || event.renderMode === null ? ${JSON.stringify(renderMode)} : assertRenderMode(event.renderMode, 'event.renderMode');`,
+      ...(clientMode && isBuild
+        ? [
+            // The client-mode shell is prerendered once into
+            // dist/client/index.html: a nonce baked into a static file is
+            // no nonce at all, so the shell renders without one (the
+            // generated entry renders without one either way).
+            `  if (assertNonce(event.nonce, 'event.nonce') !== undefined) {`,
+            `    console.warn('[@solidjs/vite-plugin] event.nonce is ignored for the client-mode shell: it is ' +`,
+            `      'prerendered once into dist/client/index.html, so a per-request nonce cannot reach it. Allow ' +`,
+            `      "the shell's inline scripts by hash ('sha256-...') instead, or set ssr: true.");`,
+            `    event.nonce = undefined;`,
+            `  }`,
+            `  const nonce = undefined;`,
+          ]
+        : [`  const nonce = assertNonce(event.nonce, 'event.nonce');`]),
+      `  consumed.rendered = true;`,
+      `  consumed.nonce = event.nonce;`,
+      `  consumed.renderMode = event.renderMode;`,
+      // Authored entries own renderToStream, and the runtime reads the nonce
+      // from those options only. The resolved value (host option, else the
+      // event) goes out as context.nonce; with none, a nonce the host
+      // already put on options.context is left alone. Generated entries
+      // read event.nonce themselves.
+      `  const renderContext = { clientEntry, ...options.context };`,
+      `  if (nonce !== undefined) renderContext.nonce = nonce;`,
+      `  let result = entry.render(request, renderContext);`,
       // renderToStream results are thenables whose then() waits for the
       // *complete* render — check for pipe first so streaming survives, and
       // only await plain promises (async render functions).
@@ -997,6 +1544,16 @@ export function appServe(
             `  if (result && result.${STREAM_BOX}) result = result.${STREAM_BOX};`,
           ]
         : []),
+      // Async mode adopts the thenable deliberately — the very thing the
+      // pipe-first check and the setup box exist to avoid in stream mode.
+      // It resolves with the full HTML once every boundary settled, each
+      // spliced in place pre-flush (no fallbacks, no swap scripts; hydration
+      // data still serialized), and the string then takes
+      // createSSRResponse's string path below: stub commit, transformChunk
+      // on the whole document, and a mid-render Location as a real 3xx.
+      `  if (renderMode === 'async' && result && typeof result.then === 'function') {`,
+      `    result = await result;`,
+      `  }`,
       // Raw Responses fold at the handler edge (handleRequest), after the
       // middleware chain unwinds — not here, where middleware above this
       // frame could still legitimately mutate headers.
@@ -1004,14 +1561,76 @@ export function appServe(
       // The runtime's response-head lifecycle: commit at shell flush,
       // pre-flush Location as a real redirect, post-flush Location as the
       // script fallback; the transform injects the doctype/head pieces.
+      // The redirect fallback is a single script, so a `{ script, style }`
+      // nonce contributes its script value, as with @solidjs/web's other
+      // single-script surfaces.
       `  return createSSRResponse(result, event, {`,
       `    responseInit: options.responseInit,`,
-      `    nonce: options.nonce,`,
-      `    transformChunk: createHtmlChunkTransform(clientEntry, options.devHead, options.nonce),`,
+      `    nonce: destinationNonce(nonce, 'script') || null,`,
+      `    transformChunk: createHtmlChunkTransform(clientEntry, options.devHead, nonce),`,
       `  });`,
       `}`,
       ``,
+    );
+
+    // Failure containment for whatever escapes the chain. A thrown Response
+    // is the response, like the server-function endpoint's plain-HTTP answer
+    // (`throw redirect()` included), and so is the Response a thrown
+    // envelope carries (its plain-HTTP form); `Response.error()` (status 0)
+    // is not a response to send. The classification is guarded, so a
+    // hostile thrown value (a revoked Proxy) reads as an ordinary failure
+    // instead of escaping the catch.
+    //
+    // In dev that is all: any other failure rethrows, so the dev server sees
+    // the original error (with the built-in dev middleware, Vite's error
+    // middleware and its overlay).
+    //
+    // In a build any other failure (a middleware throw, a app.setup
+    // failure, an invalid event.renderMode or event.nonce, a render that
+    // throws before renderToStream returns) must not leave handleRequest: each host would
+    // answer it its own way and the configured error policy would never see
+    // it. It is reported through @solidjs/web's `reportRequestFailure`
+    // (`{ kind: 'request', handling: 'failed' }` with the event, and to
+    // console.error when no `configureServerErrors` hook is registered).
+    // The runtime hears a request failure only for an error object it has
+    // not reported yet, so one it already reported (a render failure, or an
+    // uncaught in-process server-function call, heard as
+    // `server-function`/`thrown`) is not
+    // heard twice. The answer is a bodyless 500 like the endpoint's. The
+    // edge fold below adds the stub's headers and cookies while the
+    // response head is still open; once next() returned a rendered page,
+    // the stub was committed with that page and the 500 goes out without
+    // them.
+    lines.push(
+      ...(isBuild
+        ? [
+            `function containFailure(error, event) {`,
+            `  try {`,
+            `    const thrown = isResponseEnvelope(error) ? error.response : error;`,
+            `    if (thrown instanceof Response && thrown.status !== 0) return thrown;`,
+            `  } catch {}`,
+            `  reportRequestFailure(error, event);`,
+            `  return new Response(null, { status: 500 });`,
+            `}`,
+          ]
+        : [
+            `function containFailure(error) {`,
+            `  try {`,
+            `    const thrown = isResponseEnvelope(error) ? error.response : error;`,
+            `    if (thrown instanceof Response && thrown.status !== 0) return thrown;`,
+            `  } catch {}`,
+            `  throw error;`,
+            `}`,
+          ]),
+      ``,
+    );
+
+    lines.push(
       `export async function handleRequest(request, options = {}) {`,
+      // A bad per-call option is the host's own error, not the app's: it
+      // rejects up front, before the chain runs, instead of being contained
+      // as a request failure.
+      `  assertHostOptions(options);`,
       // `options.event` is the public wrapper->event extension seam: extra
       // fields (conventionally `nativeEvent`, the platform's raw request
       // object) spread over the event's defaults at creation, so hosts and
@@ -1019,12 +1638,38 @@ export function appServe(
       // with — no new convention beyond createRequestEvent's own init
       // parameter (spreading undefined is a no-op).
       `  const event = createRequestEvent(request, options.event);`,
+      // Host render inputs are seeded before the chain, so middleware sees
+      // them (e.g. `event.nonce ??= ...` builds its CSP header from the
+      // host's nonce); dispatch reasserts them so they also win.
+      `  if (options.nonce !== undefined) event.nonce = options.nonce;`,
+      `  if (options.renderMode !== undefined) event.renderMode = options.renderMode;`,
+      `  const consumed = { rendered: false };`,
       // Middleware runs inside the request scope, after event creation —
-      // getRequestEvent() answers in middleware exactly as in app code, and
-      // nothing reaches the wire until the outermost middleware returns.
-      `  const response = await provideRequestEvent(event, () =>`,
-      `    runMiddleware(request, (req) => dispatchRequest(req || request, event, options)),`,
-      `  );`,
+      // getRequestEvent() answers in middleware with the same event it
+      // receives, and nothing reaches the wire until the outermost
+      // middleware returns.
+      `  const response = await provideRequestEvent(event, async () => {`,
+      `    try {`,
+      `      return await runMiddleware(event, () => dispatchRequest(event, options, consumed));`,
+      `    } catch (error) {`,
+      `      return containFailure(error, event);`,
+      `    }`,
+      `  });`,
+      ...(isBuild
+        ? []
+        : [
+            // Dev-only footgun check: the render runs inside next(), so a
+            // render input written after `await next()` never reached it.
+            `  if (consumed.rendered) {`,
+            `    for (const key of ['nonce', 'renderMode']) {`,
+            `      if (event[key] !== consumed[key]) {`,
+            `        console.warn('[@solidjs/vite-plugin] event.' + key + ' changed after the page render read it, ' +`,
+            `          'so the change had no effect on this response. The render runs inside next(): set event.' + key +`,
+            `          ' in middleware before calling next(), not after awaiting it.');`,
+            `      }`,
+            `    }`,
+            `  }`,
+          ]),
       // The fold runs strictly AFTER the outermost middleware returned:
       // headers stay mutable through the whole unwind, and a middleware
       // early return (an API handler that never called next()) gets its
@@ -1055,11 +1700,15 @@ export function appServe(
         root = path.resolve(userConfig.root || process.cwd());
         devtoolsEnabled =
           env.command === 'serve' && !env.isPreview && options.devtools !== false;
-        devtoolsResolutions = {};
-        devtoolsIds = {};
+        devtoolsDetections = {};
+        devtoolsImporters = {};
         entries = resolveEntries(root, options, clientMode);
+        internal.onDocumentResolved?.(entries.document);
         middlewarePath = options.middleware
           ? path.resolve(root, normalizeUserPath(root, options.middleware, 'middleware'))
+          : null;
+        instrumentPath = options.instrument
+          ? path.resolve(root, normalizeUserPath(root, options.instrument, 'instrument'))
           : null;
         // Server-mode only, like `entries.server`/`external` (a documented
         // no-op in client mode so configs survive the `ssr` boolean flip).
@@ -1076,35 +1725,74 @@ export function appServe(
               `(remove app.setup or the authored entry): ${options.setup}`,
           );
         }
+        // Both modes: the generated client entry hydrates or mounts, and
+        // the setup module runs ahead of either.
+        clientSetupPath = options.clientSetup
+          ? path.resolve(root, normalizeUserPath(root, options.clientSetup, 'clientSetup'))
+          : null;
+        if (clientSetupPath && entries.entryClient !== ENTRY_CLIENT_ID) {
+          // An authored entry-client runs its own code before hydrate().
+          throw new Error(
+            '[@solidjs/vite-plugin] app.clientSetup only applies to a generated client entry: ' +
+              'your entry-client runs before hydrate() already, so import your setup module ' +
+              `there instead (remove app.clientSetup or the authored entry): ${options.clientSetup}`,
+          );
+        }
+        // Server-mode only as well: the client-mode shell renders no app,
+        // so there is nothing to settle. Validated in every mode though —
+        // a typo should not hide behind the `ssr` boolean.
+        renderMode = resolveRenderMode(options.renderMode);
+        if (clientMode) renderMode = 'stream';
         if (env.isPreview) {
+          // Defaults only. A host that relocates an environment in
+          // `configEnvironment` still wins — that hook runs after this
+          // merge. `app.external` leaves both directories to the host.
+          const previewBuild = externalServer
+            ? {}
+            : {
+                build: { outDir: 'dist/client' },
+                environments: {
+                  ssr: {
+                    build: {
+                      outDir: 'dist/server',
+                    },
+                  },
+                },
+              };
           if (clientMode) {
-            // Client-mode builds emit a real dist/client/index.html (the
-            // prerendered shell), so preview is Vite's stock static +
-            // history-fallback story. When server functions are on, the
-            // endpoint dispatches through the kept dist/server handler
-            // (configurePreviewServer).
-            return { appType: 'spa', build: { outDir: 'dist/client' } };
+            // Client-mode builds emit a real index.html (the prerendered
+            // shell), so preview is Vite's stock static + history-fallback
+            // story. When server functions are on, the endpoint dispatches
+            // through the kept server handler (configurePreviewServer).
+            return { appType: 'spa', ...previewBuild };
           }
-          // `vite preview` serves `build.outDir` statically; point it at the
-          // client bundle so hashed assets resolve, while HTML (and
-          // everything else unhandled) falls through to the
+          // `vite preview` serves the client outDir statically; point the
+          // default at the client bundle so hashed assets resolve, while
+          // HTML (and everything else unhandled) falls through to the
           // configurePreviewServer dispatch below. No index.html exists, so
           // `custom` keeps preview from attempting an SPA fallback.
           return {
             appType: 'custom',
-            ...(externalServer ? {} : { build: { outDir: 'dist/client' } }),
+            ...previewBuild,
           };
         }
         const build = env.command === 'build';
         const clientInput = entries.generated
           ? ENTRY_CLIENT_ID
           : path.resolve(root, entries.entryClient);
+        internal.onClientEntryResolved?.(clientInput);
         // Real files only — the dep scanner can't crawl virtual modules.
         // (In client mode the resolved document joins the scan/style roots
         // even with an authored client entry; in SSR mode authored entries
         // own the whole graph.)
         const scanEntries = entries.generated
-          ? [entries.app!, ...(entries.document ? [entries.document] : [])]
+          ? [
+              entries.app!,
+              ...(entries.document ? [entries.document] : []),
+              // Its dependencies pre-bundle with the app's, so the first
+              // page load does not trigger a re-optimize and a reload.
+              ...(clientSetupPath ? [clientSetupPath] : []),
+            ]
           : [
               path.resolve(root, entries.entryClient),
               ...(clientMode && entries.document ? [entries.document] : []),
@@ -1143,7 +1831,7 @@ export function appServe(
                           // by provider orchestrators such as Nitro. Keep the
                           // standalone artifact's established filename.
                           input: { index: HANDLER_ID },
-                          output: { entryFileNames: 'server.js' },
+                          output: { entryFileNames: SERVER_ENTRY_FILE },
                         },
                       },
                     },
@@ -1166,7 +1854,7 @@ export function appServe(
                               // Expose the same service entry during serve so
                               // provider runtimes can discover and own it.
                               input: { index: HANDLER_ID },
-                              output: { entryFileNames: 'server.js' },
+                              output: { entryFileNames: SERVER_ENTRY_FILE },
                             },
                           },
                         },
@@ -1201,10 +1889,113 @@ export function appServe(
         root = config.root;
         base = config.base;
         isBuild = config.command === 'build';
+        // Test mode excluded for the same reason as the surface plugin's
+        // `apply`: vitest runs a dev serve, and test pages should not get
+        // the bridge import injected into their client entries.
+        if (internal.diagnostics === 'auto' && !isBuild && config.mode !== 'test') {
+          diagnostics = detectDiagnosticsPackage(root);
+        }
+        // Same gates as the `solid:performance-tracks` plugin's `apply` +
+        // subpath guard (which owns the warning when the guard fails), so
+        // the entry only imports a module that plugin serves. Preview needs
+        // no gate here: it serves the built artifact — neither the entry
+        // codegen nor the entry transform below runs under it.
+        if (internal.performanceTracks && !isBuild && config.mode !== 'test') {
+          performanceTracks = detectPerformanceTracksSubpath(root);
+        }
+        {
+          // Resolved directories for prerender, preview, and the Node entry.
+          // `configEnvironment` has already run, so a host relocation wins
+          // over the dist/client and dist/server defaults. generateBundle
+          // below overrides these with the directories actually written.
+          const environments = (config as any).environments ?? {};
+          const clientBuild = environments.client?.build ?? config.build;
+          const serverBuild = environments.ssr?.build;
+          clientOutDir = path.resolve(root, clientBuild.outDir);
+          serverOutDir = path.resolve(root, serverBuild?.outDir ?? 'dist/server');
+          clientAssetsDir = clientBuild.assetsDir ?? 'assets';
+        }
+        if (isBuild && nodeEntry) {
+          if (externalServer) {
+            config.logger.warn(
+              '[@solidjs/vite-plugin] app.node is ignored with app.external: the host owns the ' +
+                'server build, so there is no server.js for the Node entry to wrap. Drop one of the ' +
+                'two options.',
+            );
+          } else if (clientMode && !internal.serverFunctions) {
+            config.logger.warn(
+              '[@solidjs/vite-plugin] app.node has nothing to emit in client app mode without ' +
+                '`serverFunctions`: the build is purely static (dist/client, no server bundle). ' +
+                'Serve dist/client from any static host, or enable `serverFunctions` (or `ssr: true`) ' +
+                'to get dist/server/node.js.',
+            );
+          }
+        }
       },
-      resolveId(source, importer, opts) {
+      generateBundle: {
+        // Post order: Vite's asset plugin (`vite:asset`, normal order)
+        // deletes every asset from a server-consumer bundle unless
+        // `build.emitAssets` is on — flipping that would change what the
+        // server build emits, so the Node entry is added after that sweep
+        // instead. It is an emitted asset, never a second input: server.js
+        // is byte-identical with and without the option.
+        order: 'post',
+        handler(outputOptions, bundle) {
+          if (!isBuild) return;
+          const consumer = getEnvironmentConsumer(this.environment);
+          if (consumer === 'client') {
+            // Where the client build actually landed (authoritative over
+            // the resolved outDir when a host relocates it).
+            if (outputOptions.dir) clientOutDir = path.resolve(root, outputOptions.dir);
+            return;
+          }
+          if (this.environment?.name !== 'ssr') return;
+          if (outputOptions.dir) serverOutDir = path.resolve(root, outputOptions.dir);
+          if (!nodeEntryApplies) return;
+          // The entry imports ./server.js; without that chunk (a provider
+          // rewrote the ssr environment's output) it could not run.
+          const serverChunk = bundle[SERVER_ENTRY_FILE];
+          if (!serverChunk || serverChunk.type !== 'chunk') {
+            this.warn(
+              `[@solidjs/vite-plugin] app.node: the ssr build did not emit ${SERVER_ENTRY_FILE} ` +
+                `(got ${Object.keys(bundle).join(', ') || 'nothing'}), so ${NODE_ENTRY_FILE} was ` +
+                'not emitted — the Node entry wraps that bundle.',
+            );
+            return;
+          }
+          const serverDir = outputOptions.dir
+            ? path.resolve(root, outputOptions.dir)
+            : serverOutDir!;
+          const clientDir = normalizePath(path.relative(serverDir, clientOutDir!)) || '.';
+          const serverDirName = normalizePath(path.relative(root, serverDir));
+          const runtimeSource = nodeEntryCode(
+            {
+              clientDir,
+              assetsDir: clientAssetsDir,
+              base,
+              spa: clientMode,
+              entry: NODE_ENTRY_FILE,
+            },
+            serverDirName,
+          );
+          if (instrumentPath) {
+            this.emitFile({ type: 'asset', fileName: NODE_RUNTIME_FILE, source: runtimeSource });
+            this.emitFile({
+              type: 'asset',
+              fileName: NODE_ENTRY_FILE,
+              source: instrumentedNodeEntryCode(serverDirName),
+            });
+          } else {
+            this.emitFile({ type: 'asset', fileName: NODE_ENTRY_FILE, source: runtimeSource });
+          }
+        },
+      },
+      async resolveId(source, importer, opts) {
         if (source === HANDLER_ID) {
           return { id: HANDLER_ID, moduleSideEffects: true };
+        }
+        if (source === HANDLER_IMPL_ID) {
+          return { id: HANDLER_IMPL_ID, moduleSideEffects: true };
         }
         if (source === DEV_STYLES_ID) {
           return { id: RESOLVED_DEV_STYLES_ID, moduleSideEffects: true };
@@ -1220,26 +2011,39 @@ export function appServe(
         if (devtoolsEnabled && source === DEVTOOLS_MOUNT_ID) {
           return { id: source, moduleSideEffects: true };
         }
-        // Generated modules have no directory for bare-package resolution.
-        // Reuse the app-relative id captured during detection.
-        const devtoolsId = devtoolsIds[getEnvironmentConsumer(this.environment, opts)];
         if (
-          devtoolsId &&
           source === DEVTOOLS_PACKAGE &&
           (importer === ENTRY_SERVER_ID ||
             importer === ENTRY_CLIENT_ID ||
             importer === DEVTOOLS_MOUNT_ID)
         ) {
-          return { id: devtoolsId };
+          // Generated modules have no directory for bare-package resolution:
+          // resolve from the app importer detection probed. Resolve afresh on
+          // every request rather than reusing detection's id — in the client
+          // environment that id is the optimizer's pre-bundled URL, stamped
+          // with the browserHash of the pass that produced it. Any dependency
+          // discovered after the initial scan re-optimizes: the toolbar's
+          // chunks are re-emitted under new names and the hash moves on, and
+          // a frozen id would keep the entry on the previous pass — its lazy
+          // chunks answer 504 (Outdated Optimize Dep) and the stale bundle
+          // brings a second solid-js instance into the page.
+          const from = devtoolsImporters[getEnvironmentConsumer(this.environment, opts)];
+          if (!from) return null;
+          const id = await resolveDevtoolsId(
+            (s, i) => this.resolve(s, i, { skipSelf: true }),
+            from,
+          );
+          return id ? { id } : null;
         }
         return null;
       },
       async load(id, opts) {
         const consumer = getEnvironmentConsumer(this.environment, opts);
-        if (id === HANDLER_ID) {
+        if (id === HANDLER_ID || id === HANDLER_IMPL_ID) {
           if (consumer !== 'server') {
             this.error(`${HANDLER_ID} is server-only; import it from server code (SSR build).`);
           }
+          if (id === HANDLER_ID && instrumentPath) return instrumentedHandlerCode();
           const externalDev =
             !isBuild &&
             this.environment.mode === 'dev' &&
@@ -1290,7 +2094,7 @@ export function appServe(
         return null;
       },
       async transform(code, id, opts) {
-        if (isBuild || !devtoolsEnabled) return null;
+        if (isBuild || (!devtoolsEnabled && !diagnostics && !performanceTracks)) return null;
         const current = requireEntries();
         if (current.generated || getEnvironmentConsumer(this.environment, opts) !== 'client') {
           return null;
@@ -1300,14 +2104,24 @@ export function appServe(
         if (normalizePath(id.split('?')[0]) !== normalizePath(path.resolve(root, current.entryClient))) {
           return null;
         }
-        const toolbar = await resolveDevtools(
-          (source, importer) => this.resolve(source, importer, { skipSelf: true }),
-          id,
-          'client',
-        );
-        if (!toolbar) return null;
+        const injected: string[] = [];
+        // First, for the same reason as in the generated entry: enabled
+        // before the authored entry's own imports evaluate.
+        if (performanceTracks) {
+          injected.push(`import ${JSON.stringify(PERFORMANCE_TRACKS_CLIENT_ID)};`);
+        }
+        if (diagnostics) injected.push(`import ${JSON.stringify(DIAGNOSTICS_CLIENT_ID)};`);
+        if (devtoolsEnabled) {
+          const toolbar = await resolveDevtools(
+            (source, importer) => this.resolve(source, importer, { skipSelf: true }),
+            id,
+            'client',
+          );
+          if (toolbar) injected.push(`import ${JSON.stringify(DEVTOOLS_MOUNT_ID)};`);
+        }
+        if (injected.length === 0) return null;
         return {
-          code: `import ${JSON.stringify(DEVTOOLS_MOUNT_ID)};\n${code}`,
+          code: `${injected.join('\n')}\n${code}`,
           map: null,
         };
       },
@@ -1323,6 +2137,14 @@ export function appServe(
         // only the server-function endpoint needs the handler, and without
         // server functions there is no dist/server at all.
         if (externalServer || (clientMode && !internal.serverFunctions)) return;
+        // The server-function mount as the built handler sees it (base
+        // applied, like every pathname it compares against).
+        const serverFunctionsMount = internal.serverFunctionsEndpoint
+          ? joinBase(base, internal.serverFunctionsEndpoint)
+          : null;
+        const underServerFunctionsMount = (pathname: string) =>
+          serverFunctionsMount !== null &&
+          (pathname === serverFunctionsMount || pathname.startsWith(serverFunctionsMount + '/'));
         return () => {
           let handlerPromise: Promise<{
             handleRequest: (
@@ -1333,7 +2155,7 @@ export function appServe(
           server.middlewares.use((req, res, next) => {
             (async () => {
               handlerPromise ??= import(
-                pathToFileURL(path.resolve(root, 'dist/server/server.js')).href
+                pathToFileURL(path.join(serverOutDir!, SERVER_ENTRY_FILE)).href
               );
               const handler = await handlerPromise;
               // Preview's base middleware runs before this post hook and
@@ -1342,16 +2164,41 @@ export function appServe(
               // server-function endpoint) and hands the URL to application
               // code, so restore the base — the deployed production handler
               // receives base-prefixed URLs and preview must match it.
+              const requestUrl = joinBase(base, req.url || '/');
               const response = await handler.handleRequest(
-                webRequestFromNode(req, joinBase(base, req.url || '/'), res),
+                webRequestFromNode(req, requestUrl, res),
                 // Same event extension the dev middleware and a production
                 // Node entry pass: the raw Node request as `nativeEvent`.
                 { event: { nativeEvent: req } },
               );
-              // Preview's compression middleware buffers whole responses;
-              // opting HTML out keeps SSR streaming observable, matching
-              // production behavior.
-              if ((response.headers.get('content-type') || '').includes('text/html')) {
+              // Preview's compression middleware (@polka/compression) sizes
+              // a response up on its first write and, past the threshold,
+              // pipes the rest through a zlib stream that holds small writes
+              // until its buffer fills — a streamed response arrives in
+              // bursts, or not at all while a connection stays open. The
+              // deployed handler streams as it renders, and preview exists
+              // to show that artifact, so the streamed shapes opt out
+              // (`content-encoding: identity` is the middleware's own
+              // pass-through signal):
+              // - `text/html`: page renders stream the shell ahead of async
+              //   content;
+              // - `text/event-stream`: server-sent events wherever the app
+              //   emits them (a `live` server function, a middleware route)
+              //   — an SSE connection stays open, so a held event is an
+              //   event never delivered;
+              // - everything under the server-function mount: the runtime
+              //   answers there in its own wire — the streaming codec
+              //   (`text/plain`, too generic to key on), the live event
+              //   stream, JSON — and every shape is either streamed or too
+              //   small for compression to buy anything in preview. Keying
+              //   on the mount also keeps a new answer shape from silently
+              //   regressing to buffered.
+              const contentType = response.headers.get('content-type') || '';
+              if (
+                contentType.includes('text/html') ||
+                contentType.includes('text/event-stream') ||
+                underServerFunctionsMount(new URL(requestUrl, 'http://localhost').pathname)
+              ) {
                 res.setHeader('content-encoding', 'identity');
               }
               await sendWebResponse(res, response);
@@ -1379,8 +2226,14 @@ export function appServe(
           server.middlewares.use((req, res, next) => {
             const url = new URL(req.url || '/', 'http://localhost');
             if (url.pathname.startsWith('/@')) return next();
-            const accept = req.headers.accept || '';
-            const pageRequest = req.method === 'GET' && accept.includes('text/html');
+            // Vite's own HTML-fallback test: a GET or HEAD accepting HTML by
+            // name, via `*/*`, or with no Accept (curl, monitors). Production
+            // renders all of these; anything narrower 404s in dev only.
+            const accept = req.headers.accept;
+            const pageRequest =
+              (req.method === 'GET' || req.method === 'HEAD') &&
+              url.pathname !== '/favicon.ico' &&
+              (!accept || accept.includes('text/html') || accept.includes('*/*'));
             // Production dispatches every request through the handler, so
             // dev must too or API routes and no-JS form POSTs served by
             // `app.middleware` are unreachable under `vite dev`. Without
@@ -1430,6 +2283,14 @@ export function appServe(
           {
             name: 'solid:app/prerender',
             apply: 'build',
+            config: {
+              order: 'post',
+              handler(config) {
+                // The resolved builder always has a default no-op buildApp.
+                // Read the user/plugin callback before Vite adds that default.
+                configBuildApp = !!config.builder?.buildApp;
+              },
+            },
             buildApp: {
               // Post order: this hook owns the whole client-mode app build (the
               // client-build-first orchestration pair is SSR-only). It
@@ -1437,13 +2298,13 @@ export function appServe(
               // hook suppresses Vite's build-all fallback, so the ordering
               // is guaranteed and the manifest is on disk before the shell
               // bundle bakes it in — then runs the built handler once to
-              // prerender the shell into dist/client/index.html and drops
-              // dist/server unless server functions still need its handler.
-              // The shell arrives complete from the handler: the runtime
-              // registers every manifest entry's CSS during the render
-              // (registerEntryAssets), so the entry graph's stylesheet
-              // links are already in its head — injecting them here again
-              // double-links every stylesheet.
+              // prerender the shell into the client emit directory and drops
+              // the server directory unless server functions or a host still
+              // need its handler. The shell arrives complete from the
+              // handler: the runtime registers every manifest entry's CSS
+              // during the render (registerEntryAssets), so the entry
+              // graph's stylesheet links are already in its head — injecting
+              // them here again double-links every stylesheet.
               order: 'post' as const,
               async handler(builder: any) {
                 const client = builder.environments.client;
@@ -1453,16 +2314,49 @@ export function appServe(
                   await builder.build(ssrEnvironment);
                 }
 
-                const serverDir = path.resolve(root, 'dist/server');
+                const serverDir = serverOutDir!;
                 const handler = await import(
-                  pathToFileURL(path.join(serverDir, 'server.js')).href
+                  pathToFileURL(path.join(serverDir, SERVER_ENTRY_FILE)).href
                 );
                 const response: Response = await handler.handleRequest(
                   new Request(new URL(base || '/', 'http://localhost')),
                 );
-                writeFileSync(path.resolve(root, 'dist/client/index.html'), await response.text());
-                if (!internal.serverFunctions) {
-                  rmSync(serverDir, { recursive: true, force: true });
+                // The built handler answers failures with a 500 instead of
+                // rejecting; a shell that did not render must fail the
+                // build, not become index.html. Cleanup runs only after a
+                // shell was actually written.
+                if (!response.ok) {
+                  throw new Error(
+                    `[@solidjs/vite-plugin] prerendering the client-mode shell failed: the handler answered ${response.status}`,
+                  );
+                }
+                writeFileSync(path.join(clientOutDir!, 'index.html'), await response.text());
+                // A host may still need this service for its final server
+                // build, even when the application has no server functions.
+                // Pre-order buildApp hooks prepare (they clean output) and
+                // do not count; a function hook is normal order and does.
+                const hostBuild =
+                  configBuildApp ||
+                  builder.config.plugins.some(
+                    (plugin: Plugin) =>
+                      plugin.name !== 'solid:app/prerender' &&
+                      !!plugin.buildApp &&
+                      (typeof plugin.buildApp !== 'object' || plugin.buildApp.order !== 'pre'),
+                  );
+                const safeCleanup =
+                  isStrictSubdirectory(root, serverDir) &&
+                  serverDir !== clientOutDir &&
+                  !isStrictSubdirectory(serverDir, clientOutDir!);
+                if (!internal.serverFunctions && !hostBuild) {
+                  if (safeCleanup) {
+                    rmSync(serverDir, { recursive: true, force: true });
+                  } else {
+                    builder.config.logger.warn(
+                      '[@solidjs/vite-plugin] Preserving SSR output at ' +
+                        serverDir +
+                        ': automatic cleanup requires a directory inside the project root that does not contain client output.',
+                    );
+                  }
                 }
               },
             },

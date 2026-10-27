@@ -11,6 +11,7 @@
   },
   "devDependencies": {
     "@solidjs/testing-library": "^1.0.0-beta.2",
+    "@tsrx/core": "0.1.63",
     "@testing-library/jest-dom": "^6.6.3",
     "@testing-library/user-event": "^14.6.1",
     "@vitest/browser": "^4.1.11",
