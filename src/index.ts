@@ -28,7 +28,7 @@ import {
   type ServerFunctionsOptions,
 } from './server-functions/index.js';
 import { SSR_HANDLER_ID, startServe, type StartOptions } from './ssr/index.js';
-import { startEnv } from './start-env.js';
+import { envPlugin } from './env.js';
 import {
   detectLocationSupport,
   getJsxSourceNamesOptions,
@@ -461,6 +461,24 @@ export interface Options {
    * @default false
    */
   ssr?: boolean;
+
+  /**
+   * Typed, validated environment variables. A schema file, conventionally
+   * `env.ts` or `env.js` at the project root, default-exports `{ server?,
+   * client? }` maps of Standard Schema validators. Validated values are
+   * exposed through `virtual:env/server` (server module graphs only) and
+   * `virtual:env/client` (the `VITE_`-prefixed client side).
+   *
+   * Independent of {@link start}: `true` requires the conventional file and
+   * a string selects an explicit schema path, in any setup. Left unset,
+   * only start mode probes for the conventional file, so a project with an
+   * unrelated `env.ts` is unaffected until it opts in. `false` disables the
+   * probing.
+   *
+   * @default undefined (with `start`: probe env.ts / env.js, off when
+   * absent; without `start`: off)
+   */
+  env?: boolean | string;
 
   /**
    * Start mode — Start as a mode of the plugin: it owns entries, dev
@@ -3035,15 +3053,24 @@ export default manifest;`;
     ...(tsrxServerFunctionPlugin ? [tsrxServerFunctionPlugin] : []),
   ];
 
+  // Typed env: config-time validation, the virtual:env/{server,client}
+  // modules, generated types, and the client-bundle leak scan. An explicit
+  // `env` works in any setup; left unset, only start mode probes for the
+  // conventional env.ts / env.js.
+  if (startOptions && 'env' in startOptions) {
+    // Moved before the stable release, without an alias.
+    throw new Error(
+      '[@solidjs/vite-plugin] `start.env` has moved to the top-level `env` option. ' +
+        'Example: `solid({ start: { env: true } })` becomes `solid({ start: true, env: true })`.',
+    );
+  }
+  plugins.push(...envPlugin(options.env ?? (startOptions ? undefined : false)));
+
   // The `start` option opts into start-mode serving on top of the transforms;
   // the `ssr` boolean picks the mode (a bare `ssr: true` keeps the
   // historical transform-only behavior).
   if (startOptions) {
     plugins.push(
-      // Typed env (`start.env`) rides both start modes: config-time
-      // validation, the virtual:env/{server,client} modules, generated
-      // types, and the client-bundle leak scan.
-      ...startEnv(startOptions.env),
       ...startServe(startOptions, {
         serverFunctions: !!options.serverFunctions,
         // The mount the runtime is configured with (before `base`; the
