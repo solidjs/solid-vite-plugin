@@ -575,14 +575,6 @@ export interface Options {
   compiler?: Compiler;
 
   /**
-   * This will inject HMR runtime in dev mode. Has no effect in prod. If
-   * set to `false`, it won't inject the runtime in dev.
-   *
-   * @default true
-   * @deprecated use `refresh` instead
-   */
-  hot?: boolean;
-  /**
    * This registers additional extensions that should be processed by
    * @solidjs/vite-plugin. Experimental `.tsrx` is always registered as
    * TypeScript TSRX and does not need to be listed here.
@@ -664,17 +656,18 @@ export interface Options {
    */
   serverFunctions?: boolean | ServerFunctionsOptions;
 
-  /** Options for the solid-refresh HMR transform (dev only). */
-  refresh?: RefreshOptions;
+  /**
+   * Component hot replacement through the solid-refresh transform (dev
+   * only). `false` turns it off, so edits fall back to a full reload; an
+   * object tunes the transform.
+   *
+   * @default true
+   */
+  refresh?: boolean | RefreshOptions;
 }
 
 /** Options for the solid-refresh HMR transform (dev only). */
 export interface RefreshOptions {
-  /**
-   * Disable the refresh transform entirely (equivalent to the deprecated
-   * `hot: false`).
-   */
-  disabled?: boolean;
   /**
    * Emit per-component `signature`/`dependencies` metadata so edits only
    * remount components whose code actually changed.
@@ -1339,6 +1332,21 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
         '`solid({ ssr: { document: … } })` becomes `solid({ start: { document: … }, ssr: true })`.',
     );
   }
+  // Removed before the stable release, without aliases: name the
+  // replacement instead of silently ignoring the old key.
+  if ('hot' in options) {
+    throw new Error(
+      '[@solidjs/vite-plugin] `hot` has been removed. HMR is on by default; ' +
+        'disable it with `refresh: false`.',
+    );
+  }
+  if (options.refresh && typeof options.refresh === 'object' && 'disabled' in options.refresh) {
+    throw new Error(
+      '[@solidjs/vite-plugin] `refresh.disabled` has been replaced by `refresh: false`.',
+    );
+  }
+  const refreshOptions: RefreshOptions =
+    typeof options.refresh === 'object' ? options.refresh : {};
   // Recreated in configResolved: relative include/exclude patterns must
   // resolve against the Vite root, not process.cwd() — running `vite` from
   // outside the project would otherwise change what the filter matches.
@@ -1989,8 +1997,7 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
             // trigger a re-optimize + full reload on first use.
             ...(command === 'serve' &&
             options.dev !== false &&
-            options.hot !== false &&
-            !options.refresh?.disabled
+            options.refresh !== false
               ? [REFRESH_RUNTIME_SOURCE]
               : []),
             // The server-components client runtime is imported by the
@@ -2301,8 +2308,7 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
         config.mode !== 'production' &&
         // The production `solid-js/refresh` runtime is an inert stub.
         options.dev !== false &&
-        options.hot !== false &&
-        !options.refresh?.disabled;
+        options.refresh !== false;
     },
 
     configureServer(server) {
@@ -2873,8 +2879,8 @@ export default manifest;`;
             filename: generatedFilename,
             bundler: 'vite',
             fixRender: true,
-            ...(typeof options.refresh?.granular === 'boolean'
-              ? { granular: options.refresh.granular }
+            ...(typeof refreshOptions.granular === 'boolean'
+              ? { granular: refreshOptions.granular }
               : {}),
             jsx: false,
             importSource: REFRESH_RUNTIME_SOURCE,
@@ -2924,8 +2930,8 @@ export default manifest;`;
           fixRender: true,
           // The napi validator rejects explicit undefined; omit to get the
           // pass's default (true).
-          ...(typeof options.refresh?.granular === 'boolean'
-            ? { granular: options.refresh.granular }
+          ...(typeof refreshOptions.granular === 'boolean'
+            ? { granular: refreshOptions.granular }
             : {}),
           jsx: false,
           importSource: REFRESH_RUNTIME_SOURCE,

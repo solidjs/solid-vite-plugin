@@ -175,13 +175,18 @@ With `dev: false` (and no `observe`) the production runtime is served under `vit
 the adapter is a no-op. Requires the installed `@solidjs/web` to export `./performance-tracks` (every version
 in the peer range does); an older install warns once at startup and skips the injection.
 
-#### options.hot
+#### options.refresh
 
-- Type: Boolean
+- Type: `boolean | { granular?: boolean }`
 - Default: true
 
-This will inject HMR runtime in dev mode. Has no effect in prod.
-If set to false, it won't inject the runtime in dev.
+Component hot replacement under `vite dev` through the solid-refresh transform (see
+[Note on HMR](#note-on-hmr)). `false` turns it off, so edits fall back to a full reload. Has no
+effect on `vite build`, and is off with `dev: false`, since the production refresh runtime is
+an inert stub.
+
+`granular` (default `true`) emits per-component signature and dependency metadata, so an edit
+only remounts the components whose code actually changed.
 
 #### options.ssr
 
@@ -1245,7 +1250,7 @@ At this stage it's still early work but provide basic HMR. In order to get the b
 
 - The entrypoint can't benefit from HMR yet and will force a hard reload of the entire app. This is still really fast thanks to browser caching.
 
-If at least one of this point is blocking to you, you can revert to the old behavior by [opting out the automatic HMR](#options) and placing the following snippet in your entry point:
+If at least one of this point is blocking to you, you can revert to the old behavior by setting [`refresh: false`](#optionsrefresh) and placing the following snippet in your entry point:
 
 ```jsx
 const dispose = render(() => <App />, document.body);

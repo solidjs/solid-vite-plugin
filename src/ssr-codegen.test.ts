@@ -55,14 +55,14 @@ describe('JSX codegen per transform', () => {
   });
 
   it('compiles server transforms with the SSR generate when `ssr` is off', async () => {
-    const { client, ssr, html } = await transform({ hot: false });
+    const { client, ssr, html } = await transform({ refresh: false });
     expect(client).toContain('template');
     expect(ssr).not.toContain('template');
     expect(html).toBe('<div class="page">Hello x</div>');
   });
 
   it('keeps hydration keys in server output when `ssr` is on', async () => {
-    const { client, ssr, html } = await transform({ hot: false, ssr: true });
+    const { client, ssr, html } = await transform({ refresh: false, ssr: true });
     expect(client).toContain('template');
     expect(ssr).not.toContain('template');
     expect(html).toMatch(/_hk=/);
