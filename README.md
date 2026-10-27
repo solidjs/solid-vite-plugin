@@ -235,7 +235,7 @@ The object form carries the options (`start: true` is pure sugar for
 `start: {}` — both mean the identical start mode with defaults, and
 `false`/absent means off): `app`, `document`, `entryServer`, `entryClient`,
 `middleware`, `setup`, `instrument`, `clientSetup`, `renderMode`,
-`devtools`, `errorBoundary`,
+`devtools`, `productionErrorBoundary`,
 `css`, `external`, `node`, all documented below.
 
 Install `@solidjs/start-devtools` as a development dependency to add the
@@ -495,7 +495,7 @@ registered, and the client gets a bodyless 500. That 500 carries the
 headers and cookies written to the request event only while the response
 head is still open: once `next()` has returned a rendered page, the head
 was committed with that page, and a later throw drops them. An error
-middleware still sees a throw first, and with `errorBoundary` on, render
+middleware still sees a throw first, and with `productionErrorBoundary` on, render
 errors are handled by the boundary before they get this far. In dev those
 failures still reject, so the dev server sees the original error (with the
 built-in dev middleware, Vite's error middleware and its overlay).
@@ -656,14 +656,14 @@ settle, so the option is a documented no-op there. A nonce set during the
 client-mode shell prerender is ignored (and the build warns): baking one
 into `dist/client/index.html` would replay it on every load.
 
-**`errorBoundary`** — in a production build, generated entries wrap the app
+**`productionErrorBoundary`** — in a production build, generated entries wrap the app
 in a default error boundary (and the document in an outer one): a render
 error streams a generic `500 | Internal Server Error` fallback — no stack
 or error details reach the HTML; the error itself goes to `console.error`
 — and an error caught before the shell flushes commits a real 500 status
 through the response-head lifecycle. Development is unaffected (Vite's
 error overlay owns dev errors), as are authored entries — the boundary is
-generated-entry codegen. Disable it with `start: { errorBoundary: false }`
+generated-entry codegen. Disable it with `start: { productionErrorBoundary: false }`
 when application middleware owns error handling (an error middleware only
 sees the throw when no boundary catches it first). Default: `true`.
 
@@ -960,6 +960,30 @@ configureServerFunctionsServer({
 ```
 
 Set `csrf: false` only when another trusted layer protects the endpoint.
+
+Custom serialization (extra seroval plugins for class instances such as a
+`Money` or an `ObjectId`) is configured the same way, once per side. Set the
+server codec in the `configure` module and the client codec in
+[`start.clientSetup`](#optionsstart), both from one shared options module:
+
+```ts
+// src/serialization.ts
+import type { JSONCodecOptions } from '@solidjs/web/serialization';
+export default { plugins: [MoneyPlugin] } satisfies JSONCodecOptions;
+
+// src/server-config.ts (serverFunctions.configure)
+import { configureServerFunctionsServer } from '@solidjs/web/server-functions/server';
+import codec from './serialization';
+configureServerFunctionsServer({ codec });
+
+// src/client-setup.ts (start.clientSetup)
+import { configureServerFunctionsClient } from '@solidjs/web/server-functions/client';
+import codec from './serialization';
+configureServerFunctionsClient({ codec });
+```
+
+Both sides must use the same plugins. This covers server-function arguments
+and results; the SSR hydration payload takes its own `plugins` option.
 
 Meta-frameworks that need to control plugin ordering and dispatch requests
 through their own server should use the standalone `serverFunctions()`

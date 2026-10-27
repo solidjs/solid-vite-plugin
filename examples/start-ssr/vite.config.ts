@@ -223,7 +223,7 @@ export default defineConfig({
               // chain fronting every dispatch path — page SSR, /_server,
               // preview — with getRequestEvent() live inside it.
               ...(process.env.SSR_MIDDLEWARE
-                ? { middleware: './src/middleware.ts', errorBoundary: false }
+                ? { middleware: './src/middleware.ts', productionErrorBoundary: false }
                 : process.env.SSR_RENDER_MODE === 'middleware' || process.env.SSR_NONCE
                   ? { middleware: './src/middleware.ts' }
                   : {}),
