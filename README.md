@@ -236,7 +236,7 @@ The object form carries the options (`start: true` is pure sugar for
 `false`/absent means off): `app`, `document`, `entryServer`, `entryClient`,
 `middleware`, `setup`, `instrument`, `clientSetup`, `renderMode`, `env`,
 `devtools`, `errorBoundary`,
-`css`, `external`, `node`, all documented below.
+`external`, `node`, all documented below.
 
 Install `@solidjs/start-devtools` as a development dependency to add the
 development toolbar with runtime errors and server function calls:
@@ -751,32 +751,6 @@ generated-entry codegen. Disable it with `start: { errorBoundary: false }`
 when application middleware owns error handling (an error middleware only
 sees the throw when no boundary catches it first). Default: `true`.
 
-**`css.filter`** — include/exclude patterns
-([picomatch](https://github.com/micromatch/picomatch) globs or regexes;
-relative globs resolve against the Vite root) for the module graphs the dev
-server crawls when collecting the CSS it inlines into `<head>` (the no-FOUC
-guarantee). By default the crawl covers the app's own sources and skips
-`node_modules`. `exclude` prunes matching graphs — providing one replaces
-the default `node_modules` exclusion — and `include` opts matching files in
-on top of that baseline, which is how a dependency's CSS gets
-server-inlined in dev:
-
-```ts
-solid({
-  start: {
-    css: { filter: { include: /node_modules\/some-ui-lib/ } },
-  },
-  ssr: true,
-});
-```
-
-CSS files themselves and virtual modules always pass — the filter decides
-which module graphs are traversed, not which stylesheets are kept — and a
-file matching both patterns stays excluded (Vite `createFilter`'s
-conflict rule). Development only: excluding a graph does not remove its
-CSS from the production build, where CSS always comes from the built
-assets.
-
 **Entry resolution** (all paths relative to the Vite root):
 
 1. Explicit `start.entryServer` / `start.entryClient` options.
@@ -977,6 +951,37 @@ identically (all the same transforms and codegen), and declares the host
 owns the wiring, so the plugin skips the warning it otherwise prints when
 the option is enabled without SSR start mode. It reuses the plugin's
 `external` vocabulary (cf. `start.external` — a host owns the server).
+
+#### options.css
+
+- Type: Object
+- Default: undefined
+
+`css.filter` takes include/exclude patterns
+([picomatch](https://github.com/micromatch/picomatch) globs or regexes;
+relative globs resolve against the Vite root) for the module graphs the dev
+server crawls when collecting the CSS it inlines into `<head>` (the no-FOUC
+guarantee), in start mode and in `ssr: true` setups reading
+`virtual:solid-manifest`. By default the crawl covers the app's own sources and skips
+`node_modules`. `exclude` prunes matching graphs — providing one replaces
+the default `node_modules` exclusion — and `include` opts matching files in
+on top of that baseline, which is how a dependency's CSS gets
+server-inlined in dev:
+
+```ts
+solid({
+  start: true,
+  css: { filter: { include: /node_modules\/some-ui-lib/ } },
+  ssr: true,
+});
+```
+
+CSS files themselves and virtual modules always pass — the filter decides
+which module graphs are traversed, not which stylesheets are kept — and a
+file matching both patterns stays excluded (Vite `createFilter`'s
+conflict rule). Development only: excluding a graph does not remove its
+CSS from the production build, where CSS always comes from the built
+assets.
 
 #### options.compiler
 

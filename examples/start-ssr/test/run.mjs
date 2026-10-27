@@ -78,7 +78,7 @@
 //     generated entries and client assets carry no reference to the
 //     server-components runtime when the option is off.
 //
-//   - `start.css.filter` (css-filter mode, CSS_FILTER=<shape> in
+//   - `css.filter` (css-filter mode, CSS_FILTER=<shape> in
 //     vite.config.ts): the dev CSS crawl's include/exclude semantics against
 //     a temp node_modules package written by the test — `exclude` prunes an
 //     app graph (replacing the default node_modules exclusion), `include`
@@ -1802,7 +1802,7 @@ async function runDocumentMode() {
 
 // Distinctive rule from the temp test-css-lib package's stylesheet: proves a
 // node_modules graph's CSS was opted into the dev SSR crawl by
-// `start.css.filter.include`. Keep in sync with CSS_LIB_FIXTURES below.
+// `css.filter.include`. Keep in sync with CSS_LIB_FIXTURES below.
 const LIB_CSS_COLOR = 'rgb(7, 140, 210)';
 
 // Temp fixtures for the css-filter mode (written before the sub-runs,

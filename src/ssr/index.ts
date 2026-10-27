@@ -55,7 +55,6 @@ import path from 'path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   type DevEnvironment,
-  type FilterPattern,
   normalizePath,
   type Plugin,
   type PreviewServer,
@@ -98,29 +97,6 @@ export interface StartOptions {
    * @default "src/App.{tsx,jsx,ts,js,tsrx}" (also probes lowercase "src/app.*")
    */
   app?: string;
-  /** Options for development CSS crawling. */
-  css?: {
-    /**
-     * Filter for the modules traversed while collecting the CSS that dev
-     * SSR inlines into `<head>`. Patterns are
-     * [picomatch](https://github.com/micromatch/picomatch) globs or regexes;
-     * relative globs resolve against the Vite root. CSS files themselves
-     * and virtual modules always pass — the filter decides which module
-     * graphs are crawled, not which stylesheets are kept.
-     *
-     * `exclude` prunes matching graphs and defaults to `/node_modules/`
-     * (providing your own replaces the default). `include` opts matching
-     * files back in on top of that baseline — typically a package whose
-     * CSS should be server-inlined to avoid a development FOUC, e.g.
-     * `{ include: /node_modules\/some-ui-lib/ }`. A file matching both
-     * stays excluded. Development only: production CSS always comes from
-     * the built assets.
-     */
-    filter?: {
-      include?: FilterPattern;
-      exclude?: FilterPattern;
-    };
-  };
   /**
    * Server entry module. Must export `render(request?, context?)` returning
    * a `renderToStream` result, an HTML string, or a `Response`.

@@ -190,28 +190,12 @@ export default defineConfig({
           ? { document: process.env.SSR_DOCUMENT }
           : {
               external: !!process.env.SOLID_EXTERNAL,
-              // CSS_FILTER (css-filter mode) exercises `start.css.filter`
-              // against a temp app (src/CssLibApp.tsx, written by the test)
-              // whose graph pulls a temp node_modules package with CSS
-              // (test-css-lib, also written by the test):
-              // - exclude: prune the App.tsx graph (replaces the default
-              //   node_modules exclusion).
-              // - include: opt the test-css-lib graph in on top of the
-              //   default baseline (app CSS must survive).
-              // - conflict: the same file matched by both patterns stays
-              //   excluded (createFilter's exclude-wins rule).
-              // - default: no filter — the node_modules graph is pruned by
-              //   the default exclusion while app CSS is collected.
-              ...(process.env.CSS_FILTER === 'exclude'
-                ? { css: { filter: { exclude: /App\.tsx$/ } } }
+              // CSS_FILTER=include|default (css-filter mode) roots the app at
+              // the temp src/CssLibApp.tsx; the filter itself is the
+              // top-level `css` option below.
+              ...(process.env.CSS_FILTER === 'include' || process.env.CSS_FILTER === 'default'
+                ? { app: 'src/CssLibApp.tsx' }
                 : {}),
-              ...(process.env.CSS_FILTER === 'include'
-                ? { app: 'src/CssLibApp.tsx', css: { filter: { include: /test-css-lib/ } } }
-                : {}),
-              ...(process.env.CSS_FILTER === 'conflict'
-                ? { css: { filter: { include: /App\.tsx$/, exclude: /App\.tsx$/ } } }
-                : {}),
-              ...(process.env.CSS_FILTER === 'default' ? { app: 'src/CssLibApp.tsx' } : {}),
               // SSR_DEVTOOLS=0 (dev-mode sub-run) opts out of the development
               // toolbar via `start.devtools`. Without the knob the workspace's
               // @solidjs/start-devtools install is auto-detected, so plain dev
@@ -247,6 +231,25 @@ export default defineConfig({
                 ? { renderMode: process.env.SSR_RENDER_MODE as 'stream' | 'async' }
                 : {}),
             },
+      // CSS_FILTER (css-filter mode) exercises the top-level `css.filter`
+      // against a temp app (src/CssLibApp.tsx, written by the test) whose
+      // graph pulls a temp node_modules package with CSS (test-css-lib, also
+      // written by the test):
+      // - exclude: prune the App.tsx graph (replaces the default
+      //   node_modules exclusion).
+      // - include: opt the test-css-lib graph in on top of the default
+      //   baseline (app CSS must survive).
+      // - conflict: the same file matched by both patterns stays excluded
+      //   (createFilter's exclude-wins rule).
+      // - default: no filter — the node_modules graph is pruned by the
+      //   default exclusion while app CSS is collected.
+      ...(process.env.CSS_FILTER === 'exclude'
+        ? { css: { filter: { exclude: /App\.tsx$/ } } }
+        : process.env.CSS_FILTER === 'include'
+          ? { css: { filter: { include: /test-css-lib/ } } }
+          : process.env.CSS_FILTER === 'conflict'
+            ? { css: { filter: { include: /App\.tsx$/, exclude: /App\.tsx$/ } } }
+            : {}),
       serverFunctions: serverComponents
         ? { components: true }
         : {
