@@ -3988,6 +3988,15 @@ async function runMiddlewareMode() {
         entryCode.includes('const prepared = ') &&
           entryCode.includes('__solidSetupStream'),
       );
+      // A client that disconnects before the shell flushes aborts
+      // request.signal; the entry forwards it so the pending render is
+      // disposed (#467).
+      record(
+        'mw-codegen',
+        'gen',
+        'generated entry forwards request.signal to renderToStream',
+        entryCode.includes('.request.signal'),
+      );
       // The `options.event` seam on an external handleRequest call: a
       // host-shaped direct dispatch (no dev middleware involved) passes a
       // synthetic nativeEvent, and the event the app sees (the /api/native
