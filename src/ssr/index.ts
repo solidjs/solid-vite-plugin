@@ -79,7 +79,7 @@ import {
   devStylePatch,
   renderDevStyleTag,
 } from '../dev-manifest.js';
-import { joinBase, sendWebResponse, webRequestFromNode } from '../http.js';
+import { joinBase, parseRequestTarget, sendWebResponse, webRequestFromNode } from '../http.js';
 
 /**
  * Options for the main plugin's `start` option (`start: true` is
@@ -2231,7 +2231,7 @@ export function startServe(
               if (
                 contentType.includes('text/html') ||
                 contentType.includes('text/event-stream') ||
-                underServerFunctionsMount(new URL(requestUrl, 'http://localhost').pathname)
+                underServerFunctionsMount(parseRequestTarget(requestUrl, 'http://localhost').pathname)
               ) {
                 res.setHeader('content-encoding', 'identity');
               }
@@ -2258,7 +2258,7 @@ export function startServe(
             return;
           }
           server.middlewares.use((req, res, next) => {
-            const url = new URL(req.url || '/', 'http://localhost');
+            const url = parseRequestTarget(req.url || '/', 'http://localhost');
             if (url.pathname.startsWith('/@')) return next();
             // Vite's own HTML-fallback test: a GET or HEAD accepting HTML by
             // name, via `*/*`, or with no Accept (curl, monitors). Production

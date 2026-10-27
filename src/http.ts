@@ -34,7 +34,7 @@ export function webRequestFromNode(
   // HTTP/2 has no Host header — the authority travels in the `:authority`
   // pseudo-header instead.
   const host = req.headers.host ?? (req.headers[':authority'] as string | undefined) ?? 'localhost';
-  const url = new URL(urlPath ?? req.url ?? '/', `${protocol}://${host}`);
+  const url = parseRequestTarget(urlPath ?? req.url ?? '/', `${protocol}://${host}`);
   const headers = new Headers();
   for (const [key, value] of Object.entries(req.headers)) {
     if (value === undefined) continue;
@@ -137,6 +137,13 @@ export async function sendWebResponse(res: ServerResponse, response: Response): 
   } catch {
     res.destroy();
   }
+}
+
+// Concatenated, not resolved: `//evil.example/x` would otherwise become the authority.
+export function parseRequestTarget(target: string, origin: string): URL {
+  return target.startsWith('/')
+    ? new URL(new URL(origin).origin + target)
+    : new URL(target, origin);
 }
 
 export function joinBase(base: string, pathname: string): string {

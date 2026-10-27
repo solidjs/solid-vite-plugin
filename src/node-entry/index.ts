@@ -11,7 +11,7 @@ import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { fileURLToPath } from 'node:url';
 import { handleRequest } from './server.js';
-import { sendWebResponse, webRequestFromNode } from '../http.js';
+import { parseRequestTarget, sendWebResponse, webRequestFromNode } from '../http.js';
 
 // Baked in at build time by the plugin (the generated header above this
 // module's code).
@@ -136,7 +136,7 @@ export function createListener({
   return async function listener(req, res) {
     try {
       if (serveStatic && isReadRequest(req)) {
-        const pathname = new URL(req.url || '/', 'http://localhost').pathname;
+        const pathname = parseRequestTarget(req.url || '/', 'http://localhost').pathname;
         const file = staticFile(pathname);
         if (file && (await sendFile(req, res, file))) return;
         // Client start mode: history fallback for HTML navigations.
