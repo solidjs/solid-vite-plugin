@@ -1,4 +1,4 @@
-// Start-mode typed-env fixture test: proves `start.env` gives a start-mode app
+// Start-mode typed-env fixture test: proves `env` gives a start-mode app
 // first-party typed environment variables from a root env.ts of Standard
 // Schema validators (zod + valibot mixed per key), with the validator never
 // reaching any bundle:
@@ -539,19 +539,20 @@ async function clientMode() {
 // ---------------------------------------------------------------------------
 const requested = process.argv[2];
 const modes = requested ? [requested] : ['dev', 'guards', 'prod', 'client'];
-// Config-level: `start.env: false` removes the env plugin entirely; the
-// default (probe) includes it under start mode; without `start` there is no
-// env layer at all.
+// Config-level: `env: false` removes the env plugin entirely; left unset it
+// is included under start mode (which probes for env.ts) and absent without
+// `start`; an explicit `env` includes it in any setup.
 {
   const { default: solid } = await import('@solidjs/vite-plugin');
   const names = (opts) => solid(opts).map((p) => p.name);
   record(
     'config',
     'gating',
-    'env plugin gated on start (+ env: false opt-out)',
-    names({ start: true }).includes('solid:start-env') &&
-      !names({ start: { env: false } }).includes('solid:start-env') &&
-      !names({}).includes('solid:start-env'),
+    'env plugin probed under start, opt-in without it (+ env: false opt-out)',
+    names({ start: true }).includes('solid:env') &&
+      !names({ start: true, env: false }).includes('solid:env') &&
+      !names({}).includes('solid:env') &&
+      names({ env: true }).includes('solid:env'),
   );
 }
 try {
