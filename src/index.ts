@@ -372,12 +372,18 @@ export interface Options {
    */
   exclude?: FilterPattern;
   /**
-   * Resolve Solid's development builds under `vite dev` — the `development`
-   * export condition of `solid-js` and `@solidjs/web`, which carry the extra
-   * checks, warnings and diagnostics. Has no effect on `vite build`. Set to
-   * `false` to serve the production builds in dev instead.
+   * Use Solid's development builds: the `development` export condition of
+   * `solid-js` and `@solidjs/web`, which carry the extra checks, warnings
+   * and diagnostics, plus the compiler's dev output.
    *
-   * @default true
+   * Left unset, they are used under `vite dev` (and vitest) only. `true`
+   * forces them in `vite build` too, for example to debug a production
+   * bundle with the dev warnings on. `false` serves the production builds
+   * under `vite dev` as well; HMR then falls back to full reloads, since
+   * the production refresh runtime is an inert stub.
+   *
+   * @default undefined (development builds under `vite dev`, production
+   * builds otherwise)
    */
   dev?: boolean;
   /**
