@@ -116,6 +116,13 @@ describe('frontends', () => {
     },
   );
 
+  it('hands over the queried module id beside the file path', async () => {
+    const result = await server.environments.client.transformRequest('/src/App.fe?dep');
+    expect(result?.code).toContain('_$template(');
+    const context = calls.find((c) => c.moduleId.endsWith('App.fe?dep'));
+    expect(context?.id).toBe(path.join(root, 'src/App.fe'));
+  });
+
   it('watches the files the front end read', async () => {
     await server.environments.client.transformRequest('/src/App.fe');
     const node = await server.environments.client.moduleGraph.getModuleByUrl('/src/App.fe');

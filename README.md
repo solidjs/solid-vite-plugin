@@ -1138,6 +1138,7 @@ interface Frontend {
     source: string,
     context: {
       id: string; // the module's file path
+      moduleId: string; // its full id, query included (`./x.rx?dep`)
       ssr: boolean; // compiled for a server environment
       root: string; // Vite's resolved root
       solid: SolidOptions; // what this plugin would pass @solidjs/compiler for a JSX module here

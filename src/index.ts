@@ -282,6 +282,11 @@ export interface Frontend {
 export interface FrontendContext {
   /** The module's file path. */
   id: string;
+  /**
+   * The module's full id, query included: a front end that imports its own
+   * modules under a query (`./x.rx?dep`) tells the forms apart by it.
+   */
+  moduleId: string;
   /** Whether the module is compiled for a server environment. */
   ssr: boolean;
   /** Vite's resolved project root. */
@@ -1372,6 +1377,7 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
       if (frontend) {
         const result = await frontend.compile(source, {
           id: cleanModuleId(id),
+          moduleId: id,
           ssr: false,
           root: projectRoot,
           solid: getSolidOptions(
@@ -1550,7 +1556,8 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
     const frontend = frontendFor(id);
     if (frontend) {
       const result = await frontend.compile(source, {
-        id,
+        id: cleanModuleId(id),
+        moduleId: id,
         ssr: false,
         root: projectRoot,
         solid: getSolidOptions(
@@ -2694,6 +2701,7 @@ export default manifest;`;
           // a JSX module of this environment would get from this plugin.
           const result = await frontend.compile(code, {
             id,
+            moduleId,
             ssr: !!isSsr,
             root: projectRoot,
             solid: getSolidOptions(
