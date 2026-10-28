@@ -4,10 +4,8 @@
 
 # ⚡ @solidjs/vite-plugin
 
-> **Renamed from `vite-plugin-solid`.** This package was previously published as
-> [`vite-plugin-solid`](https://www.npmjs.com/package/vite-plugin-solid). To migrate,
-> swap the dependency and the import — `npm install -D @solidjs/vite-plugin` and
-> `import solid from '@solidjs/vite-plugin'` — nothing else changes.
+> [`vite-plugin-solid`](https://www.npmjs.com/package/vite-plugin-solid) has moved to
+> `@solidjs/vite-plugin`. See [Migrating from vite-plugin-solid](#migrating-from-vite-plugin-solid).
 
 A simple integration to run [solid-js](https://github.com/solidjs/solid) with [vite](https://github.com/vitejs/vite)
 
@@ -1369,6 +1367,49 @@ If a library ships only compiled code and fails during SSR, ask its author to ad
 - It appears that Webstorm generate some weird triggers when saving a file. In order to prevent that you can follow [this thread](https://intellij-support.jetbrains.com/hc/en-us/community/posts/360000154544-I-m-having-a-huge-problem-with-Webstorm-and-react-hot-loader-) and disable the **"Safe Write"** option in **"Settings | Appearance & Behavior | System Settings"**.
 
 - If one of your dependency spit out React code instead of Solid that means that they don't expose JSX properly. To get around it, you might want to manually exclude it from the [dependencies optimization](https://vitejs.dev/config/dep-optimization-options.html#optimizedeps-exclude)
+
+## Migrating from vite-plugin-solid
+
+`vite-plugin-solid` has moved to `@solidjs/vite-plugin`. Upgrade the app itself with Solid's
+[2.0 migration guide](https://github.com/solidjs/solid/blob/next/documentation/solid-2.0/MIGRATION.md)
+(it covers `jsxImportSource` and the move from `solid-js/web` to `@solidjs/web`). On the plugin
+side, swap the package and the import:
+
+```bash
+$ npm uninstall vite-plugin-solid
+$ npm install -D @solidjs/vite-plugin
+$ npm install solid-js @solidjs/web
+```
+
+```ts
+// vite.config.ts
+import solid from '@solidjs/vite-plugin'; // was 'vite-plugin-solid'
+```
+
+The plugin now requires Vite 8 or 9 and Node.js `>=22.12.0`, and `@solidjs/web` is a peer
+dependency next to `solid-js`.
+
+Every `vite-plugin-solid` option except `hot` keeps its name, but some behave differently:
+
+| `vite-plugin-solid` | `@solidjs/vite-plugin` |
+| --- | --- |
+| `hot: false` | `refresh: false`. `hot` is now a config error. |
+| `dev: true` | Remove it. Development builds under `vite dev` are still the default, and `true` now also forces them in `vite build`. |
+| `dev: false` | Serves the production builds of `solid-js` and `@solidjs/web` under `vite dev`, and HMR falls back to full reloads. |
+| `solid: { moduleName: 'solid-js/web' }` | Remove it. Both compilers default to `@solidjs/web`. |
+| `babel` | Still applied, but JSX is compiled by the native `@solidjs/compiler`, and your Babel options run in their own pass before it. `compiler: 'babel'` switches the JSX transform back to Babel (`@solidjs/babel-plugin`). |
+| `include` / `exclude` | Relative globs resolve against the Vite root instead of `process.cwd()`. |
+| `ssr: false` | Modules Vite loads on the server (for example through `ssrLoadModule` to prerender a page) compile to SSR output instead of DOM output. |
+
+For Vitest, the plugin no longer sets `test.environment: 'jsdom'`. Add `environment: 'jsdom'`
+(or `'happy-dom'`) to your test config for DOM component tests. An `ssr: mode !== 'test'`
+workaround can go: tests compile for the client unless a project sets `environment: 'node'`
+(see [Testing](#testing)).
+
+Everything else is new and opt-in. [`start`](#optionsstart) is the framework layer for Solid 2
+(the generated entries, dev server, middleware and production server that SolidStart used to
+provide), alongside [`serverFunctions`](#optionsserverfunctions), [`env`](#optionsenv) and
+[`css`](#optionscss).
 
 ## Migration from v1
 
