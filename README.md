@@ -4,10 +4,8 @@
 
 # ⚡ @solidjs/vite-plugin
 
-> **Renamed from `vite-plugin-solid`.** Solid 2 apps use this package, `@solidjs/vite-plugin`,
-> starting at 3.0. [`vite-plugin-solid`](https://www.npmjs.com/package/vite-plugin-solid) stays
-> on 2.x for Solid 1 apps and won't get a 3.0. To upgrade, see
-> [Migrating from vite-plugin-solid](#migrating-from-vite-plugin-solid).
+> [`vite-plugin-solid`](https://www.npmjs.com/package/vite-plugin-solid) has moved to
+> `@solidjs/vite-plugin`. See [Migrating from vite-plugin-solid](#migrating-from-vite-plugin-solid).
 
 A simple integration to run [solid-js](https://github.com/solidjs/solid) with [vite](https://github.com/vitejs/vite)
 
@@ -1372,8 +1370,7 @@ If a library ships only compiled code and fails during SSR, ask its author to ad
 
 ## Migrating from vite-plugin-solid
 
-Solid 2 apps use `@solidjs/vite-plugin`, which continues the version line at 3.0;
-`vite-plugin-solid` stays on 2.x for Solid 1. Upgrade the app itself with Solid's
+`vite-plugin-solid` has moved to `@solidjs/vite-plugin`. Upgrade the app itself with Solid's
 [2.0 migration guide](https://github.com/solidjs/solid/blob/next/documentation/solid-2.0/MIGRATION.md)
 (it covers `jsxImportSource` and the move from `solid-js/web` to `@solidjs/web`). On the plugin
 side, swap the package and the import:
