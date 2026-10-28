@@ -39,36 +39,37 @@ Supported Vite versions: **Vite 8 and 9**.
 
 ## Quickstart
 
-You can use the [vite-template-solid](https://github.com/solidjs/templates) starter templates similar to CRA:
+Start from one of the Solid 2 [templates](https://github.com/solidjs/templates/tree/main/solid-v2):
 
 ```bash
-$ npx degit solidjs/templates/js my-solid-project
+$ npx degit solidjs/templates/solid-v2/basic my-solid-project
 $ cd my-solid-project
 $ npm install # or pnpm install or yarn install
-$ npm run start # starts dev-server with hot-module-reloading
+$ npm run dev # starts the dev server with hot module replacement
 $ npm run build # builds to /dist
 ```
 
+`solid-v2/bare` is the minimal starting point, and `solid-v2/fullstack` adds streaming SSR,
+middleware and server functions.
+
 ## Installation
 
-Install `vite`, `@solidjs/vite-plugin` as dev dependencies.
-
-Install `solid-js` as dependency.
-
-You have to install those so that you are in control to which solid version is used to compile your code.
+Install `vite` and `@solidjs/vite-plugin` as dev dependencies, and Solid's runtime, `solid-js`
+and `@solidjs/web`, as dependencies. Both runtime packages are peer dependencies of the plugin,
+so you control which Solid version your code is compiled against.
 
 ```bash
 # with npm
 $ npm install -D vite @solidjs/vite-plugin
-$ npm install solid-js
+$ npm install solid-js @solidjs/web
 
 # with pnpm
 $ pnpm add -D vite @solidjs/vite-plugin
-$ pnpm add solid-js
+$ pnpm add solid-js @solidjs/web
 
 # with yarn
 $ yarn add -D vite @solidjs/vite-plugin
-$ yarn add solid-js
+$ yarn add solid-js @solidjs/web
 ```
 
 Add it as plugin to `vite.config.js`
@@ -1247,13 +1248,11 @@ plugin's errors are prefixed `[@solidjs/vite-plugin]`.
 
 ## Note on HMR
 
-Starting from version `1.1.0`, this plugin handles automatic HMR. The refresh
-transform is compiled natively by `@solidjs/compiler` and drives the
-dev-only `solid-js/refresh` runtime entry that ships with Solid (the
-standalone [solid-refresh](https://github.com/solidjs/solid-refresh) package
-is no longer used).
-
-At this stage it's still early work but provide basic HMR. In order to get the best out of it there are couple of things to keep in mind:
+HMR works out of the box under `vite dev`. The refresh transform is compiled
+natively by `@solidjs/compiler` and drives the dev-only `solid-js/refresh`
+runtime entry that ships with Solid (the standalone
+[solid-refresh](https://github.com/solidjs/solid-refresh) package is no
+longer used). A few things to keep in mind:
 
 - When you modify a file every state below this component will be reset to default state (including the current file). The state in parent component is preserved.
 
