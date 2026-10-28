@@ -85,7 +85,7 @@ import { joinBase, parseRequestTarget, sendWebResponse, webRequestFromNode } fro
  * sugar for the empty bag). One bag serves both modes — the plugin's `ssr`
  * boolean picks between them, so flipping a project between
  * client-rendered and server-rendered is toggling that boolean, never
- * reshaping this object. Server-only options (`entries.server`, `external`)
+ * reshaping this object. Server-only options (`entries.server`, `externalServer`)
  * are documented no-ops in client mode: they stay in the config across a
  * flip instead of erroring.
  */
@@ -309,7 +309,7 @@ export interface StartOptions {
    *
    * @default false
    */
-  external?: boolean;
+  externalServer?: boolean;
   /**
    * Emit a ready-to-run Node server next to the server bundle:
    * `dist/server/node.js` (same outDir as `server.js`). It serves the
@@ -331,7 +331,7 @@ export interface StartOptions {
    * serves `dist/client` with an `index.html` history fallback for HTML
    * navigations plus the server-function endpoint. Nothing is emitted when
    * no server bundle exists — client mode without `serverFunctions`, or
-   * `start.external` — and the build warns. `server.js` and its
+   * `start.externalServer` — and the build warns. `server.js` and its
    * `handleRequest` / `{ fetch }` contracts are unchanged: the entry is an
    * extra emitted asset, not a second build input. Node only — every other
    * mainstream runtime consumes the server bundle's `{ fetch }` directly.
@@ -693,13 +693,13 @@ export function startServe(
   // verdict is kept — the resolved id is deliberately not (see resolveId).
   let devtoolsDetections: Partial<Record<'client' | 'server', Promise<boolean>>> = {};
   let devtoolsImporters: Partial<Record<'client' | 'server', string>> = {};
-  // `external` is server-mode-only (documented no-op in client mode, so a
+  // `externalServer` is server-mode-only (documented no-op in client mode, so a
   // host-integrated config survives the `ssr` boolean flip untouched).
-  const externalServer = !clientMode && !!options.external;
+  const externalServer = !clientMode && !!options.externalServer;
   // `start.node` emits dist/server/node.js beside the server bundle — only
   // where a server bundle exists to wrap. Client mode without server
   // functions keeps no dist/server (the prerender hook removes it), and
-  // `start.external` hands the server build to a host; both warn at build
+  // `start.externalServer` hands the server build to a host; both warn at build
   // time and emit nothing.
   const nodeEntry = !!options.node;
   const nodeEntryApplies =
@@ -1708,7 +1708,7 @@ export function startServe(
         instrumentPath = options.instrument
           ? path.resolve(root, normalizeUserPath(root, options.instrument, 'instrument'))
           : null;
-        // Server-mode only, like `entries.server`/`external` (a documented
+        // Server-mode only, like `entries.server`/`externalServer` (a documented
         // no-op in client mode so configs survive the `ssr` boolean flip).
         setupPath =
           !clientMode && options.setup
@@ -1744,7 +1744,7 @@ export function startServe(
         if (env.isPreview) {
           // Defaults only. A host that relocates an environment in
           // `configEnvironment` still wins — that hook runs after this
-          // merge. `start.external` leaves both directories to the host.
+          // merge. `start.externalServer` leaves both directories to the host.
           const previewBuild = externalServer
             ? {}
             : {
@@ -1916,7 +1916,7 @@ export function startServe(
         if (isBuild && nodeEntry) {
           if (externalServer) {
             config.logger.warn(
-              '[@solidjs/vite-plugin] start.node is ignored with start.external: the host owns the ' +
+              '[@solidjs/vite-plugin] start.node is ignored with start.externalServer: the host owns the ' +
                 'server build, so there is no server.js for the Node entry to wrap. Drop one of the ' +
                 'two options.',
             );
@@ -2128,7 +2128,7 @@ export function startServe(
         // Vite's preview statics serve dist/client (see the config hook) and
         // everything else — pages, the server-function endpoint, middleware
         // included — dispatches through the built handler, exactly like a
-        // deployed server. Hosts owning the server build (`start.external`)
+        // deployed server. Hosts owning the server build (`start.externalServer`)
         // preview through their own runner instead.
         // Client mode: pages are the static index.html (preview's own
         // history fallback serves them before this post middleware runs);
