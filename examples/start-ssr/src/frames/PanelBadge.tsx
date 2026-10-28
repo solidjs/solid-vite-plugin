@@ -3,5 +3,9 @@
 import './panel-badge.css';
 
 export function PanelBadge() {
-  return <span id="panel-badge" class="panel-badge">server-styled</span>;
+  return (
+    <span id="panel-badge" class="panel-badge">
+      server-styled
+    </span>
+  );
 }

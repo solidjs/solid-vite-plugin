@@ -16,8 +16,7 @@ const cssFileRegExp = /\.(css|less|sass|scss|styl|stylus|pcss|postcss|sss)$/;
 const nonAmbientQueryRegExp = /[?&](url|inline|raw)\b/;
 
 const isStylesheet = (id: string) =>
-  (cssFileRegExp.test(id.split('?')[0]!) || isTsrxCssModule(id)) &&
-  !nonAmbientQueryRegExp.test(id);
+  (cssFileRegExp.test(id.split('?')[0]!) || isTsrxCssModule(id)) && !nonAmbientQueryRegExp.test(id);
 
 /** The module's runtime import specifiers (type-only ones dropped). */
 function importSources(ctx: any, code: string): string[] {
