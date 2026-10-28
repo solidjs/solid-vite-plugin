@@ -680,6 +680,17 @@ export function createServerFunctionsPlugins(
           // base-prefixed URLs.
           const dispatchUrl = basePrefixed ? undefined : joinBase(base, req.url || '/');
           (async () => {
+            // Dispatch through a module evaluated in the SSR environment so
+            // the handler shares the registry instance with the app modules.
+            // With SSR start mode active the main plugin threads its handler id
+            // in, and dispatch goes through `handleRequest` instead: one
+            // middleware chain and one stub-backed request event front the
+            // endpoint exactly as they front page SSR.
+            // Loaded before the function's module below: with
+            // `start.instrument` the handler is the wrapper that runs the
+            // instrument module first, and a server-function call can be the
+            // first request this runner sees, so nothing may load ahead of it.
+            const handler = await ssrEnvironment.runner.import(internal.ssrHandler ?? HANDLER_ID);
             // Make sure the referenced module has been evaluated in the SSR
             // environment so its registration exists — functions only client
             // code references are never loaded by the SSR render itself.
@@ -710,13 +721,6 @@ export function createServerFunctionsPlugins(
               const entry = moduleForFunctionId(functionId);
               if (entry) await ssrEnvironment.runner.import(moduleDevUrl(entry));
             }
-            // Dispatch through a module evaluated in the SSR environment so
-            // the handler shares the registry instance with the app modules.
-            // With SSR start mode active the main plugin threads its handler id
-            // in, and dispatch goes through `handleRequest` instead — one
-            // middleware chain and one stub-backed request event front the
-            // endpoint exactly as they front page SSR.
-            const handler = await ssrEnvironment.runner.import(internal.ssrHandler ?? HANDLER_ID);
             // Both dispatch shapes carry the raw Node request on the event
             // (the `options.event` seam), matching the SSR dev middleware
             // and what a production Node entry passes.
