@@ -4,10 +4,10 @@
 
 # ⚡ @solidjs/vite-plugin
 
-> **Renamed from `vite-plugin-solid`.** This package was previously published as
-> [`vite-plugin-solid`](https://www.npmjs.com/package/vite-plugin-solid). Version 3 is the
-> plugin for Solid 2; Solid 1 apps stay on `vite-plugin-solid` 2.x. To upgrade, see
-> [Migrating from vite-plugin-solid 2.x](#migrating-from-vite-plugin-solid-2x).
+> **Renamed from `vite-plugin-solid`.** Solid 2 apps use this package, `@solidjs/vite-plugin`,
+> starting at 3.0. [`vite-plugin-solid`](https://www.npmjs.com/package/vite-plugin-solid) stays
+> on 2.x for Solid 1 apps and won't get a 3.0. To upgrade, see
+> [Migrating from vite-plugin-solid](#migrating-from-vite-plugin-solid).
 
 A simple integration to run [solid-js](https://github.com/solidjs/solid) with [vite](https://github.com/vitejs/vite)
 
@@ -1370,9 +1370,10 @@ If a library ships only compiled code and fails during SSR, ask its author to ad
 
 - If one of your dependency spit out React code instead of Solid that means that they don't expose JSX properly. To get around it, you might want to manually exclude it from the [dependencies optimization](https://vitejs.dev/config/dep-optimization-options.html#optimizedeps-exclude)
 
-## Migrating from vite-plugin-solid 2.x
+## Migrating from vite-plugin-solid
 
-`@solidjs/vite-plugin` 3 is the plugin for Solid 2, so upgrade the app itself with Solid's
+Solid 2 apps use `@solidjs/vite-plugin`, which continues the version line at 3.0;
+`vite-plugin-solid` stays on 2.x for Solid 1. Upgrade the app itself with Solid's
 [2.0 migration guide](https://github.com/solidjs/solid/blob/next/documentation/solid-2.0/MIGRATION.md)
 (it covers `jsxImportSource` and the move from `solid-js/web` to `@solidjs/web`). On the plugin
 side, swap the package and the import:
@@ -1391,9 +1392,9 @@ import solid from '@solidjs/vite-plugin'; // was 'vite-plugin-solid'
 The plugin now requires Vite 8 or 9 and Node.js `>=22.12.0`, and `@solidjs/web` is a peer
 dependency next to `solid-js`.
 
-Every 2.x option except `hot` keeps its name, but some behave differently:
+Every `vite-plugin-solid` option except `hot` keeps its name, but some behave differently:
 
-| 2.x | 3.0 |
+| `vite-plugin-solid` | `@solidjs/vite-plugin` |
 | --- | --- |
 | `hot: false` | `refresh: false`. `hot` is now a config error. |
 | `dev: true` | Remove it. Development builds under `vite dev` are still the default, and `true` now also forces them in `vite build`. |
