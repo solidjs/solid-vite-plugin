@@ -1,5 +1,25 @@
 # Changelog
 
+## 3.0.0-next.52
+
+### Patch Changes
+
+- c7b8d84: Docs: the Quickstart points at the Solid 2 templates, the install commands include the required `@solidjs/web` peer, and the HMR note no longer describes itself as early work from version 1.1.0.
+- 2416468: Add a `frontends` option: other languages that lower to Solid can claim a file extension and compile its modules themselves (`frontends: { ".x": x() }`). A front end's `compile(source, { id, moduleId, ssr, root, solid, addWatchFile })` returns `{ code, map, css }`, given the compiler options this plugin would use for a JSX module in that environment; the result then takes the lowered `.tsrx` route (lazy and refresh passes, server functions keyed by the module's real path, `css` as a CSS module, dep scanning). Server functions in a front end's modules need `@solidjs/compiler` with secondary passes that accept any extension. `.rx` (ReactiveScript) is built in: with `@reactivescript/compiler` installed in the project, `.rx` modules compile with no option.
+- 4414f54: Only run the `lazy()` module-URL transform on non-JSX modules that mention `solid-js`. Any `.js` file containing the text "lazy" was parsed as an ES module, so a CommonJS dependency with a top-level `return` (or Flow syntax) failed `vite build`. The compiler only rewrites `lazy` imported from `solid-js`, so other files are left untouched.
+- 95019de: Docs: correct the `dev` option contract (left unset it means development builds under `vite dev` only, `true` also forces them in `vite build`), add a README section for `diagnostics`, and remove the README entry for `options.typescript`, which the plugin does not accept.
+- e71df25: `refresh: false` now disables HMR, replacing `refresh: { disabled: true }`, and the deprecated `hot` option is removed. `refresh` takes `true`, `false` or `{ granular }`. The old spellings fail at config time with a message naming the replacement.
+- bbace11: Rename `start.errorBoundary` to `start.productionErrorBoundary`, since the boundary is only added in production builds. The old key fails at config time with a message naming the replacement.
+- 6379826: The generated server entry passes the request's `signal` to `renderToStream`, so a render still pending when the client disconnects is disposed (#467).
+- d5741c5: Keep a request target that starts with `//` as the request path. The Node-to-web bridge resolved `req.url` against the host as a relative URL, so `GET //evil.example/api/x` produced a `request.url` of `http://evil.example/api/x`, letting a client choose the origin seen by origin checks and absolute redirects. The node entry's static file lookup and the dev and preview middlewares parse the path the same way now.
+- d275824: The exported `serverFunctions()` now takes only its options. The second parameter it used to declare was internal wiring for the main plugin's `serverFunctions` option (dev middleware, SSR handler, TSRX ordering), which the standalone export should never set; it moved to an internal factory, so it is no longer part of the public types.
+- d44cdb5: Solid packages move to `^2.0.0-rc.19` (`solid-js`, `@solidjs/web`, `@solidjs/compiler`, `@solidjs/babel-plugin`).
+- bf76612: Group the explicit entry overrides under `start.entries`: `start.entryServer` becomes `start.entries.server` and `start.entryClient` becomes `start.entries.client`. The old keys fail at config time with a message naming the replacement.
+- 13fe6d7: Rename `start.external` to `start.externalServer`, so it no longer reads like Vite's `ssr.external` (dependency externalization): the option hands the whole server side to a host. The old key fails at config time with a message naming the replacement.
+- 5f74220: Move the dev CSS crawl filter out of `start` to a top-level `css` option: `start.css.filter` becomes `css.filter`. Plain `ssr: true` setups reading `virtual:solid-manifest` already ran the crawl but had no way to configure it. `start.css` fails at config time with a message naming the replacement.
+- 9f8363c: Move typed env out of `start` to a top-level `env` option, since it also works without start mode. An explicit `env` (`true` or a schema path) now works in any setup, for example a manual `ssr: true` server. Left unset, only start mode probes for the conventional `env.ts` / `env.js`, so projects without `start` that happen to have an unrelated `env.ts` are unaffected. `start.env` fails at config time with a message naming the replacement.
+- adc3d95: Type `virtual:solid-manifest` as what it exports: `ViteManifest` in an SSR build, the live `DevAssetResolver` in dev (now exported from the plugin). Both still pass straight into `renderToStream`'s `manifest` option; code that reads the module narrows with `if (manifest.resolve)`. Code that treated the dev export as a `ViteManifest` now gets a type error where it used to fail at runtime.
+
 ## 3.0.0-next.51
 
 ### Patch Changes
