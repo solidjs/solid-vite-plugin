@@ -1,4 +1,4 @@
-// `start.instrument` (SSR_INSTRUMENT=1, middleware mode): the module the
+// `start.serverBootstrap` (SSR_INSTRUMENT=1, middleware mode): the module the
 // plugin awaits to completion before anything else in the server graph
 // loads — the seam an APM's OpenTelemetry setup needs (`Sentry.init()`
 // must run before the modules it patches are loaded). This fake proves the

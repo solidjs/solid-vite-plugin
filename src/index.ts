@@ -1422,6 +1422,18 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
       '[@solidjs/vite-plugin] `start.external` has been renamed to `start.externalServer`.',
     );
   }
+  if (startOptions && 'setup' in startOptions) {
+    // Renamed before the stable release, without an alias.
+    throw new Error(
+      '[@solidjs/vite-plugin] `start.setup` has been renamed to `start.renderSetup`.',
+    );
+  }
+  if (startOptions && 'instrument' in startOptions) {
+    // Renamed before the stable release, without an alias.
+    throw new Error(
+      '[@solidjs/vite-plugin] `start.instrument` has been renamed to `start.serverBootstrap`.',
+    );
+  }
   const styleFilterOptions = options.css?.filter;
   // The CSS crawl walks the module graph from the app's own entries, so a
   // plain createFilter allowlist can't express the option's purpose (opting

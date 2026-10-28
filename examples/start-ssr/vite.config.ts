@@ -24,10 +24,10 @@ import solidPlugin from '@solidjs/vite-plugin';
 // - SSR_MIDDLEWARE=1 wires src/middleware.ts through `start.middleware`
 //   (middleware and preview modes): a fetch-style chain fronting every
 //   dispatch path with getRequestEvent() live inside it.
-// - SSR_SETUP=1 wires src/setup.tsx through `start.setup` (middleware mode):
+// - SSR_SETUP=1 wires src/setup.tsx through `start.renderSetup` (middleware mode):
 //   the per-request app-setup hook, awaited between the middleware chain and
 //   renderToStream with the shared request event in hand.
-// - SSR_INSTRUMENT=1 wires src/instrument.ts through `start.instrument`
+// - SSR_INSTRUMENT=1 wires src/instrument.ts through `start.serverBootstrap`
 //   (middleware mode): the module awaited to completion before the handler
 //   graph loads — the APM/OpenTelemetry seam; middleware.ts reports what it
 //   saw at its own load in an `x-instrument` header.
@@ -215,8 +215,8 @@ export default defineConfig({
               // hook — src/setup.tsx runs between the middleware chain and
               // renderToStream, receiving the event and returning the
               // component to render (the TanStack-style async router seam).
-              ...(process.env.SSR_SETUP ? { setup: './src/setup.tsx' } : {}),
-              ...(process.env.SSR_INSTRUMENT ? { instrument: './src/instrument.ts' } : {}),
+              ...(process.env.SSR_SETUP ? { renderSetup: './src/setup.tsx' } : {}),
+              ...(process.env.SSR_INSTRUMENT ? { serverBootstrap: './src/instrument.ts' } : {}),
               // SSR_CLIENT_SETUP=1 (client-setup mode): src/client-setup.ts
               // runs in the browser before the generated entry hydrates;
               // src/ClientSetupApp.tsx wraps App to record the order.

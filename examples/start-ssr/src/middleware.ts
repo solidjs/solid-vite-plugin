@@ -31,7 +31,7 @@
 //   returned the page, /mw-redirect throws redirect(), /mw-envelope throws a
 //   respond() envelope, /mw-response-error throws Response.error(),
 //   /mw-direct-throw lets an in-process server-function failure escape, and
-//   /setup-throw skips the error middleware so the start.setup failure
+//   /setup-throw skips the error middleware so the start.renderSetup failure
 //   (src/setup.tsx) reaches the handler. SSR_SERVER_ERRORS=1 registers a
 //   configureServerErrors hook that records what it hears (read back from
 //   /api/server-errors) instead of logging.
@@ -46,7 +46,7 @@ import {
 import type { StartMiddleware } from '@solidjs/vite-plugin';
 import { failDirect } from './api';
 
-// `start.instrument` evidence (SSR_INSTRUMENT=1): this module evaluates as
+// `start.serverBootstrap` evidence (SSR_INSTRUMENT=1): this module evaluates as
 // part of the handler graph — after `@solidjs/web` above — so what the
 // instrument register holds HERE is what it held before the graph loaded.
 // A `done: true` at this point means the instrument module was awaited to
@@ -229,7 +229,7 @@ async function first(event: RequestEvent, next: Next): Promise<Response> {
   // The runtime reports a failed in-process server-function call itself
   // before rethrowing; the handler must not report it a second time.
   if (pathname === '/mw-direct-throw') await failDirect();
-  // Past the error middleware below on purpose: the start.setup failure
+  // Past the error middleware below on purpose: the start.renderSetup failure
   // must escape the chain.
   if (pathname === '/setup-throw') return next();
   if (pathname === '/blocked') {

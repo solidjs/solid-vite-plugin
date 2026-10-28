@@ -100,7 +100,7 @@
 //     commitEventResponse from @solidjs/web and folds after the unwind;
 //     a thrown redirect() or respond() envelope escaping the chain is the
 //     response (dev included), and any other escaping failure (middleware,
-//     start.setup, an in-process server-function call) is contained in
+//     start.renderSetup, an in-process server-function call) is contained in
 //     production (preview and node too): a generic 500 with the stub
 //     cookie, the configureServerErrors hook hearing each error once (or
 //     console.error without one), while dev still hands it to the Vite
@@ -3383,7 +3383,7 @@ async function runFramesMode() {
 // - error middleware (/boom: a render throw becomes the middleware's 500).
 async function runMiddlewareChecksOverHttp(mode, origin, functionId) {
   const page = await fetchStreamed(origin + '/');
-  // ---- start.instrument (src/instrument.ts) -------------------------------
+  // ---- start.serverBootstrap (src/instrument.ts) ----------------------
   // What middleware.ts saw at ITS module load, i.e. after `@solidjs/web`
   // and the handler graph began evaluating: the instrument had run first
   // (nothing ahead of it in the register), had been awaited to completion
@@ -3560,7 +3560,7 @@ async function runMiddlewareChecksOverHttp(mode, origin, functionId) {
     );
   }
 
-  // ---- Per-request app setup (start.setup, src/setup.tsx) ----------------
+  // ---- Per-request app setup (start.renderSetup, src/setup.tsx) ----------------
   // The hook runs between the middleware chain and renderToStream: its
   // marker carries the request pathname, the locals the middleware
   // decorated (ordering), and an invocation counter. It must land in the
@@ -3703,7 +3703,7 @@ async function runMiddlewareChecksOverHttp(mode, origin, functionId) {
 // open, so no host sees a rejection. Dev rethrows it to Vite's error
 // middleware (the overlay). `hooked`: the server runs with
 // SSR_SERVER_ERRORS=1, so middleware.ts registered a recording hook.
-// `setup`: start.setup is wired (SSR_SETUP=1), so /setup-throw fails there.
+// `setup`: start.renderSetup is wired (SSR_SETUP=1), so /setup-throw fails there.
 async function runContainmentChecks(
   mode,
   origin,
@@ -3788,12 +3788,12 @@ async function runContainmentChecks(
   // The other escaping shapes all answer the same generic 500: a throw
   // after next() returned the page, Response.error() (not a response to
   // send), an uncaught in-process server-function failure, and a
-  // start.setup failure.
+  // start.renderSetup failure.
   const generic = [
     ['/mw-throw-late', 'a throw after next() returned the page'],
     ['/mw-response-error', 'thrown Response.error()'],
     ['/mw-direct-throw', 'an uncaught in-process server-function failure'],
-    ...(setup ? [['/setup-throw', 'a start.setup failure']] : []),
+    ...(setup ? [['/setup-throw', 'a start.renderSetup failure']] : []),
   ];
   for (const [pathname, label] of generic) {
     const res = await get(pathname);
@@ -3830,7 +3830,7 @@ async function runContainmentChecks(
       record(
         mode,
         'contain',
-        'a start.setup failure reaches the hook once (request/failed, with the event)',
+        'a start.renderSetup failure reaches the hook once (request/failed, with the event)',
         failedOnce('setup-throw-secret'),
         JSON.stringify(heard),
       );
@@ -3925,7 +3925,7 @@ async function runMiddlewareMode() {
     let probe;
     try {
       probe = await createServer({ root: exampleDir, server: { middlewareMode: true } });
-      // ---- Codegen: start.instrument sequences the handler behind two awaits
+      // ---- Codegen: start.serverBootstrap sequences the handler behind two awaits
       // The entry the plugin hands out is a wrapper: `await import(instrument)`
       // then `await import(impl)`, exports re-declared by name. Static
       // imports would be hoisted and defeat the ordering.
@@ -3980,7 +3980,7 @@ async function runMiddlewareMode() {
           code.includes('throw error') &&
           !code.includes('reportRequestFailure'),
       );
-      // The generated entry-server threads start.setup: awaited with the
+      // The generated entry-server threads start.renderSetup: awaited with the
       // request event before renderToStream, its result (or App) rendered.
       const entry = await probe.environments.ssr.transformRequest(
         'virtual:solid-ssr-entry-server.tsx',
@@ -3994,7 +3994,7 @@ async function runMiddlewareMode() {
       record(
         'mw-codegen',
         'gen',
-        'generated entry threads start.setup and boxes the async stream',
+        'generated entry threads start.renderSetup and boxes the async stream',
         entryCode.includes('const prepared = ') &&
           entryCode.includes('__solidSetupStream'),
       );
@@ -4215,9 +4215,9 @@ async function runPreviewMode() {
     // it already did for the streamed page. Answers big enough to trip the
     // threshold, at both scripted shapes: without the exemption they come
     // back gzip/br (fetch decodes transparently — the header is the tell).
-    // The registrations sit in the handler chunk — split out of server.js
-    // under `start.instrument` (this mode's env) — so scan the whole
-    // server build.
+    // The registrations sit in the handler chunk, which is split out of
+    // server.js under `start.serverBootstrap` (this mode's env), so scan
+    // the whole server build.
     const serverDist = path.join(exampleDir, 'dist/server');
     const serverAssetsDir = path.join(serverDist, 'assets');
     const previewBundle = [
@@ -5723,7 +5723,7 @@ async function runDetectMode() {
 //     behind a framework-style handler still renders and dispatches server
 //     functions, never touches dist/client, and the `event` fields show up
 //     next to nativeEvent,
-//   - with `start.instrument`, node.js has no static imports: it awaits
+//   - with `start.serverBootstrap`, node.js has no static imports: it awaits
 //     ./server.js (and so the instrument) before node:http loads (#418),
 //     still listens as the program and still exports without listening,
 //   - a Cloudflare-shaped setup (ssr `noExternal: true` + a config-level
@@ -6269,9 +6269,9 @@ async function runNodeMode() {
     } catch {}
     server = undefined;
 
-    // ---- start.instrument: node:http loads after the instrument (#418) -------
+    // ---- start.serverBootstrap: node:http loads after the instrument (#418) -------
     rmSync(distDir, { recursive: true, force: true });
-    console.log('  building (with start.node and start.instrument)…');
+    console.log('  building (with start.node and start.serverBootstrap)…');
     execSync('pnpm run build', {
       cwd: exampleDir,
       stdio: 'pipe',

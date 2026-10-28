@@ -259,7 +259,7 @@ same server functions.
 The object form carries the options (`start: true` is pure sugar for
 `start: {}` — both mean the identical start mode with defaults, and
 `false`/absent means off): `app`, `document`, `entries`,
-`middleware`, `setup`, `instrument`, `clientSetup`, `renderMode`,
+`middleware`, `renderSetup`, `serverBootstrap`, `clientSetup`, `renderMode`,
 `devtools`, `productionErrorBoundary`,
 `externalServer`, `node`, all documented below.
 
@@ -388,10 +388,10 @@ event })` takes the same two options on top of the listen address.
 
 `node.js` is an emitted asset, not a second build input: `server.js` and
 its `handleRequest` / `{ fetch }` contracts are unchanged. With
-`instrument` set, `node.js` is a small wrapper that awaits `./server.js`
-(and so the instrument module) before it loads the server from
+`serverBootstrap` set, `node.js` is a small wrapper that awaits `./server.js`
+(and so the bootstrap module) before it loads the server from
 `node-runtime.js` beside it, so `node:http` is not loaded until the
-instrument has run; deploy both files. It applies to
+bootstrap module has run; deploy both files. It applies to
 both start modes — in client mode with `serverFunctions` (which keeps
 `dist/server`) the entry serves the static client with an `index.html`
 history fallback for HTML navigations plus the endpoint. Nothing is
@@ -422,7 +422,7 @@ createServer(async (req, res) => {
 ```
 
 ```js
-// anywhere inside the request scope (middleware, setup, app code)
+// anywhere inside the request scope (middleware, renderSetup, app code)
 import { getRequestEvent } from '@solidjs/web';
 const event = getRequestEvent();
 event.nativeEvent; // the Node IncomingMessage the entry passed
@@ -510,7 +510,7 @@ Whatever escapes the chain is settled at the handler edge. A thrown
 (as the server-function endpoint does), and so is the `Response` a thrown
 `respond()` envelope carries; `Response.error()` is not a response and
 counts as a failure. In a production build any other failure (a middleware
-throw, a `setup` failure, or an invalid `event.renderMode` / `event.nonce`) is contained by the
+throw, a `renderSetup` failure, or an invalid `event.renderMode` / `event.nonce`) is contained by the
 handler instead of rejecting to the host. It is reported once to the hook
 registered with `configureServerErrors` from `@solidjs/web` (through its
 `reportRequestFailure`: `{ kind: 'request', handling: 'failed' }` and the
@@ -525,71 +525,78 @@ errors are handled by the boundary before they get this far. In dev those
 failures still reject, so the dev server sees the original error (with the
 built-in dev middleware, Vite's error middleware and its overlay).
 
-**`setup`** points at a server-only module default-exporting a per-request
-app-setup hook: `(event, App) => Component | void | Promise<Component |
-void>`. The generated server entry awaits it after the middleware chain has
-dispatched to the page render and immediately before `renderToStream` — the
-seam for routers that must prepare an app instance per request before SSR
-can begin (create a router bound to the request, `await router.load()`,
-then render):
+**`renderSetup`** points at a server-only module whose default export runs
+before every page render: `(event, App) => Component | void |
+Promise<Component | void>`. The generated server entry awaits it after the
+middleware chain has dispatched to the page render and immediately before
+`renderToStream`. It is the seam for routers that must prepare an app
+instance per request before SSR can begin (create a router bound to the
+request, `await router.load()`, then render):
 
 ```ts
 // vite.config.ts
-solid({ start: { setup: './src/setup.tsx' }, ssr: true });
+solid({ start: { renderSetup: './src/render-setup.tsx' }, ssr: true });
 
-// src/setup.tsx
+// src/render-setup.tsx
 import type { Component } from 'solid-js';
 import type { RequestEvent } from '@solidjs/web';
 
-export default async function setup(event: RequestEvent, App: Component) {
+export default async function renderSetup(event: RequestEvent, App: Component) {
   const router = createRouter({ url: event.request.url });
   await router.load(); // async work completes before the shell streams
   return () => <App router={router} />; // rendered in the app's place
 }
 ```
 
-`event` is the shared request event — the same one the middleware chain
-decorated, so `locals` are visible — and the hook runs inside the request
-scope (`getRequestEvent()` answers in anything it calls). Return a
+`event` is the shared request event, the same one the middleware chain
+decorated, so `locals` are visible, and the function runs inside the
+request scope (`getRequestEvent()` answers in anything it calls). Return a
 component and the generated entry renders it inside the Document where
 `<App />` would have been; return nothing and `<App />` renders unchanged,
 so a pure side-effect setup (seeding a per-request cache) needs no return.
 Zero-config apps are untouched: without the option the generated entry is
 byte-identical to before.
 
-Two boundaries to know: the hook is a page-render seam — the middleware
-chain and the server-function endpoint run without it — and it only exists
-in generated entries (an authored `entry-server` owns `render()` already;
-configuring both is an error). And as with any server-side tree shaping,
-whatever the hook renders must be matched client-side for hydration —
-routers that own both sides (their client entry re-creates the router and
-hydrates the same tree) fit naturally.
+Three boundaries to know. It runs for page renders only: the middleware
+chain and the server-function endpoint run without it, and so does a
+request that a middleware answers without calling `next()`. The module's
+top level evaluates once, when the handler loads, so per-request work
+belongs in the default export. And it only exists in generated entries (an
+authored `entry-server` owns `render()` already; configuring both is an
+error). As with any server-side tree shaping, whatever it renders must be
+matched client-side for hydration: routers that own both sides (their
+client entry re-creates the router and hydrates the same tree) fit
+naturally.
 
-**`instrument`** — a server-only module that runs to completion before
-anything else in the server graph loads: the app, the middleware,
-`@solidjs/web`, every dependency. The seam for instrumentation that must
-patch the runtime before the modules it patches are loaded — an APM's
-OpenTelemetry setup, a profiler, a `module.register` hook:
+**`serverBootstrap`** points at a server-only module that runs to
+completion before anything else in the server graph loads: the app, the
+middleware, `@solidjs/web`, every dependency. It is the seam for code that
+must run first, typically instrumentation that patches the runtime before
+the modules it patches are loaded (an APM's OpenTelemetry setup, a
+profiler, a `module.register` hook):
 
 ```ts
 // vite.config.ts
-solid({ start: { instrument: './src/instrument.ts' }, ssr: true });
+solid({ start: { serverBootstrap: './src/server-bootstrap.ts' }, ssr: true });
 
-// src/instrument.ts
+// src/server-bootstrap.ts
 import * as Sentry from '@sentry/node';
 Sentry.init({ dsn: process.env.SENTRY_DSN, tracesSampleRate: 1 });
 ```
 
 Import order alone cannot do this in ESM: static imports are hoisted and
-evaluated in dependency order, so `import './instrument'` at the top of an
-entry still runs after everything the entry imports. The plugin therefore
-hands out the handler as `await import(instrument); await import(handler)`
-— top-level await sequencing, the one construct that guarantees the order —
-on every surface (`vite dev`, `vite build`, `vite preview`, a host consuming
-the handler entry, and the `node` entry). This replaces the per-host `node --import
-instrument.mjs` dance. The module may be async and needs no exports; the
-server build must keep code splitting on (the default), since inlining
-dynamic imports would hoist the handler graph back above the instrument.
+evaluated in dependency order, so `import './server-bootstrap'` at the top
+of an entry still runs after everything the entry imports. The plugin
+therefore hands out the handler as
+`await import(serverBootstrap); await import(handler)`, since top-level
+await sequencing is the one construct that guarantees the order. It does
+so on every surface: `vite dev`, `vite build`, `vite preview`, a host
+consuming the handler entry, and the `node` entry. This replaces the
+per-host `node --import instrument.mjs` dance. The module may be async and
+needs no exports. It runs once per server start (under `vite dev`, again
+whenever the server environment reloads). The server build must keep code
+splitting on (the default), since inlining dynamic imports would hoist the
+handler graph back above the bootstrap module.
 
 **`clientSetup`** points at a client module that the generated client entry
 runs before it hydrates (SSR mode) or mounts (client mode) the app. Use it

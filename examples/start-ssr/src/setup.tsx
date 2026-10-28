@@ -1,4 +1,4 @@
-// Per-request app setup (`start.setup`): the seam for routers that must
+// Per-request app setup (`start.renderSetup`): the seam for routers that must
 // prepare an app instance before SSR begins — TanStack-style
 // `await router.load()` — receiving the shared request event (middleware
 // locals included) and returning the component to render in the app's
