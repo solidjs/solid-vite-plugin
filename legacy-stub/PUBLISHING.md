@@ -19,6 +19,8 @@ npm publish --tag next --otp=<code>
   manual OTP publish (unless "require trusted publisher" was enabled on npm — it
   wasn't at the time of writing).
 - No `npm deprecate` — the README banner and package description carry the notice.
-- No stable 3.0 is published under the old name.
+- When `@solidjs/vite-plugin@3.0.0` (stable) ships, optionally re-publish this stub
+  as `3.0.0` (bump `version` here; the `^3.0.0-next.27` dependency range already
+  matches stable 3.0.0) and move the old name's `latest` tag to it.
 - Bump this stub's `version`/dependency floor only if the first published version of
   `@solidjs/vite-plugin` ends up different from `3.0.0-next.27`.
