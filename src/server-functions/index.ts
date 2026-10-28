@@ -22,6 +22,7 @@ import { getEnvironmentConsumer, isRunnableEnvironment } from '../environment.js
 import { joinBase, parseRequestTarget, sendWebResponse, webRequestFromNode } from '../http.js';
 import { isTsrxModule } from '../tsrx.js';
 import { compile, type CompileOptions } from './compile.js';
+import { serverModuleStyles } from './server-styles.js';
 import xxHash32 from './xxhash32.js';
 
 /**
@@ -791,10 +792,15 @@ export function createServerFunctionsPlugins(
       manifestId,
     );
 
+    // A client build has no other way to learn a server component's
+    // stylesheets (dev's CSS crawl walks the SSR graph instead).
+    const styles =
+      components && isBuild && mode === 'client' ? await serverModuleStyles(ctx, id, code) : '';
+
     return {
       // Appended (not prepended) so the source map for the compiled module
       // stays valid; imports hoist and the endpoint is only read at call time.
-      code: (result.code || '') + endpointConfigureSnippet(mode),
+      code: (result.code || '') + endpointConfigureSnippet(mode) + styles,
       map: result.map,
     };
   }

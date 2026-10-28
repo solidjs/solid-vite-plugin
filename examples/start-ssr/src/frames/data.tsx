@@ -5,6 +5,8 @@
 // reference proxies in the client build — ROWS text must never reach any
 // client asset (the frames test scans for it).
 
+import { PanelBadge } from './PanelBadge';
+
 const SECRET_ROW_TEXT = 'SERVER-ROW-TEXT';
 
 const ROWS = [
@@ -51,6 +53,7 @@ export async function getPanel(name: string, version: number) {
   return (props: Record<string, any>) => (
     <section class="panel">
       <h2 id="panel-name">panel:{name}</h2>
+      <PanelBadge />
       <p id="server-version">version:{version}</p>
       <p id="server-counter">counter:{counter}</p>
       <div class="rows">

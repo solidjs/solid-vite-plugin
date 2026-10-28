@@ -3061,6 +3061,16 @@ async function runFramesChecks(mode, origin) {
       'panel server-rendered and adopted',
       (await cdp.evalJs('document.querySelector("#panel-name")?.textContent')) === 'panel:alpha',
     );
+    // #456: CSS reached only below the 'use server' boundary (PanelBadge)
+    // must style the document in production too, not just via dev's crawl.
+    record(
+      mode,
+      'boot',
+      'server-only component stylesheet applied (#456)',
+      (await cdp.evalJs(
+        'getComputedStyle(document.querySelector("#panel-badge")).color',
+      )) === 'rgb(1, 2, 3)',
+    );
     const bootFetches = cdp.requests.filter((u) => u.includes('/_server'));
     record(
       mode,
