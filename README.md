@@ -751,8 +751,10 @@ the seam for frameworks and routers that do their own asset gating —
 deciding which scripts and styles a response carries, as the TanStack Start
 integration does — without re-reading the manifest from disk or re-deriving
 `base`. Ambient types ship with the plugin
-(`/// <reference types="@solidjs/vite-plugin/virtual-solid-manifest" />`);
-see that `.d.ts` and the exported `ViteManifest` type for the full shape.
+(`/// <reference types="@solidjs/vite-plugin/virtual-solid-manifest" />`):
+the default export is typed `ViteManifest | DevAssetResolver` (both exported
+from the plugin). Either one can be passed to `renderToStream`'s `manifest`
+option as is; code that reads it narrows with `if (manifest.resolve)`.
 
 Without `ssr: true` — **client mode** (experimental), the same conventions
 with client-only rendering:
