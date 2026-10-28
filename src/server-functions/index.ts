@@ -365,14 +365,24 @@ function removeManifestRecord(
 }
 
 /**
- * The second parameter is internal wiring for the main plugin's
- * `serverFunctions` option: the built-in dev middleware is only installed
- * through that path, so meta-frameworks composing this factory directly
- * (and dispatching to `handleServerFunctionRequest` themselves) never race
- * it for the endpoint. On the main plugin's path the public
- * `options.devMiddleware` (default true) can opt back out of it.
+ * The standalone server-functions plugins, for meta-frameworks that order
+ * plugins themselves (e.g. relative to a file-system router) and dispatch
+ * the endpoint to `handleServerFunctionRequest` through their own server.
+ * It never installs the built-in dev middleware, so it cannot race the
+ * host for the endpoint.
  */
-export function serverFunctions(
+export function serverFunctions(options: ServerFunctionsOptions = {}): Plugin[] {
+  return createServerFunctionsPlugins(options);
+}
+
+/**
+ * Shared implementation of the standalone `serverFunctions()` export and
+ * the main plugin's `serverFunctions` option. The second parameter is
+ * internal wiring for the latter (not part of the package API): the
+ * built-in dev middleware is only installed through that path, where the
+ * public `options.devMiddleware` (default true) can opt back out of it.
+ */
+export function createServerFunctionsPlugins(
   options: ServerFunctionsOptions = {},
   internal: {
     devMiddleware?: boolean;

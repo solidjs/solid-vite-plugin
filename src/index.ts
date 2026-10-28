@@ -23,6 +23,7 @@ import {
 } from './performance-tracks/index.js';
 
 import {
+  createServerFunctionsPlugins,
   normalizeServerFunctionsEndpoint,
   serverFunctions,
   type ServerFunctionsOptions,
@@ -3049,17 +3050,20 @@ export default manifest;`;
   // after mainPlugin has lowered the file to ordinary JavaScript while keeping
   // the original .tsrx id for stable server-function hashes.
   const serverFunctionPlugins = options.serverFunctions
-    ? serverFunctions(options.serverFunctions === true ? {} : options.serverFunctions, {
-        devMiddleware: true,
-        externalDevServer,
-        tsrxAfterSolid: true,
-        tsrxSourceMap: options.compiler === 'babel',
-        frontendExtensions: frontends.map(([extension]) => extension),
-        // With start mode on (either variant), the dev middleware dispatches
-        // the endpoint through the SSR handler so user middleware and the
-        // stub-backed request event front it exactly like page SSR.
-        ...(startOptions ? { ssrHandler: SSR_HANDLER_ID } : {}),
-      })
+    ? createServerFunctionsPlugins(
+        options.serverFunctions === true ? {} : options.serverFunctions,
+        {
+          devMiddleware: true,
+          externalDevServer,
+          tsrxAfterSolid: true,
+          tsrxSourceMap: options.compiler === 'babel',
+          frontendExtensions: frontends.map(([extension]) => extension),
+          // With start mode on (either variant), the dev middleware dispatches
+          // the endpoint through the SSR handler so user middleware and the
+          // stub-backed request event front it exactly like page SSR.
+          ...(startOptions ? { ssrHandler: SSR_HANDLER_ID } : {}),
+        },
+      )
     : [];
   const tsrxServerFunctionPlugin = serverFunctionPlugins.find(
     (plugin) => plugin.name === 'solid:server-functions/tsrx-compiler',
