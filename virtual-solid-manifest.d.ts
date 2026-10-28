@@ -1,6 +1,12 @@
 declare module "virtual:solid-manifest" {
-  import type { ViteManifest } from "@solidjs/vite-plugin";
-  const manifest: ViteManifest;
+  import type { DevAssetResolver, ViteManifest } from "@solidjs/vite-plugin";
+  /**
+   * In an SSR build, the parsed client manifest. In dev (and in an SSR build
+   * that runs before any client manifest exists), the live asset resolver.
+   * Either one can be passed to `renderToStream`'s `manifest` option as is;
+   * `if (manifest.resolve)` tells them apart.
+   */
+  const manifest: ViteManifest | DevAssetResolver;
   export default manifest;
 }
 

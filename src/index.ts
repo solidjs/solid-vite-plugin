@@ -61,6 +61,7 @@ export type {
 } from './server-functions/index.js';
 export type { StartOptions };
 export type { StartMiddleware } from './request-event.js';
+export type { DevAssetResolver } from './dev-manifest.js';
 import path from 'path';
 import type { FilterPattern, Logger, Plugin, ViteDevServer } from 'vite';
 import {
@@ -3215,6 +3216,10 @@ export default manifest;`;
   return plugins;
 }
 
+/**
+ * The parsed client build manifest that `virtual:solid-manifest` exports in
+ * an SSR build, keyed by source path, plus the plugin's metadata keys.
+ */
 export type ViteManifest = Record<
   string,
   {
@@ -3234,4 +3239,11 @@ export type ViteManifest = Record<
    * agree with it.
    */
   _entry?: string;
+  /**
+   * Never present on a build manifest. Declared so `if (manifest.resolve)`
+   * tells it apart from the dev `DevAssetResolver` that
+   * `virtual:solid-manifest` exports instead.
+   */
+  resolve?: undefined;
+  resolveSync?: undefined;
 };
