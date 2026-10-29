@@ -5,7 +5,7 @@ import { mergeAndConcat } from 'merge-anything';
 import { createRequire } from 'module';
 import path from 'path';
 import solidRefresh from 'solid-refresh/babel';
-import type { Alias, AliasOptions, FilterPattern, Plugin } from 'vite';
+import type { FilterPattern, Plugin } from 'vite';
 import { createFilter, searchForWorkspaceRoot, version } from 'vite';
 import { crawlFrameworkPkgs } from 'vitefu';
 
@@ -286,8 +286,9 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin {
       isTestMode = userConfig.mode === 'test';
       domTestRuntimeInlined = false;
 
-      if (!userConfig.resolve) userConfig.resolve = {};
-      userConfig.resolve.alias = normalizeAliases(userConfig.resolve && userConfig.resolve.alias);
+      // Leave the user's `resolve.alias` as it is. Turning an object into an
+      // array changes how Vite merges it with aliases from later plugins:
+      // their entries then take priority over the user's. #130
 
       solidPkgsConfig = await crawlFrameworkPkgs({
         viteUserConfig: userConfig,
@@ -452,7 +453,6 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin {
           // Dedupe in builds too. A dependency that ships its own nested
           // solid-js would otherwise add a second runtime to the bundle. #112
           dedupe: solidDeps,
-          alias: [{ find: /^solid-refresh$/, replacement: runtimePublicPath }],
         },
         optimizeDeps: {
           include: [...nestedDeps, ...solidPkgsConfig.optimizeDeps.include],
@@ -536,7 +536,10 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin {
     },
 
     resolveId(id) {
-      if (id === runtimePublicPath) return id;
+      // `solid-refresh` is the import added by the HMR transform. It is
+      // resolved here rather than through `resolve.alias`, because adding an
+      // alias array would also change how the user's aliases merge. #130
+      if (id === runtimePublicPath || id === 'solid-refresh') return runtimePublicPath;
     },
 
     load(id) {
@@ -658,16 +661,4 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin {
       return { code, map };
     },
   };
-}
-
-/**
- * This basically normalize all aliases of the config into
- * the array format of the alias.
- *
- * eg: alias: { '@': 'src/' } => [{ find: '@', replacement: 'src/' }]
- */
-function normalizeAliases(alias: AliasOptions = []): Alias[] {
-  return Array.isArray(alias)
-    ? alias
-    : Object.entries(alias).map(([find, replacement]) => ({ find, replacement }));
 }
