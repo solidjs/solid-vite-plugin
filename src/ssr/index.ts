@@ -168,49 +168,56 @@ export interface StartOptions {
   middleware?: string;
   /**
    * Path to a server-only module (resolved relative to the Vite root) that
-   * runs to completion before anything else in the server graph loads — the
-   * app, the middleware, `@solidjs/web`, every dependency. The seam for
-   * instrumentation that must patch the runtime before the modules it
-   * patches are loaded: an APM's OpenTelemetry setup (`Sentry.init()`,
-   * `NodeSDK.start()`), a profiler, a custom `module.register` hook.
-   * Replaces the per-host `node --import instrument.mjs` dance with one
-   * option the plugin honors on every surface: `vite dev`, `vite build`,
-   * `vite preview`, and a host consuming the handler entry directly.
+   * runs to completion before anything else in the server graph loads: the
+   * app, the middleware, `@solidjs/web`, every dependency. The seam for code
+   * that must run first, typically instrumentation that patches the runtime
+   * before the modules it patches are loaded: an APM's OpenTelemetry setup
+   * (`Sentry.init()`, `NodeSDK.start()`), a profiler, a custom
+   * `module.register` hook. Replaces the per-host
+   * `node --import instrument.mjs` dance with one option the plugin honors on
+   * every surface: `vite dev`, `vite build`, `vite preview`, and a host
+   * consuming the handler entry directly.
    *
-   * How: the generated handler entry becomes `await import(instrument);
-   * await import(handler)` — top-level await sequencing is the only thing
-   * in ESM that guarantees the order, since static imports are hoisted and
-   * evaluated in dependency order regardless of where they are written.
-   * The module may be async (top-level `await` is honored) and needs no
-   * exports. The server build must keep code splitting on (the default) —
-   * inlining dynamic imports would hoist the handler graph back above the
-   * instrument.
+   * How: the generated handler entry becomes `await import(serverSetup);
+   * await import(handler)`. Top-level await sequencing is the only thing in
+   * ESM that guarantees the order, since static imports are hoisted and
+   * evaluated in dependency order regardless of where they are written. The
+   * module may be async (top-level `await` is honored) and needs no exports.
+   * It runs once per server start; under `vite dev`, again whenever the
+   * server environment reloads. The server build must keep code splitting on
+   * (the default): inlining dynamic imports would hoist the handler graph
+   * back above the server setup module.
    *
    * @default undefined
    */
-  instrument?: string;
+  serverSetup?: string;
   /**
    * Path to a server-only module (resolved relative to the Vite root) whose
-   * default export runs once per request in the generated server entry,
-   * after the middleware chain has dispatched to the page render and
+   * default export runs before every page render in the generated server
+   * entry, after the middleware chain has dispatched to the page render and
    * immediately before `renderToStream`: `(event, App) => Component | void |
-   * Promise<Component | void>`. The per-request seam for routers that must
-   * prepare an app instance before SSR begins (create a router bound to the
+   * Promise<Component | void>`. The seam for routers that must prepare an
+   * app instance per request before SSR begins (create a router bound to the
    * request, `await router.load()`, then render): return a component and the
    * generated entry renders it in the app's place inside the Document;
    * return nothing and `<App />` renders unchanged. `event` is the shared
-   * request event — the same one the middleware chain decorated (`locals`
-   * are visible) — and the hook runs inside the request scope, so
+   * request event, the same one the middleware chain decorated (`locals` are
+   * visible), and the function runs inside the request scope, so
    * `getRequestEvent()` answers in anything it calls.
+   *
+   * Only page renders run it: server-function calls, and requests a
+   * middleware answers without calling `next()`, never reach it. The
+   * module's top level evaluates once, when the handler loads, so per-request
+   * work belongs in the default export.
    *
    * Only meaningful with generated entries: an authored `entry-server`
    * already owns its render function, so configuring both is an error.
-   * Server mode only — ignored in client mode (there is no per-request app
+   * Server mode only. Ignored in client mode (there is no per-request app
    * render to prepare), so the config survives the `ssr` boolean flip.
    *
    * @default undefined
    */
-  setup?: string;
+  serverRenderSetup?: string;
   /**
    * Path to a client module (resolved relative to the Vite root) that the
    * generated client entry runs before it hydrates (SSR mode) or mounts
@@ -348,11 +355,11 @@ export interface StartOptions {
 // chain and one request event across both dispatch paths).
 export const SSR_HANDLER_ID = 'virtual:solid-ssr-handler';
 const HANDLER_ID = SSR_HANDLER_ID;
-// With `start.instrument`, the handler id becomes a thin wrapper that awaits
-// the instrument module and only THEN imports the real handler under this
+// With `start.serverSetup`, the handler id becomes a thin wrapper that awaits
+// the server setup module and only THEN imports the real handler under this
 // id — the one way ESM can run something to completion before the rest of
 // the graph is even fetched (static imports are hoisted and evaluated in
-// dependency order, so `import './instrument'` first would still evaluate
+// dependency order, so `import './server-setup'` first would still evaluate
 // AFTER `@solidjs/web` and every module it pulls in).
 const HANDLER_IMPL_ID = 'virtual:solid-ssr-handler-impl';
 // Dev-only response marker: the generated dev handler answers non-page
@@ -362,11 +369,11 @@ const HANDLER_IMPL_ID = 'virtual:solid-ssr-handler-impl';
 // such seam — every unhandled request renders — but production also has no
 // Vite pipeline to fall back to.
 const DEV_FALLTHROUGH_HEADER = 'x-solid-dev-fallthrough';
-// Private protocol between the two generated modules when `start.setup` is
+// Private protocol between the two generated modules when `start.serverRenderSetup` is
 // async: the entry hands the handler the renderToStream result under this
 // key, because a promise resolving to the stream BARE would adopt the
 // stream's thenable (which waits for the complete render) and buffer it.
-const STREAM_BOX = '__solidSetupStream';
+const STREAM_BOX = '__solidServerRenderSetupStream';
 const DEV_STYLES_ID = 'virtual:solid-ssr-dev-styles';
 const RESOLVED_DEV_STYLES_ID = '\0' + DEV_STYLES_ID;
 // Generated default entries / document shell. The `.tsx` suffix routes them
@@ -389,7 +396,7 @@ const DOCUMENT_EXTENSIONS = ['.tsx', '.jsx', '.tsrx'];
 // the Node entry `start.node` emits beside it.
 const SERVER_ENTRY_FILE = 'server.js';
 const NODE_ENTRY_FILE = 'node.js';
-// With `start.instrument`, node.js only sequences and the runtime moves here.
+// With `start.serverSetup`, node.js only sequences and the runtime moves here.
 const NODE_RUNTIME_FILE = 'node-runtime.js';
 // The Node entry's runtime, built by rollup.config.js as a separate artifact
 // of this package (dist/node-entry.mjs) from src/node-entry/index.ts plus
@@ -438,8 +445,8 @@ function nodeEntryCode(config: NodeEntryConfig, serverOutDir: string): string {
   ].join('\n');
 }
 
-// With `start.instrument`, node.js has no static imports so node:http loads after it (#418).
-function instrumentedNodeEntryCode(serverOutDir: string): string {
+// With `start.serverSetup`, node.js has no static imports so node:http loads after it (#418).
+function serverSetupNodeEntryCode(serverOutDir: string): string {
   return [
     `// Generated by @solidjs/vite-plugin (start.node): the Node server for this build.`,
     `// Run \`node ${serverOutDir}/${NODE_ENTRY_FILE}\` (env: PORT, HOST), or import { listener, createListener, serve }.`,
@@ -721,10 +728,10 @@ export function startServe(
   let entries: ResolvedEntries | undefined;
   /** Absolute path of the user's middleware module, when configured. */
   let middlewarePath: string | null = null;
-  /** Absolute path of the instrument module awaited before the handler graph, when configured. */
-  let instrumentPath: string | null = null;
-  /** Absolute path of the per-request setup module, when configured (server mode). */
-  let setupPath: string | null = null;
+  /** Absolute path of the server setup module awaited before the handler graph, when configured. */
+  let serverSetupPath: string | null = null;
+  /** Absolute path of the render setup module, when configured (server mode). */
+  let serverRenderSetupPath: string | null = null;
   /** Absolute path of the client setup module run before hydrate/render, when configured. */
   let clientSetupPath: string | null = null;
   /**
@@ -955,13 +962,13 @@ export function startServe(
       `import App from ${JSON.stringify(app)};`,
       ...(toolbar ? [`import { DevToolbar } from ${JSON.stringify(DEVTOOLS_PACKAGE)};`] : []),
       ...errorBoundaryImport(),
-      ...(setupPath ? [`import setup from ${JSON.stringify(setupPath)};`] : []),
+      ...(serverRenderSetupPath ? [`import serverRenderSetup from ${JSON.stringify(serverRenderSetupPath)};`] : []),
       ``,
-      ...(setupPath
+      ...(serverRenderSetupPath
         ? [
-            `if (typeof setup !== 'function') {`,
-            `  throw new Error('[@solidjs/vite-plugin] start.setup must default-export a function ' +`,
-            `    '((event, App) => Component | void | Promise<...>): ' + ${JSON.stringify(options.setup)});`,
+            `if (typeof serverRenderSetup !== 'function') {`,
+            `  throw new Error('[@solidjs/vite-plugin] start.serverRenderSetup must default-export a function ' +`,
+            `    '((event, App) => Component | void | Promise<...>): ' + ${JSON.stringify(options.serverRenderSetup)});`,
             `}`,
             ``,
           ]
@@ -976,7 +983,7 @@ export function startServe(
             ``,
           ]
         : []),
-      ...(setupPath
+      ...(serverRenderSetupPath
         ? [
             // The per-request seam: the hook sees the same event the
             // middleware chain decorated and finishes before renderToStream
@@ -987,7 +994,7 @@ export function startServe(
             // boxed under a private key the generated handler unboxes
             // (both modules are ours).
             `export function render(request, context) {`,
-            `  const prepared = setup(getRequestEvent(), App);`,
+            `  const prepared = serverRenderSetup(getRequestEvent(), App);`,
             `  if (prepared && typeof prepared.then === 'function') {`,
             `    return prepared.then((component) => ({ ${STREAM_BOX}: renderApp(component || App) }));`,
             `  }`,
@@ -1029,7 +1036,7 @@ export function startServe(
         : [];
     // `start.clientSetup`: imported for its side effects ahead of the app,
     // after the dev-only tooling above so its failures reach the overlay.
-    // A static import, not `await import()` like `start.instrument`: a
+    // A static import, not `await import()` like `start.serverSetup`: a
     // dynamic import would move the app into a separate chunk the server
     // neither preloads nor links CSS for. The entry body (hydrate/render)
     // still waits for an async module's top-level await to settle.
@@ -1150,16 +1157,16 @@ export function startServe(
   // surface (the runnable-dev middleware routes through this module), so
   // user middleware and the shared request event front it identically.
   /**
-   * The handler entry with `start.instrument`: sequence the instrument
+   * The handler entry with `start.serverSetup`: sequence the server setup
    * module to completion, then load the real handler. The two awaits are
    * the contract — see the option's docs. Exports are re-declared by name
    * (the handler's surface is fixed: `handleRequest` and the `fetch`
    * default) because a static `export * from` would be hoisted like any
    * other static import and defeat the ordering.
    */
-  function instrumentedHandlerCode(): string {
+  function serverSetupHandlerCode(): string {
     return [
-      `await import(${JSON.stringify(instrumentPath)});`,
+      `await import(${JSON.stringify(serverSetupPath)});`,
       `const handler = await import(${JSON.stringify(HANDLER_IMPL_ID)});`,
       `export const handleRequest = handler.handleRequest;`,
       `export default handler.default;`,
@@ -1534,9 +1541,9 @@ export function startServe(
       `  if (result && typeof result.pipe !== 'function' && typeof result.then === 'function') {`,
       `    result = await result;`,
       `  }`,
-      ...(setupPath
+      ...(serverRenderSetupPath
         ? [
-            // start.setup's async path boxes the stream (see the generated
+            // start.serverRenderSetup's async path boxes the stream (see the generated
             // entry): a bare promise resolution would adopt the stream's
             // thenable and buffer the whole render.
             `  if (result && result.${STREAM_BOX}) result = result.${STREAM_BOX};`,
@@ -1583,7 +1590,7 @@ export function startServe(
     // the original error (with the built-in dev middleware, Vite's error
     // middleware and its overlay).
     //
-    // In a build any other failure (a middleware throw, a start.setup
+    // In a build any other failure (a middleware throw, a start.serverRenderSetup
     // failure, an invalid event.renderMode or event.nonce, a render that
     // throws before renderToStream returns) must not leave handleRequest: each host would
     // answer it its own way and the configured error policy would never see
@@ -1705,22 +1712,22 @@ export function startServe(
         middlewarePath = options.middleware
           ? path.resolve(root, normalizeUserPath(root, options.middleware, 'middleware'))
           : null;
-        instrumentPath = options.instrument
-          ? path.resolve(root, normalizeUserPath(root, options.instrument, 'instrument'))
+        serverSetupPath = options.serverSetup
+          ? path.resolve(root, normalizeUserPath(root, options.serverSetup, 'serverSetup'))
           : null;
         // Server-mode only, like `entries.server`/`externalServer` (a documented
         // no-op in client mode so configs survive the `ssr` boolean flip).
-        setupPath =
-          !clientMode && options.setup
-            ? path.resolve(root, normalizeUserPath(root, options.setup, 'setup'))
+        serverRenderSetupPath =
+          !clientMode && options.serverRenderSetup
+            ? path.resolve(root, normalizeUserPath(root, options.serverRenderSetup, 'serverRenderSetup'))
             : null;
-        if (setupPath && !entries.generated) {
+        if (serverRenderSetupPath && !entries.generated) {
           // An authored entry-server owns its render function — the seam the
           // hook needs does not exist there.
           throw new Error(
-            '[@solidjs/vite-plugin] start.setup only applies to generated entries: your ' +
+            '[@solidjs/vite-plugin] start.serverRenderSetup only applies to generated entries: your ' +
               'entry-server owns render() already, so call your setup step there instead ' +
-              `(remove start.setup or the authored entry): ${options.setup}`,
+              `(remove start.serverRenderSetup or the authored entry): ${options.serverRenderSetup}`,
           );
         }
         // Both modes: the generated client entry hydrates or mounts, and
@@ -1976,12 +1983,12 @@ export function startServe(
             },
             serverDirName,
           );
-          if (instrumentPath) {
+          if (serverSetupPath) {
             this.emitFile({ type: 'asset', fileName: NODE_RUNTIME_FILE, source: runtimeSource });
             this.emitFile({
               type: 'asset',
               fileName: NODE_ENTRY_FILE,
-              source: instrumentedNodeEntryCode(serverDirName),
+              source: serverSetupNodeEntryCode(serverDirName),
             });
           } else {
             this.emitFile({ type: 'asset', fileName: NODE_ENTRY_FILE, source: runtimeSource });
@@ -2041,7 +2048,7 @@ export function startServe(
           if (consumer !== 'server') {
             this.error(`${HANDLER_ID} is server-only; import it from server code (SSR build).`);
           }
-          if (id === HANDLER_ID && instrumentPath) return instrumentedHandlerCode();
+          if (id === HANDLER_ID && serverSetupPath) return serverSetupHandlerCode();
           const externalDev =
             !isBuild &&
             this.environment.mode === 'dev' &&
