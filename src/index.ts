@@ -417,6 +417,30 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin {
         }
       }
 
+      // Before Vite 6, conditions are set here for every build.
+      const legacyConditions = [
+        'solid',
+        ...(replaceDev ? ['development'] : []),
+        ...(userConfig.mode === 'test' && !options.ssr ? ['browser'] : []),
+      ];
+      // A server build with `ssr.target: 'webworker'` resolves solid-js to its
+      // browser build, so add the `worker` condition, which selects the server
+      // build. #153 Vite 4 and 5 read `ssr.resolve.conditions` instead of
+      // `resolve.conditions` when it is set, so it repeats the top-level list
+      // unless the user set their own. Vite 3 has no such option.
+      const userSsrConditions = (userConfig.ssr as any)?.resolve?.conditions;
+      const legacySsr =
+        userConfig.ssr?.target === 'webworker'
+          ? {
+              ...solidPkgsConfig.ssr,
+              resolve: {
+                conditions: userSsrConditions
+                  ? ['solid', 'worker']
+                  : [...legacyConditions, ...(userConfig.resolve?.conditions ?? []), 'worker'],
+              },
+            }
+          : solidPkgsConfig.ssr;
+
       return {
         /**
          * We only need esbuild on .ts or .js files.
@@ -424,13 +448,7 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin {
          */
         // esbuild: { include: /\.ts$/ },
         resolve: {
-          conditions: isVite6OrNewer
-            ? undefined
-            : [
-                'solid',
-                ...(replaceDev ? ['development'] : []),
-                ...(userConfig.mode === 'test' && !options.ssr ? ['browser'] : []),
-              ],
+          conditions: isVite6OrNewer ? undefined : legacyConditions,
           // Dedupe in builds too. A dependency that ships its own nested
           // solid-js would otherwise add a second runtime to the bundle. #112
           dedupe: solidDeps,
@@ -452,7 +470,7 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin {
             ? { rolldownOptions: { transform: { jsx: { runtime: 'classic' as const } } } }
             : {}),
         },
-        ...(!isVite6OrNewer ? { ssr: solidPkgsConfig.ssr } : {}),
+        ...(!isVite6OrNewer ? { ssr: legacySsr } : {}),
         ...(Object.keys(test).length ? { test } : {}),
       };
     },
@@ -484,6 +502,10 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin {
         !(domTestRuntimeInlined && name === 'ssr');
       config.resolve.conditions = [
         'solid',
+        // A server build with `ssr.target: 'webworker'` starts from Vite's
+        // client conditions, which select the browser build of solid-js. Its
+        // `worker` export points at the server build. #153
+        ...(opts.isSsrTargetWebworker ? ['worker'] : []),
         ...(replaceDev ? ['development'] : []),
         ...(addBrowser ? ['browser'] : []),
         ...config.resolve.conditions,
