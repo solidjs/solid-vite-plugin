@@ -10,13 +10,13 @@ import solidPlugin from '../index.js';
 
 declare global {
   // eslint-disable-next-line no-var
-  var __instrumentOrder: string[] | undefined;
+  var __serverSetupOrder: string[] | undefined;
 }
 
 let root: string;
 
 beforeAll(async () => {
-  root = await mkdtemp(path.join(tmpdir(), 'solid-vite-plugin-instrument-order-'));
+  root = await mkdtemp(path.join(tmpdir(), 'solid-vite-plugin-server-setup-order-'));
   await symlink(
     fileURLToPath(new URL('../../node_modules', import.meta.url)),
     path.join(root, 'node_modules'),
@@ -28,19 +28,19 @@ beforeAll(async () => {
     'export default function App() {\n  return <main>app</main>;\n}\n',
   );
   await writeFile(
-    path.join(root, 'src/instrument.ts'),
-    "(globalThis.__instrumentOrder ??= []).push('instrument');\n",
+    path.join(root, 'src/server-setup.ts'),
+    "(globalThis.__serverSetupOrder ??= []).push('server-setup');\n",
   );
   await writeFile(
     path.join(root, 'src/functions.ts'),
-    "(globalThis.__instrumentOrder ??= []).push('functions');\n\n" +
+    "(globalThis.__serverSetupOrder ??= []).push('functions');\n\n" +
       "export async function ping() {\n  'use server';\n  return 'pong';\n}\n",
   );
 });
 
 afterAll(async () => {
   await rm(root, { recursive: true, force: true });
-  delete globalThis.__instrumentOrder;
+  delete globalThis.__serverSetupOrder;
 });
 
 // A server-function call can be the first request the dev server's SSR
@@ -58,7 +58,7 @@ it('loads the server setup module before the function module on a first server-f
     optimizeDeps: { noDiscovery: true, include: [] },
     plugins: [
       solidPlugin({
-        start: { serverSetup: './src/instrument.ts' },
+        start: { serverSetup: './src/server-setup.ts' },
         ssr: true,
         serverFunctions: true,
       }),
@@ -76,7 +76,7 @@ it('loads the server setup module before the function module on a first server-f
     const { port } = http.address() as AddressInfo;
     await fetch(`http://127.0.0.1:${port}/_server/${id}`, { method: 'POST' });
 
-    expect(globalThis.__instrumentOrder).toEqual(['instrument', 'functions']);
+    expect(globalThis.__serverSetupOrder).toEqual(['server-setup', 'functions']);
   } finally {
     http.close();
     await server.close();
