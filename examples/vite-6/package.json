@@ -6,7 +6,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "vitest --browser.headless --run",
+    "test": "vitest --browser.headless --run && node tests/workspace-root.mjs",
     "test-dev": "vitest",
     "test:jsdom": "NODE_OPTIONS=--import=./tests/deno-conditions.mjs vitest --run --config vitest.jsdom.config.ts --pool=forks && node tests/node-conditions.mjs"
   },
