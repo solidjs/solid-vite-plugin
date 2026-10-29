@@ -8,7 +8,7 @@
     "preview": "vite preview",
     "test": "vitest --browser.headless --run",
     "test-dev": "vitest",
-    "test:jsdom": "NODE_OPTIONS=--import=./tests/deno-conditions.mjs vitest --run --config vitest.jsdom.config.ts --pool=forks"
+    "test:jsdom": "NODE_OPTIONS=--import=./tests/deno-conditions.mjs vitest --run --config vitest.jsdom.config.ts --pool=forks && node tests/node-conditions.mjs"
   },
   "devDependencies": {
     "@solidjs/testing-library": "^0.8.10",
