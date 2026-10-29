@@ -453,7 +453,7 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin {
             : {}),
         },
         ...(!isVite6OrNewer ? { ssr: solidPkgsConfig.ssr } : {}),
-        ...(test.server || test.sharedViteServer === false ? { test } : {}),
+        ...(Object.keys(test).length ? { test } : {}),
       };
     },
 
