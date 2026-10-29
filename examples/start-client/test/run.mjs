@@ -23,7 +23,7 @@
 // Requires the plugin built (pnpm build at the repo root) and Google Chrome.
 //   - flip: the identical app with `ssr: true` (SOLID_FLIP_SSR=1) SSRs and
 //     hydrates with zero source changes — the one-boolean flip, proven.
-//   - node: `start.node` with `serverFunctions` (SOLID_START_NODE=1) emits
+//   - node: `start.nodeServer` with `serverFunctions` (SOLID_START_NODE_SERVER=1) emits
 //     dist/server/node.js, which serves the static build with an index.html
 //     history fallback and dispatches /_server through the kept handler;
 //     `createListener({ static: false })` disables both the file lookup
@@ -541,23 +541,23 @@ async function flipMode() {
   } catch {}
 }
 
-// `start.node` in client start mode (SOLID_START_NODE=1: `serverFunctions`
-// keeps dist/server for the endpoint, and `start.node` emits the Node entry
+// `start.nodeServer` in client start mode (SOLID_START_NODE_SERVER=1: `serverFunctions`
+// keeps dist/server for the endpoint, and `start.nodeServer` emits the Node entry
 // beside it). `node dist/server/node.js` must serve the static client build
 // — `/` and a deep route with an HTML accept get index.html (history
 // fallback), hashed assets are immutable, HEAD works — and dispatch the
 // /_server endpoint through the kept handler (an unknown id 404s instead of
 // getting index.html; the browser round-trips a real server function).
 // Without the option the client-mode build stays purely static (prod mode
-// asserts no dist/server), and with `start.node` but no `serverFunctions`
+// asserts no dist/server), and with `start.nodeServer` but no `serverFunctions`
 // the build warns and emits nothing (no server bundle to wrap).
 async function nodeMode() {
   console.log('\n== node ==');
   const distDir = path.join(exampleDir, 'dist');
   const nodeJs = path.join(distDir, 'server/node.js');
-  const env = { ...process.env, SOLID_START_NODE: '1' };
+  const env = { ...process.env, SOLID_START_NODE_SERVER: '1' };
 
-  // Gating: start.node without serverFunctions has no server bundle to wrap.
+  // Gating: start.nodeServer without serverFunctions has no server bundle to wrap.
   rmSync(distDir, { recursive: true, force: true });
   let warnOutput = '';
   await new Promise((resolve, reject) => {
@@ -565,8 +565,8 @@ async function nodeMode() {
       cwd: exampleDir,
       env: {
         ...process.env,
-        // The config bypasses the knob: `start: { node: true }` alone.
-        SOLID_START_NODE_ONLY: '1',
+        // The config bypasses the knob: `start: { nodeServer: true }` alone.
+        SOLID_START_NODE_SERVER_ONLY: '1',
       },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -581,14 +581,14 @@ async function nodeMode() {
   record(
     'node',
     'gate',
-    'start.node without serverFunctions warns (nothing to emit)',
-    warnOutput.includes('start.node has nothing to emit in client start mode'),
+    'start.nodeServer without serverFunctions warns (nothing to emit)',
+    warnOutput.includes('start.nodeServer has nothing to emit in client start mode'),
     warnOutput.slice(-400),
   );
   record(
     'node',
     'gate',
-    'start.node without serverFunctions emits no dist/server',
+    'start.nodeServer without serverFunctions emits no dist/server',
     !existsSync(path.join(distDir, 'server')),
   );
 
