@@ -3383,36 +3383,36 @@ async function runFramesMode() {
 // - error middleware (/boom: a render throw becomes the middleware's 500).
 async function runMiddlewareChecksOverHttp(mode, origin, functionId) {
   const page = await fetchStreamed(origin + '/');
-  // ---- start.serverBootstrap (src/instrument.ts) ----------------------
+  // ---- start.serverBootstrap (src/server-bootstrap.ts) ----------------------
   // What middleware.ts saw at ITS module load, i.e. after `@solidjs/web`
-  // and the handler graph began evaluating: the instrument had run first
+  // and the handler graph began evaluating: the bootstrap had run first
   // (nothing ahead of it in the register), had been awaited to completion
   // (its timer finished: `done`), and had evaluated once for the process.
-  const instrumentRaw = page.headers.get('x-instrument');
-  let instrument = null;
+  const bootstrapRaw = page.headers.get('x-server-bootstrap');
+  let bootstrap = null;
   try {
-    instrument = instrumentRaw ? JSON.parse(instrumentRaw) : null;
+    bootstrap = bootstrapRaw ? JSON.parse(bootstrapRaw) : null;
   } catch {}
   record(
     mode,
-    'instrument',
-    'instrument module ran before the handler graph, first in the register',
-    !!instrument && instrument.order[0] === 'instrument(before:0)',
-    `x-instrument: ${instrumentRaw}`,
+    'serverBootstrap',
+    'bootstrap module ran before the handler graph, first in the register',
+    !!bootstrap && bootstrap.order[0] === 'server-bootstrap(before:0)',
+    `x-server-bootstrap: ${bootstrapRaw}`,
   );
   record(
     mode,
-    'instrument',
-    'instrument module was awaited to completion before @solidjs/web loaded',
-    !!instrument && instrument.done === true,
-    `x-instrument: ${instrumentRaw}`,
+    'serverBootstrap',
+    'bootstrap module was awaited to completion before @solidjs/web loaded',
+    !!bootstrap && bootstrap.done === true,
+    `x-server-bootstrap: ${bootstrapRaw}`,
   );
   record(
     mode,
-    'instrument',
-    'instrument module evaluated once per server process',
-    !!instrument && instrument.evaluations === 1,
-    `x-instrument: ${instrumentRaw}`,
+    'serverBootstrap',
+    'bootstrap module evaluated once per server process',
+    !!bootstrap && bootstrap.evaluations === 1,
+    `x-server-bootstrap: ${bootstrapRaw}`,
   );
   record(
     mode,
@@ -3560,42 +3560,42 @@ async function runMiddlewareChecksOverHttp(mode, origin, functionId) {
     );
   }
 
-  // ---- Per-request app setup (start.renderSetup, src/setup.tsx) ----------------
+  // ---- Render setup (start.renderSetup, src/render-setup.tsx) ----------------
   // The hook runs between the middleware chain and renderToStream: its
   // marker carries the request pathname, the locals the middleware
   // decorated (ordering), and an invocation counter. It must land in the
   // FIRST chunk — the hook is awaited before the shell streams.
-  const setupFirst = await fetchStreamed(origin + '/');
-  const setupMarker = (html) => {
-    const match = html.match(/setup:([^:<]*):([^:<]*):(\d+)/);
+  const renderSetupFirst = await fetchStreamed(origin + '/');
+  const renderSetupMarker = (html) => {
+    const match = html.match(/render-setup:([^:<]*):([^:<]*):(\d+)/);
     return match && { pathname: match[1], user: match[2], seq: Number(match[3]) };
   };
-  const first = setupMarker(setupFirst.html);
+  const first = renderSetupMarker(renderSetupFirst.html);
   record(
     mode,
-    'setup',
-    'setup hook ran with the event and middleware locals (marker in shell)',
+    'renderSetup',
+    'renderSetup ran with the event and middleware locals (marker in shell)',
     !!first && first.pathname === '/' && first.user === 'mw-user',
     first ? JSON.stringify(first) : 'no marker in html',
   );
   record(
     mode,
-    'setup',
-    'async setup completes before the shell flushes (marker in first chunk)',
-    setupFirst.chunks.length > 0 && !!setupMarker(setupFirst.chunks[0]),
+    'renderSetup',
+    'async renderSetup completes before the shell flushes (marker in first chunk)',
+    renderSetupFirst.chunks.length > 0 && !!renderSetupMarker(renderSetupFirst.chunks[0]),
   );
   record(
     mode,
-    'setup',
-    'app still renders inside the setup-provided root',
-    setupFirst.html.includes('SSR Start Mode'),
+    'renderSetup',
+    'app still renders inside the root renderSetup returns',
+    renderSetupFirst.html.includes('SSR Start Mode'),
   );
-  const setupSecond = await fetchStreamed(origin + '/');
-  const second = setupMarker(setupSecond.html);
+  const renderSetupSecond = await fetchStreamed(origin + '/');
+  const second = renderSetupMarker(renderSetupSecond.html);
   record(
     mode,
-    'setup',
-    'setup runs per request (invocation counter advances)',
+    'renderSetup',
+    'renderSetup runs per page render (invocation counter advances)',
     !!first && !!second && second.seq > first.seq,
     `seq ${first?.seq} then ${second?.seq}`,
   );
@@ -3604,7 +3604,7 @@ async function runMiddlewareChecksOverHttp(mode, origin, functionId) {
   // A browser form posted to a server function's bare address without the
   // client runtime cannot receive a value: the runtime answers 303 back to
   // the referring page with the outcome riding a one-shot flash cookie, and
-  // the render that follows decodes it (src/setup.tsx here — the
+  // the render that follows decodes it (src/render-setup.tsx here, the
   // integration's half). Since @solidjs/web 2.0.0-rc.7 that cookie is
   // AES-GCM encrypted under a key derived from the deployment secret, and
   // WITHOUT a secret the flash is withheld entirely (the redirect goes out
@@ -3703,15 +3703,16 @@ async function runMiddlewareChecksOverHttp(mode, origin, functionId) {
 // open, so no host sees a rejection. Dev rethrows it to Vite's error
 // middleware (the overlay). `hooked`: the server runs with
 // SSR_SERVER_ERRORS=1, so middleware.ts registered a recording hook.
-// `setup`: start.renderSetup is wired (SSR_SETUP=1), so /setup-throw fails there.
+// `renderSetup`: start.renderSetup is wired (SSR_RENDER_SETUP=1), so
+// /render-setup-throw fails there.
 async function runContainmentChecks(
   mode,
   origin,
-  { dev = false, hooked = false, setup = false, getLog } = {},
+  { dev = false, hooked = false, renderSetup = false, getLog } = {},
 ) {
   const marker = 'mw-throw-secret';
   const markers = ['mw-throw-secret', 'late-throw-secret', 'direct-throw-secret'];
-  if (setup) markers.push('setup-throw-secret');
+  if (renderSetup) markers.push('render-setup-throw-secret');
   // Only what the server logs from here on (the log may span servers).
   const logStart = getLog ? getLog().length : 0;
   const logSince = () => getLog().slice(logStart);
@@ -3793,7 +3794,7 @@ async function runContainmentChecks(
     ['/mw-throw-late', 'a throw after next() returned the page'],
     ['/mw-response-error', 'thrown Response.error()'],
     ['/mw-direct-throw', 'an uncaught in-process server-function failure'],
-    ...(setup ? [['/setup-throw', 'a start.renderSetup failure']] : []),
+    ...(renderSetup ? [['/render-setup-throw', 'a start.renderSetup failure']] : []),
   ];
   for (const [pathname, label] of generic) {
     const res = await get(pathname);
@@ -3826,12 +3827,12 @@ async function runContainmentChecks(
       failedOnce('mw-throw-secret') && failedOnce('late-throw-secret'),
       JSON.stringify(heard),
     );
-    if (setup) {
+    if (renderSetup) {
       record(
         mode,
         'contain',
         'a start.renderSetup failure reaches the hook once (request/failed, with the event)',
-        failedOnce('setup-throw-secret'),
+        failedOnce('render-setup-throw-secret'),
         JSON.stringify(heard),
       );
     }
@@ -3888,18 +3889,18 @@ async function runMiddlewareMode() {
   console.log(`\n=== MIDDLEWARE ===`);
   const devPort = 3172;
   const prodPort = 3173;
-  // SSR_SETUP rides the middleware mode: the hook's contract (ordering
+  // SSR_RENDER_SETUP rides the middleware mode: the hook's contract (ordering
   // after the chain, shared locals) is only observable with a middleware
   // in front anyway.
-  // SSR_INSTRUMENT rides along too: the instrument module's evidence is a
+  // SSR_SERVER_BOOTSTRAP rides along too: the bootstrap module's evidence is a
   // header the middleware sets, so it needs the chain in front as well.
   // SSR_SERVER_ERRORS: the recording configureServerErrors hook the
   // containment checks read back.
   const env = {
     ...process.env,
     SSR_MIDDLEWARE: '1',
-    SSR_SETUP: '1',
-    SSR_INSTRUMENT: '1',
+    SSR_RENDER_SETUP: '1',
+    SSR_SERVER_BOOTSTRAP: '1',
     SSR_SERVER_ERRORS: '1',
     SSR_DEVTOOLS: '0',
   };
@@ -3920,28 +3921,28 @@ async function runMiddlewareMode() {
     // early-return Responses get their stub writes and post-next() header
     // mutation stays possible through the whole unwind.
     process.env.SSR_MIDDLEWARE = '1';
-    process.env.SSR_SETUP = '1';
-    process.env.SSR_INSTRUMENT = '1';
+    process.env.SSR_RENDER_SETUP = '1';
+    process.env.SSR_SERVER_BOOTSTRAP = '1';
     let probe;
     try {
       probe = await createServer({ root: exampleDir, server: { middlewareMode: true } });
       // ---- Codegen: start.serverBootstrap sequences the handler behind two awaits
-      // The entry the plugin hands out is a wrapper: `await import(instrument)`
+      // The entry the plugin hands out is a wrapper: `await import(serverBootstrap)`
       // then `await import(impl)`, exports re-declared by name. Static
       // imports would be hoisted and defeat the ordering.
       const wrapper = (await probe.environments.ssr.transformRequest('virtual:solid-ssr-handler'))?.code || '';
-      const instrumentAt = wrapper.indexOf('instrument.ts');
+      const bootstrapAt = wrapper.indexOf('server-bootstrap.ts');
       const implAt = wrapper.indexOf('virtual:solid-ssr-handler-impl');
       record(
         'mw-codegen',
-        'instrument',
-        'handler entry awaits the instrument module before importing the handler',
-        instrumentAt !== -1 && implAt !== -1 && instrumentAt < implAt && /await\s+__vite_ssr_dynamic_import__|await\s+import/.test(wrapper),
+        'serverBootstrap',
+        'handler entry awaits the bootstrap module before importing the handler',
+        bootstrapAt !== -1 && implAt !== -1 && bootstrapAt < implAt && /await\s+__vite_ssr_dynamic_import__|await\s+import/.test(wrapper),
         wrapper.slice(0, 400),
       );
       record(
         'mw-codegen',
-        'instrument',
+        'serverBootstrap',
         'wrapper re-declares the handler surface by name (handleRequest, default)',
         // The SSR transform rewrites `export const`/`export default` into
         // defineProperty calls on the exports object; match the names.
@@ -3986,17 +3987,17 @@ async function runMiddlewareMode() {
         'virtual:solid-ssr-entry-server.tsx',
       );
       const entryCode = entry?.code || '';
-      // The SSR transform rewrites imported bindings (`setup` becomes a
-      // member access on the import handle), so match the surviving locals:
-      // the prepared setup result, and the boxed-stream protocol that keeps
-      // an async setup from buffering the render (a promise resolving to
-      // the stream bare would adopt its thenable).
+      // The SSR transform rewrites imported bindings (`renderSetup` becomes
+      // a member access on the import handle), so match the surviving locals:
+      // the prepared renderSetup result, and the boxed-stream protocol that
+      // keeps an async renderSetup from buffering the render (a promise
+      // resolving to the stream bare would adopt its thenable).
       record(
         'mw-codegen',
         'gen',
         'generated entry threads start.renderSetup and boxes the async stream',
         entryCode.includes('const prepared = ') &&
-          entryCode.includes('__solidSetupStream'),
+          entryCode.includes('__solidRenderSetupStream'),
       );
       // A client that disconnects before the shell flushes aborts
       // request.signal; the entry forwards it so the pending render is
@@ -4046,8 +4047,8 @@ async function runMiddlewareMode() {
     } finally {
       await probe?.close();
       delete process.env.SSR_MIDDLEWARE;
-      delete process.env.SSR_SETUP;
-      delete process.env.SSR_INSTRUMENT;
+      delete process.env.SSR_RENDER_SETUP;
+      delete process.env.SSR_SERVER_BOOTSTRAP;
     }
 
     // ---- Dev: the chain fronts the dev middlewares -----------------------
@@ -4109,7 +4110,7 @@ async function runMiddlewareMode() {
     await runMiddlewareChecksOverHttp('mw-prod', prodOrigin, prodId);
     await runContainmentChecks('mw-prod', prodOrigin, {
       hooked: true,
-      setup: true,
+      renderSetup: true,
       getLog: () => serverLog,
     });
     await runHttpChecks('mw-prod', prodOrigin);
@@ -4143,18 +4144,18 @@ async function runPreviewMode() {
   console.log(`\n=== ${mode.toUpperCase()} ===`);
   const port = 3174;
   const origin = `http://localhost:${port}`;
-  // SSR_SETUP rides along like in middleware mode: the shared chain checks
-  // assert the per-request setup hook, and preview must serve the built
+  // SSR_RENDER_SETUP rides along like in middleware mode: the shared chain checks
+  // assert the renderSetup hook, and preview must serve the built
   // entry that threads it exactly like dev and prod.
-  // SSR_INSTRUMENT too: `vite preview` serves the built handler, so the
-  // instrument sequencing is asserted on the third surface here.
+  // SSR_SERVER_BOOTSTRAP too: `vite preview` serves the built handler, so the
+  // bootstrap sequencing is asserted on the third surface here.
   // SSR_SERVER_ERRORS: the containment checks' recording hook, as in
   // middleware mode.
   const env = {
     ...process.env,
     SSR_MIDDLEWARE: '1',
-    SSR_SETUP: '1',
-    SSR_INSTRUMENT: '1',
+    SSR_RENDER_SETUP: '1',
+    SSR_SERVER_BOOTSTRAP: '1',
     SSR_SERVER_ERRORS: '1',
   };
 
@@ -4316,7 +4317,7 @@ async function runPreviewMode() {
     await runMiddlewareChecksOverHttp(mode, origin, null);
     await runContainmentChecks(mode, origin, {
       hooked: true,
-      setup: true,
+      renderSetup: true,
       getLog: () => serverLog,
     });
 
@@ -5724,7 +5725,7 @@ async function runDetectMode() {
 //     functions, never touches dist/client, and the `event` fields show up
 //     next to nativeEvent,
 //   - with `start.serverBootstrap`, node.js has no static imports: it awaits
-//     ./server.js (and so the instrument) before node:http loads (#418),
+//     ./server.js (and so the bootstrap) before node:http loads (#418),
 //     still listens as the program and still exports without listening,
 //   - a Cloudflare-shaped setup (ssr `noExternal: true` + a config-level
 //     server-first `builder.buildApp`) emits nothing without the option and
@@ -6269,81 +6270,81 @@ async function runNodeMode() {
     } catch {}
     server = undefined;
 
-    // ---- start.serverBootstrap: node:http loads after the instrument (#418) -------
+    // ---- start.serverBootstrap: node:http loads after the bootstrap (#418) -------
     rmSync(distDir, { recursive: true, force: true });
     console.log('  building (with start.node and start.serverBootstrap)…');
     execSync('pnpm run build', {
       cwd: exampleDir,
       stdio: 'pipe',
-      env: { ...env, START_NODE: '1', SSR_INSTRUMENT: '1' },
+      env: { ...env, START_NODE: '1', SSR_SERVER_BOOTSTRAP: '1' },
     });
-    const instrumentedSource = existsSync(nodeJs) ? readFileSync(nodeJs, 'utf-8') : '';
+    const bootstrappedSource = existsSync(nodeJs) ? readFileSync(nodeJs, 'utf-8') : '';
     record(
       mode,
-      'instrument',
-      'instrumented node.js has no static imports and awaits ./server.js first',
-      !/^import\b/m.test(instrumentedSource) &&
-        instrumentedSource.indexOf("await import('./server.js')") !== -1 &&
-        instrumentedSource.indexOf("await import('./server.js')") <
-          instrumentedSource.indexOf("await import('./node-runtime.js')"),
-      instrumentedSource.slice(0, 600),
+      'serverBootstrap',
+      'bootstrapped node.js has no static imports and awaits ./server.js first',
+      !/^import\b/m.test(bootstrappedSource) &&
+        bootstrappedSource.indexOf("await import('./server.js')") !== -1 &&
+        bootstrappedSource.indexOf("await import('./server.js')") <
+          bootstrappedSource.indexOf("await import('./node-runtime.js')"),
+      bootstrappedSource.slice(0, 600),
     );
     serverLog = '';
     server = startProcess('node', ['dist/server/node.js'], {
       cwd: exampleDir,
-      env: { ...env, SSR_INSTRUMENT: '1', PORT: '0', NODE_ENV: 'production' },
+      env: { ...env, SSR_SERVER_BOOTSTRAP: '1', PORT: '0', NODE_ENV: 'production' },
     });
     server.stdout.on('data', (d) => (serverLog += d));
     server.stderr.on('data', (d) => (serverLog += d));
-    const instrumentedListening = await waitForLog(
+    const bootstrappedListening = await waitForLog(
       () => serverLog,
       /Listening on (http:\/\/localhost:\d+)/,
     );
     record(
       mode,
-      'instrument',
-      'instrumented node.js listens when run as the program',
-      !!instrumentedListening,
+      'serverBootstrap',
+      'bootstrapped node.js listens when run as the program',
+      !!bootstrappedListening,
       serverLog.slice(-300),
     );
-    if (instrumentedListening) {
-      const instrumentedPage = await fetchStreamed(instrumentedListening[1] + '/');
-      const instrumentRaw = instrumentedPage.headers.get('x-instrument');
-      let instrument = null;
+    if (bootstrappedListening) {
+      const bootstrappedPage = await fetchStreamed(bootstrappedListening[1] + '/');
+      const bootstrapRaw = bootstrappedPage.headers.get('x-server-bootstrap');
+      let bootstrap = null;
       try {
-        instrument = instrumentRaw ? JSON.parse(instrumentRaw) : null;
+        bootstrap = bootstrapRaw ? JSON.parse(bootstrapRaw) : null;
       } catch {}
       record(
         mode,
-        'instrument',
-        'instrument module ran to completion before node:http loaded',
-        !!instrument &&
-          instrument.order[0] === 'instrument(before:0)' &&
-          instrument.done === true &&
-          instrument.httpLoaded === false,
-        `x-instrument: ${instrumentRaw}`,
+        'serverBootstrap',
+        'bootstrap module ran to completion before node:http loaded',
+        !!bootstrap &&
+          bootstrap.order[0] === 'server-bootstrap(before:0)' &&
+          bootstrap.done === true &&
+          bootstrap.httpLoaded === false,
+        `x-server-bootstrap: ${bootstrapRaw}`,
       );
     }
     try {
       process.kill(-server.pid, 'SIGTERM');
     } catch {}
     server = undefined;
-    let instrumentedMountLog = '';
+    let bootstrappedMountLog = '';
     server = startProcess('node', [mountScript], {
       cwd: tmpDir,
-      env: { ...env, SSR_INSTRUMENT: '1' },
+      env: { ...env, SSR_SERVER_BOOTSTRAP: '1' },
     });
-    server.stdout.on('data', (d) => (instrumentedMountLog += d));
-    server.stderr.on('data', (d) => (instrumentedMountLog += d));
-    const instrumentedMounted = await waitForLog(() => instrumentedMountLog, /MOUNTED=(\d+)/);
+    server.stdout.on('data', (d) => (bootstrappedMountLog += d));
+    server.stderr.on('data', (d) => (bootstrappedMountLog += d));
+    const bootstrappedMounted = await waitForLog(() => bootstrappedMountLog, /MOUNTED=(\d+)/);
     record(
       mode,
-      'instrument',
-      'instrumented node.js exports createListener, listener and serve without auto-listening',
-      !!instrumentedMounted &&
-        /EXPORTS=createListener,listener,serve/.test(instrumentedMountLog) &&
-        !instrumentedMountLog.includes('Listening on'),
-      instrumentedMountLog.slice(-300),
+      'serverBootstrap',
+      'bootstrapped node.js exports createListener, listener and serve without auto-listening',
+      !!bootstrappedMounted &&
+        /EXPORTS=createListener,listener,serve/.test(bootstrappedMountLog) &&
+        !bootstrappedMountLog.includes('Listening on'),
+      bootstrappedMountLog.slice(-300),
     );
     try {
       process.kill(-server.pid, 'SIGTERM');

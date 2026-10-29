@@ -373,7 +373,7 @@ const DEV_FALLTHROUGH_HEADER = 'x-solid-dev-fallthrough';
 // async: the entry hands the handler the renderToStream result under this
 // key, because a promise resolving to the stream BARE would adopt the
 // stream's thenable (which waits for the complete render) and buffer it.
-const STREAM_BOX = '__solidSetupStream';
+const STREAM_BOX = '__solidRenderSetupStream';
 const DEV_STYLES_ID = 'virtual:solid-ssr-dev-styles';
 const RESOLVED_DEV_STYLES_ID = '\0' + DEV_STYLES_ID;
 // Generated default entries / document shell. The `.tsx` suffix routes them
