@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs';
-import { mkdtemp, mkdir, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type { ConfigEnv, UserConfig } from 'vite';
@@ -8,7 +8,9 @@ import solidPlugin from './index.js';
 
 const roots: string[] = [];
 
-// A project root whose installed vitest has the given version.
+// A project root whose installed vitest has the given version. jest-dom is
+// linked in from this repo, since the plugin only injects it when the project
+// itself can resolve it.
 async function projectWithVitest(version: string) {
   const root = await realpath(await mkdtemp(path.join(tmpdir(), 'solid-jest-dom-')));
   roots.push(root);
@@ -17,6 +19,12 @@ async function projectWithVitest(version: string) {
   await writeFile(
     path.join(root, 'node_modules/vitest/package.json'),
     JSON.stringify({ name: 'vitest', version }),
+  );
+  await mkdir(path.join(root, 'node_modules/@testing-library'), { recursive: true });
+  await symlink(
+    await realpath('node_modules/@testing-library/jest-dom'),
+    path.join(root, 'node_modules/@testing-library/jest-dom'),
+    'dir',
   );
   return root;
 }

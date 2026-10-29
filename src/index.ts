@@ -252,7 +252,7 @@ function getJestDomVitestEsmPath(root: string): string | undefined {
   const rootRequire = createRequire(path.join(path.resolve(root), 'package.json'));
   const vitest = readPackageJson('vitest', [rootRequire, require]);
   if (!vitest || +String(vitest.pkg.version).split('.')[0] >= 1) return undefined;
-  const jestDom = readPackageJson('@testing-library/jest-dom', [require, rootRequire]);
+  const jestDom = readPackageJson('@testing-library/jest-dom', [rootRequire, require]);
   const entry = jestDom?.pkg.exports?.['./vitest']?.import;
   const file = typeof entry === 'string' ? entry : entry?.default;
   return typeof file === 'string' ? path.join(jestDom.dir, file) : undefined;
