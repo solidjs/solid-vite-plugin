@@ -24,15 +24,15 @@ import solidPlugin from '@solidjs/vite-plugin';
 // - SSR_MIDDLEWARE=1 wires src/middleware.ts through `start.middleware`
 //   (middleware and preview modes): a fetch-style chain fronting every
 //   dispatch path with getRequestEvent() live inside it.
-// - SSR_RENDER_SETUP=1 wires src/render-setup.tsx through `start.renderSetup`
+// - SSR_SERVER_RENDER_SETUP=1 wires src/server-render-setup.tsx through `start.serverRenderSetup`
 //   (middleware mode): the hook awaited before every page render, between
 //   the middleware chain and renderToStream, with the shared request event
 //   in hand.
-// - SSR_SERVER_BOOTSTRAP=1 wires src/server-bootstrap.ts through
-//   `start.serverBootstrap` (middleware mode): the module awaited to
+// - SSR_SERVER_SETUP=1 wires src/server-setup.ts through
+//   `start.serverSetup` (middleware mode): the module awaited to
 //   completion before the handler graph loads (the APM/OpenTelemetry seam);
 //   middleware.ts reports what it saw at its own load in an
-//   `x-server-bootstrap` header.
+//   `x-server-setup` header.
 // - SSR_CLIENT_SETUP=1 wires src/client-setup.ts through `start.clientSetup`
 //   (client-setup mode) and wraps App in src/ClientSetupApp.tsx, which
 //   records whether the setup module settled before hydration rendered.
@@ -213,13 +213,13 @@ export default defineConfig({
                 : process.env.SSR_RENDER_MODE === 'middleware' || process.env.SSR_NONCE
                   ? { middleware: './src/middleware.ts' }
                   : {}),
-              // SSR_RENDER_SETUP=1 (middleware mode): the render setup hook.
-              // src/render-setup.tsx runs between the middleware chain and
+              // SSR_SERVER_RENDER_SETUP=1 (middleware mode): the render setup hook.
+              // src/server-render-setup.tsx runs between the middleware chain and
               // renderToStream, receiving the event and returning the
               // component to render (the TanStack-style async router seam).
-              ...(process.env.SSR_RENDER_SETUP ? { renderSetup: './src/render-setup.tsx' } : {}),
-              ...(process.env.SSR_SERVER_BOOTSTRAP
-                ? { serverBootstrap: './src/server-bootstrap.ts' }
+              ...(process.env.SSR_SERVER_RENDER_SETUP ? { serverRenderSetup: './src/server-render-setup.tsx' } : {}),
+              ...(process.env.SSR_SERVER_SETUP
+                ? { serverSetup: './src/server-setup.ts' }
                 : {}),
               // SSR_CLIENT_SETUP=1 (client-setup mode): src/client-setup.ts
               // runs in the browser before the generated entry hydrates;

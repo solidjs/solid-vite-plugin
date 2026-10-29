@@ -259,7 +259,7 @@ same server functions.
 The object form carries the options (`start: true` is pure sugar for
 `start: {}` — both mean the identical start mode with defaults, and
 `false`/absent means off): `app`, `document`, `entries`,
-`middleware`, `renderSetup`, `serverBootstrap`, `clientSetup`, `renderMode`,
+`middleware`, `serverRenderSetup`, `serverSetup`, `clientSetup`, `renderMode`,
 `devtools`, `productionErrorBoundary`,
 `externalServer`, `node`, all documented below.
 
@@ -388,10 +388,10 @@ event })` takes the same two options on top of the listen address.
 
 `node.js` is an emitted asset, not a second build input: `server.js` and
 its `handleRequest` / `{ fetch }` contracts are unchanged. With
-`serverBootstrap` set, `node.js` is a small wrapper that awaits `./server.js`
-(and so the bootstrap module) before it loads the server from
+`serverSetup` set, `node.js` is a small wrapper that awaits `./server.js`
+(and so the server setup module) before it loads the server from
 `node-runtime.js` beside it, so `node:http` is not loaded until the
-bootstrap module has run; deploy both files. It applies to
+server setup module has run; deploy both files. It applies to
 both start modes — in client mode with `serverFunctions` (which keeps
 `dist/server`) the entry serves the static client with an `index.html`
 history fallback for HTML navigations plus the endpoint. Nothing is
@@ -422,7 +422,7 @@ createServer(async (req, res) => {
 ```
 
 ```js
-// anywhere inside the request scope (middleware, renderSetup, app code)
+// anywhere inside the request scope (middleware, serverRenderSetup, app code)
 import { getRequestEvent } from '@solidjs/web';
 const event = getRequestEvent();
 event.nativeEvent; // the Node IncomingMessage the entry passed
@@ -510,7 +510,7 @@ Whatever escapes the chain is settled at the handler edge. A thrown
 (as the server-function endpoint does), and so is the `Response` a thrown
 `respond()` envelope carries; `Response.error()` is not a response and
 counts as a failure. In a production build any other failure (a middleware
-throw, a `renderSetup` failure, or an invalid `event.renderMode` / `event.nonce`) is contained by the
+throw, a `serverRenderSetup` failure, or an invalid `event.renderMode` / `event.nonce`) is contained by the
 handler instead of rejecting to the host. It is reported once to the hook
 registered with `configureServerErrors` from `@solidjs/web` (through its
 `reportRequestFailure`: `{ kind: 'request', handling: 'failed' }` and the
@@ -525,7 +525,7 @@ errors are handled by the boundary before they get this far. In dev those
 failures still reject, so the dev server sees the original error (with the
 built-in dev middleware, Vite's error middleware and its overlay).
 
-**`renderSetup`** points at a server-only module whose default export runs
+**`serverRenderSetup`** points at a server-only module whose default export runs
 before every page render: `(event, App) => Component | void |
 Promise<Component | void>`. The generated server entry awaits it after the
 middleware chain has dispatched to the page render and immediately before
@@ -535,13 +535,13 @@ request, `await router.load()`, then render):
 
 ```ts
 // vite.config.ts
-solid({ start: { renderSetup: './src/render-setup.tsx' }, ssr: true });
+solid({ start: { serverRenderSetup: './src/server-render-setup.tsx' }, ssr: true });
 
-// src/render-setup.tsx
+// src/server-render-setup.tsx
 import type { Component } from 'solid-js';
 import type { RequestEvent } from '@solidjs/web';
 
-export default async function renderSetup(event: RequestEvent, App: Component) {
+export default async function serverRenderSetup(event: RequestEvent, App: Component) {
   const router = createRouter({ url: event.request.url });
   await router.load(); // async work completes before the shell streams
   return () => <App router={router} />; // rendered in the app's place
@@ -568,7 +568,7 @@ matched client-side for hydration: routers that own both sides (their
 client entry re-creates the router and hydrates the same tree) fit
 naturally.
 
-**`serverBootstrap`** points at a server-only module that runs to
+**`serverSetup`** points at a server-only module that runs to
 completion before anything else in the server graph loads: the app, the
 middleware, `@solidjs/web`, every dependency. It is the seam for code that
 must run first, typically instrumentation that patches the runtime before
@@ -577,18 +577,18 @@ profiler, a `module.register` hook):
 
 ```ts
 // vite.config.ts
-solid({ start: { serverBootstrap: './src/server-bootstrap.ts' }, ssr: true });
+solid({ start: { serverSetup: './src/server-setup.ts' }, ssr: true });
 
-// src/server-bootstrap.ts
+// src/server-setup.ts
 import * as Sentry from '@sentry/node';
 Sentry.init({ dsn: process.env.SENTRY_DSN, tracesSampleRate: 1 });
 ```
 
 Import order alone cannot do this in ESM: static imports are hoisted and
-evaluated in dependency order, so `import './server-bootstrap'` at the top
+evaluated in dependency order, so `import './server-setup'` at the top
 of an entry still runs after everything the entry imports. The plugin
 therefore hands out the handler as
-`await import(serverBootstrap); await import(handler)`, since top-level
+`await import(serverSetup); await import(handler)`, since top-level
 await sequencing is the one construct that guarantees the order. It does
 so on every surface: `vite dev`, `vite build`, `vite preview`, a host
 consuming the handler entry, and the `node` entry. This replaces the
@@ -596,7 +596,7 @@ per-host `node --import instrument.mjs` dance. The module may be async and
 needs no exports. It runs once per server start (under `vite dev`, again
 whenever the server environment reloads). The server build must keep code
 splitting on (the default), since inlining dynamic imports would hoist the
-handler graph back above the bootstrap module.
+handler graph back above the server setup module.
 
 **`clientSetup`** points at a client module that the generated client entry
 runs before it hydrates (SSR mode) or mounts (client mode) the app. Use it

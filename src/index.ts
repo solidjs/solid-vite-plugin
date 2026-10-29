@@ -1425,13 +1425,13 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
   if (startOptions && 'setup' in startOptions) {
     // Renamed before the stable release, without an alias.
     throw new Error(
-      '[@solidjs/vite-plugin] `start.setup` has been renamed to `start.renderSetup`.',
+      '[@solidjs/vite-plugin] `start.setup` has been renamed to `start.serverRenderSetup`.',
     );
   }
   if (startOptions && 'instrument' in startOptions) {
     // Renamed before the stable release, without an alias.
     throw new Error(
-      '[@solidjs/vite-plugin] `start.instrument` has been renamed to `start.serverBootstrap`.',
+      '[@solidjs/vite-plugin] `start.instrument` has been renamed to `start.serverSetup`.',
     );
   }
   const styleFilterOptions = options.css?.filter;

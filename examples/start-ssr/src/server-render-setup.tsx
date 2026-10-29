@@ -1,4 +1,4 @@
-// Render setup (`start.renderSetup`), run before every page render: the seam
+// Render setup (`start.serverRenderSetup`), run before every page render: the seam
 // for routers that must prepare an app instance before SSR begins
 // (TanStack-style `await router.load()`), receiving the shared request event
 // (middleware locals included) and returning the component to render in the
@@ -22,15 +22,16 @@ import {
 
 let invocations = 0;
 
-export default async function renderSetup(event: RequestEvent, App: Component) {
+export default async function serverRenderSetup(event: RequestEvent, App: Component) {
   // Simulates the router's pre-render load; must complete before the shell
   // streams, so the marker below always lands in the first chunk.
   await new Promise((resolve) => setTimeout(resolve, 10));
   const pathname = new URL(event.request.url).pathname;
-  // Containment probe: a renderSetup failure escapes the chain (src/middleware.ts
+  // Containment probe: a serverRenderSetup failure escapes the chain (src/middleware.ts
   // lets this path past its error middleware), so the handler contains it.
   // Thrown before the count, which stays one per rendered request.
-  if (pathname === '/render-setup-throw') throw new Error('token=render-setup-throw-secret');
+  if (pathname === '/server-render-setup-throw')
+    throw new Error('token=server-render-setup-throw-secret');
   const seq = ++invocations;
   const user = String((event.locals as Record<string, unknown>).user ?? 'anonymous');
   const cookieHeader = event.request.headers.get('cookie');
@@ -53,7 +54,7 @@ export default async function renderSetup(event: RequestEvent, App: Component) {
   }
   return () => (
     <>
-      <p id="render-setup-marker">{`render-setup:${pathname}:${user}:${seq}`}</p>
+      <p id="server-render-setup-marker">{`server-render-setup:${pathname}:${user}:${seq}`}</p>
       {flashMarker ? <p id="flash-marker">{flashMarker}</p> : null}
       <App />
     </>

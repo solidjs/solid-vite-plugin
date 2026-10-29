@@ -31,8 +31,8 @@
 //   returned the page, /mw-redirect throws redirect(), /mw-envelope throws a
 //   respond() envelope, /mw-response-error throws Response.error(),
 //   /mw-direct-throw lets an in-process server-function failure escape, and
-//   /render-setup-throw skips the error middleware so the start.renderSetup
-//   failure (src/render-setup.tsx) reaches the handler. SSR_SERVER_ERRORS=1
+//   /server-render-setup-throw skips the error middleware so the start.serverRenderSetup
+//   failure (src/server-render-setup.tsx) reaches the handler. SSR_SERVER_ERRORS=1
 //   registers a configureServerErrors hook that records what it hears (read back from
 //   /api/server-errors) instead of logging.
 import {
@@ -46,15 +46,15 @@ import {
 import type { StartMiddleware } from '@solidjs/vite-plugin';
 import { failDirect } from './api';
 
-// `start.serverBootstrap` evidence (SSR_SERVER_BOOTSTRAP=1): this module
+// `start.serverSetup` evidence (SSR_SERVER_SETUP=1): this module
 // evaluates as part of the handler graph (after `@solidjs/web` above), so
-// what the bootstrap register holds HERE is what it held before the graph
-// loaded. A `done: true` at this point means the bootstrap module was
+// what the server setup register holds HERE is what it held before the graph
+// loaded. A `done: true` at this point means the server setup module was
 // awaited to completion first, not merely imported first.
-const bootstrapAtLoad = globalThis.__solidServerBootstrap
-  ? { ...globalThis.__solidServerBootstrap, order: [...globalThis.__solidServerBootstrap.order] }
+const serverSetupAtLoad = globalThis.__solidServerSetup
+  ? { ...globalThis.__solidServerSetup, order: [...globalThis.__solidServerSetup.order] }
   : null;
-globalThis.__solidServerBootstrap?.order.push('middleware');
+globalThis.__solidServerSetup?.order.push('middleware');
 
 const serverErrors: { message: string; kind: string; handling: string; event: boolean }[] = [];
 if (process.env.SSR_SERVER_ERRORS) {
@@ -229,9 +229,9 @@ async function first(event: RequestEvent, next: Next): Promise<Response> {
   // The runtime reports a failed in-process server-function call itself
   // before rethrowing; the handler must not report it a second time.
   if (pathname === '/mw-direct-throw') await failDirect();
-  // Past the error middleware below on purpose: the start.renderSetup failure
+  // Past the error middleware below on purpose: the start.serverRenderSetup failure
   // must escape the chain.
-  if (pathname === '/render-setup-throw') return next();
+  if (pathname === '/server-render-setup-throw') return next();
   if (pathname === '/blocked') {
     // Early return: this Response never goes through createSSRResponse, so
     // the stub write below only reaches the wire through the handler
@@ -246,8 +246,8 @@ async function first(event: RequestEvent, next: Next): Promise<Response> {
     // these must be observable on the response head.
     response.headers.set('x-mw-order', (event.locals.order as string[]).join(','));
     response.headers.set('x-after-next', 'set-after-next');
-    if (bootstrapAtLoad)
-      response.headers.set('x-server-bootstrap', JSON.stringify(bootstrapAtLoad));
+    if (serverSetupAtLoad)
+      response.headers.set('x-server-setup', JSON.stringify(serverSetupAtLoad));
     return response;
   } catch (error) {
     return new Response(`caught: ${error instanceof Error ? error.message : String(error)}`, {
