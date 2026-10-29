@@ -16,11 +16,11 @@ const TEST_TIMEOUT = 5 * 60 * 1000; // 5 minutes
 const activeProcesses = new Set<ChildProcess>();
 
 // Cleanup function
-function cleanup() {
+function cleanup(exitCode = 0) {
   for (const proc of activeProcesses) {
     proc.kill('SIGTERM');
   }
-  process.exit(0);
+  process.exit(exitCode);
 }
 
 // Handle termination signals
@@ -73,8 +73,7 @@ async function runAll() {
       await runExample(example);
     } catch (error) {
       console.error(`Error testing ${example}:`, error);
-      cleanup();
-      process.exit(1);
+      cleanup(1);
     }
   }
   process.exit(0);
@@ -82,6 +81,5 @@ async function runAll() {
 
 runAll().catch(error => {
   console.error('Unexpected error:', error);
-  cleanup();
-  process.exit(1);
+  cleanup(1);
 });
