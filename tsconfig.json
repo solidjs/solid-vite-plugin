@@ -3,7 +3,7 @@
     "src", "cypress"
   ],
   "exclude": [
-    "**/*.spec.ts"
+    "**/*.spec.ts", "**/*.test.ts"
   ],
   "compilerOptions": {
     "target": "ESNext",
