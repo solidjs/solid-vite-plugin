@@ -261,7 +261,7 @@ The object form carries the options (`start: true` is pure sugar for
 `false`/absent means off): `app`, `document`, `entries`,
 `middleware`, `serverRenderSetup`, `serverSetup`, `clientSetup`, `renderMode`,
 `devtools`, `productionErrorBoundary`,
-`externalServer`, `node`, all documented below.
+`externalServer`, `nodeServer`, all documented below.
 
 Install `@solidjs/start-devtools` as a development dependency to add the
 development toolbar with runtime errors and server function calls:
@@ -335,10 +335,10 @@ The Fetchable wrapper deliberately accepts only the request. Hosts may pass
 environment or execution-context arguments after it; those are not the
 Solid options accepted by `handleRequest`'s second parameter.
 
-- **Deploying to Node** — **`node`**: Node is the one mainstream runtime
-  without a fetch-shaped server API (Workers, Deno, Bun, Netlify, and Nitro
+- **Deploying to Node** (**`nodeServer`**): Node is the one mainstream
+  runtime without a fetch-shaped server API (Workers, Deno, Bun, Netlify, and Nitro
   consume `{ fetch }` directly), so the build can emit the Node server for
-  you. With `start: { node: true }` the ssr build writes
+  you. With `start: { nodeServer: true }` the ssr build writes
   `dist/server/node.js` beside `server.js`, and the production start
   command is:
 
@@ -591,7 +591,7 @@ therefore hands out the handler as
 `await import(serverSetup); await import(handler)`, since top-level
 await sequencing is the one construct that guarantees the order. It does
 so on every surface: `vite dev`, `vite build`, `vite preview`, a host
-consuming the handler entry, and the `node` entry. This replaces the
+consuming the handler entry, and the `nodeServer` entry. This replaces the
 per-host `node --import instrument.mjs` dance. The module may be async and
 needs no exports. It runs once per server start (under `vite dev`, again
 whenever the server environment reloads). The server build must keep code

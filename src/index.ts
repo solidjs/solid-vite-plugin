@@ -512,10 +512,10 @@ export interface Options {
    *   handler in the Fetchable shape used by deployment integrations.
    *   The normal `ssr` environment exposes it as the `index` service entry
    *   so provider Vite plugins can supply the runtime and build orchestration.
-   * - `start.node: true` additionally emits a ready-to-run Node server,
+   * - `start.nodeServer: true` additionally emits a ready-to-run Node server,
    *   `dist/server/node.js` (`node dist/server/node.js`; PORT/HOST), that
    *   serves the client build statically and dispatches the rest through
-   *   `handleRequest` — see {@link StartOptions.node}. Node is the one
+   *   `handleRequest` (see {@link StartOptions.nodeServer}). Node is the one
    *   mainstream runtime without a fetch-shaped server API; every other
    *   host consumes the `{ fetch }` export directly.
    * - With `serverFunctions` also enabled, the prod handler serves the
@@ -533,7 +533,7 @@ export interface Options {
    *   deployable to any static host. No server bundle remains unless
    *   `serverFunctions` is enabled, in which case `dist/server` is kept and
    *   its `handleRequest` serves the endpoint (pages stay static) — and
-   *   `start.node` then emits `dist/server/node.js` serving the static
+   *   `start.nodeServer` then emits `dist/server/node.js` serving the static
    *   client with an `index.html` history fallback plus the endpoint.
    * - Client code stays non-hydratable (`generate: 'dom'`), exactly like a
    *   plain SPA; server-only options (`entries.server`, `externalServer`) are inert.
@@ -1432,6 +1432,12 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
     // Renamed before the stable release, without an alias.
     throw new Error(
       '[@solidjs/vite-plugin] `start.instrument` has been renamed to `start.serverSetup`.',
+    );
+  }
+  if (startOptions && 'node' in startOptions) {
+    // Renamed before the stable release, without an alias.
+    throw new Error(
+      '[@solidjs/vite-plugin] `start.node` has been renamed to `start.nodeServer`.',
     );
   }
   const styleFilterOptions = options.css?.filter;

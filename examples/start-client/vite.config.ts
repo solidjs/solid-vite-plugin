@@ -16,13 +16,13 @@ import solidPlugin from '@solidjs/vite-plugin';
 // identical app SSRs and hydrates with zero source changes. All suite modes
 // run on the boolean `start: true` form, covering the sugar end to end.
 //
-// SOLID_START_NODE=1 (node mode) turns on `serverFunctions` — which keeps
-// dist/server for the endpoint — and `start.node`, so the build also emits
-// the Node server entry dist/server/node.js: static dist/client with an
-// index.html history fallback for HTML navigations, /_server through the
-// kept handler. SOLID_START_NODE_ONLY=1 sets `start.node` alone (no server
-// functions): the purely static build has no server bundle to wrap, so the
-// build warns and emits nothing.
+// SOLID_START_NODE_SERVER=1 (node mode) turns on `serverFunctions` (which
+// keeps dist/server for the endpoint) and `start.nodeServer`, so the build
+// also emits the Node server entry dist/server/node.js: static dist/client
+// with an index.html history fallback for HTML navigations, /_server through
+// the kept handler. SOLID_START_NODE_SERVER_ONLY=1 sets `start.nodeServer`
+// alone (no server functions): the purely static build has no server bundle
+// to wrap, so the build warns and emits nothing.
 //
 // SOLID_SHELL_FAIL=1 (prod mode's failing build) wires src/shell-failure.ts
 // through `start.middleware`: the chain throws while the build prerenders the
@@ -32,21 +32,22 @@ import solidPlugin from '@solidjs/vite-plugin';
 // SOLID_SHELL_NONCE=1 (prod mode) wires src/shell-nonce.ts instead: the
 // chain sets `event.nonce` during the prerender, and the static shell must
 // not carry it.
-const startNode = !!process.env.SOLID_START_NODE || !!process.env.SOLID_START_NODE_ONLY;
+const startNodeServer =
+  !!process.env.SOLID_START_NODE_SERVER || !!process.env.SOLID_START_NODE_SERVER_ONLY;
 const shellFail = !!process.env.SOLID_SHELL_FAIL;
 const shellNonce = !!process.env.SOLID_SHELL_NONCE;
 export default defineConfig({
   plugins: [
     solidPlugin({
-      start: startNode
-        ? { node: true }
+      start: startNodeServer
+        ? { nodeServer: true }
         : shellFail
           ? { middleware: './src/shell-failure.ts' }
           : shellNonce
             ? { middleware: './src/shell-nonce.ts' }
             : true,
       ssr: !!process.env.SOLID_FLIP_SSR,
-      ...(process.env.SOLID_START_NODE ? { serverFunctions: true } : {}),
+      ...(process.env.SOLID_START_NODE_SERVER ? { serverFunctions: true } : {}),
     }),
   ],
 });

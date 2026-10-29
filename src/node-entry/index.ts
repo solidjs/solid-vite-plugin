@@ -1,5 +1,5 @@
 // The Node server for a start-mode build (emitted as dist/server/node.js by
-// `start.node`): serves the client build statically and hands every other
+// `start.nodeServer`): serves the client build statically and hands every other
 // request to the built handler in ./server.js. Runtime config is
 // environment-only — PORT (default 3000) and HOST. Listens when run
 // directly; `listener`, `createListener` and `serve` are exported for

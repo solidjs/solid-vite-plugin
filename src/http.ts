@@ -1,6 +1,6 @@
 // Node <-> web-standard request/response bridging shared by the plugin's dev
 // and preview middlewares (server functions and SSR) and by the Node server
-// entry `start.node` emits into users' builds (src/node-entry). The virtual
+// entry `start.nodeServer` emits into users' builds (src/node-entry). The virtual
 // production handlers speak web Request/Response only; this is the node:http
 // glue that talks to them. Keep it free of vite and plugin imports — it is
 // bundled verbatim into dist/server/node.js.

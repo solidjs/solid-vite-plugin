@@ -150,7 +150,7 @@
 //     (SANITIZE_FILE_NAME=custom) or from a later plugin's `outputOptions`
 //     hook (SANITIZE_FILE_NAME=plugin), and `sanitizeFileName: false`
 //     (SANITIZE_FILE_NAME=off) is left alone (#391),
-//   - `start.node` (node mode, START_NODE=1): the build emits a ready-to-run
+//   - `start.nodeServer` (node mode, START_NODE_SERVER=1): the build emits a ready-to-run
 //     Node server entry, dist/server/node.js, beside server.js — statics
 //     (immutable assets, must-revalidate otherwise, HEAD, no traversal),
 //     everything else through handleRequest with `nativeEvent`, PORT/HOST,
@@ -5692,7 +5692,7 @@ async function runDetectMode() {
   }
 }
 
-// `start.node` (node mode, START_NODE=1 in vite.config.ts): the build emits a
+// `start.nodeServer` (node mode, START_NODE_SERVER=1 in vite.config.ts): the build emits a
 // ready-to-run Node server, dist/server/node.js, beside server.js — the
 // generic node<->web bridge the templates used to ship as a hand-written
 // server.js, now produced by the build so fixes reach every app. Asserts:
@@ -5771,17 +5771,17 @@ async function runNodeMode() {
   try {
     // ---- Gating: no option, no entry; the server bundle is untouched -----
     rmSync(distDir, { recursive: true, force: true });
-    console.log('  building (without start.node)…');
+    console.log('  building (without start.nodeServer)…');
     execSync('pnpm run build', { cwd: exampleDir, stdio: 'pipe', env });
-    record(mode, 'gate', 'no start.node: no dist/server/node.js', !existsSync(nodeJs));
+    record(mode, 'gate', 'no start.nodeServer: no dist/server/node.js', !existsSync(nodeJs));
     const serverWithout = readFileSync(serverJs, 'utf-8');
 
     rmSync(distDir, { recursive: true, force: true });
-    console.log('  building (with start.node)…');
+    console.log('  building (with start.nodeServer)…');
     execSync('pnpm run build', {
       cwd: exampleDir,
       stdio: 'pipe',
-      env: { ...env, START_NODE: '1' },
+      env: { ...env, START_NODE_SERVER: '1' },
     });
     record(mode, 'build', 'dist/server/node.js emitted beside server.js', existsSync(nodeJs));
     // The things that legitimately differ between two builds are the
@@ -5800,7 +5800,7 @@ async function runNodeMode() {
     record(
       mode,
       'build',
-      'server.js byte-identical with and without start.node (modulo the per-build secret)',
+      'server.js byte-identical with and without start.nodeServer (modulo the per-build secret)',
       withoutSecret(serverWithout) === withoutSecret(serverWith) &&
         serverWithout.length === serverWith.length,
       `${serverWithout.length} vs ${serverWith.length} bytes`,
@@ -6279,11 +6279,11 @@ async function runNodeMode() {
 
     // ---- start.serverSetup: node:http loads after the server setup module (#418) -------
     rmSync(distDir, { recursive: true, force: true });
-    console.log('  building (with start.node and start.serverSetup)…');
+    console.log('  building (with start.nodeServer and start.serverSetup)…');
     execSync('pnpm run build', {
       cwd: exampleDir,
       stdio: 'pipe',
-      env: { ...env, START_NODE: '1', SSR_SERVER_SETUP: '1' },
+      env: { ...env, START_NODE_SERVER: '1', SSR_SERVER_SETUP: '1' },
     });
     const serverSetupSource = existsSync(nodeJs) ? readFileSync(nodeJs, 'utf-8') : '';
     record(
@@ -6382,12 +6382,12 @@ async function runNodeMode() {
       });
       await builder.buildApp();
     };
-    console.log('  building (cloudflare-shaped, without start.node)…');
+    console.log('  building (cloudflare-shaped, without start.nodeServer)…');
     await cloudflareShaped({});
     record(
       mode,
       'cf',
-      'cloudflare-shaped build without start.node emits no node.js',
+      'cloudflare-shaped build without start.nodeServer emits no node.js',
       !existsSync(nodeJs),
     );
     const cfHandler = await import(pathToFileURL(serverJs).href + `?cf=${Date.now()}`);
@@ -6399,13 +6399,13 @@ async function runNodeMode() {
       cfResponse.status === 200 && (await cfResponse.text()).includes('SSR Start Mode'),
       `status ${cfResponse.status}`,
     );
-    console.log('  building (cloudflare-shaped, with start.node)…');
-    await cloudflareShaped({ node: true });
+    console.log('  building (cloudflare-shaped, with start.nodeServer)…');
+    await cloudflareShaped({ nodeServer: true });
     const cfNodeSource = existsSync(nodeJs) ? readFileSync(nodeJs, 'utf-8') : '';
     record(
       mode,
       'cf',
-      'cloudflare-shaped build with start.node emits node.js pointing at the client dir',
+      'cloudflare-shaped build with start.nodeServer emits node.js pointing at the client dir',
       cfNodeSource.includes('"clientDir":"../client"') &&
         cfNodeSource.includes("from './server.js'"),
       cfNodeSource.match(/^const SOLID_NODE_CONFIG = .*$/m)?.[0] ?? 'no node.js',
