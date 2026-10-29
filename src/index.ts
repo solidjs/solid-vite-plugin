@@ -645,7 +645,7 @@ export interface Options {
    * `serverFunctions: { devMiddleware: false }` — see
    * {@link ServerFunctionsOptions.devMiddleware}. A server-only module can
    * be pinned into the handler graph for pre-dispatch runtime registration
-   * via {@link ServerFunctionsOptions.configure}.
+   * via {@link ServerFunctionsOptions.serverSetup}.
    *
    * Meta-frameworks that need to control plugin ordering themselves (e.g.
    * relative to a file-system router) and dispatch requests through their

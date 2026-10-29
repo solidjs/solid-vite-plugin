@@ -32,8 +32,8 @@
 //   - the `start.document` escape hatch swaps the document shell and the
 //     `serverFunctions.endpoint` option threads through middleware and
 //     runtime configure calls (separate dev servers, no browser),
-//   - `serverFunctions.configure` pins src/serverConfig.ts into the handler
-//     graph: its `transformResult` hook is live on a cold dev dispatch
+//   - `serverFunctions.serverSetup` pins src/server-functions-setup.ts into
+//     the handler graph: its `transformResult` hook is live on a cold dev dispatch
 //     (before anything rendered), an edit to it hot-applies without a
 //     restart, and in prod the module is bundled into the handler chunk
 //     (and absent from client assets) with the same observable effect,
@@ -173,7 +173,7 @@
 //
 // Requires the plugin built (pnpm build at the repo root) and Google Chrome.
 // Usage: node test/run.mjs
-// [dev|prod|document|css-filter|entries|endpoint|configure|no-middleware|middleware|preview|render-mode|nonce|base|builder-order|builder-prepare|extra-input|file-names|babel-hmr|frames|external|observe|perf-tracks|detect|vitest|node|client-setup]
+// [dev|prod|document|css-filter|entries|endpoint|server-functions-setup|no-middleware|middleware|preview|render-mode|nonce|base|builder-order|builder-prepare|extra-input|file-names|babel-hmr|frames|external|observe|perf-tracks|detect|vitest|node|client-setup]
 // (default: all)
 
 import { spawn, execSync, execFileSync } from 'node:child_process';
@@ -2171,27 +2171,28 @@ async function runEndpointMode() {
   }
 }
 
-// `serverFunctions.configure`: SERVER_FN_CONFIGURE=1 pins src/serverConfig.ts
-// into the `virtual:solid-server-function-handler` graph. Its
-// `transformResult` hook rewrites the configureProbe result and stamps a
+// `serverFunctions.serverSetup`: SERVER_FN_SERVER_SETUP=1 pins
+// src/server-functions-setup.ts into the
+// `virtual:solid-server-function-handler` graph. Its
+// `transformResult` hook rewrites the serverSetupProbe result and stamps a
 // response header — both observable over plain HTTP, so no browser needed.
 // Asserted where it matters:
 // - dev, cold: the very first request to the server is the dispatch itself
 //   (nothing has rendered in the SSR environment), so the hook being live
 //   proves the module rides the handler graph — immune to the dev-restart
 //   race where app-graph registration only loads with the first render,
-// - dev, HMR: an edit to the configure module must invalidate the handler
+// - dev, HMR: an edit to the serverSetup module must invalidate the handler
 //   (the import edge) so the next dispatch sees the new config, no restart,
 // - prod: the module is bundled into the handler chunk (marker in the server
 //   bundle, absent from client assets) and the same dispatch observes it.
-async function runConfigureMode() {
-  const mode = 'configure';
+async function runServerFunctionsSetupMode() {
+  const mode = 'server-functions-setup';
   console.log(`\n=== ${mode.toUpperCase()} ===`);
   const port = 3168;
   const origin = `http://localhost:${port}`;
-  const env = { ...process.env, SERVER_FN_CONFIGURE: '1' };
-  const configFile = path.join(exampleDir, 'src/serverConfig.ts');
-  const originalConfigSource = readFileSync(configFile, 'utf-8');
+  const env = { ...process.env, SERVER_FN_SERVER_SETUP: '1' };
+  const setupFile = path.join(exampleDir, 'src/server-functions-setup.ts');
+  const originalSetupSource = readFileSync(setupFile, 'utf-8');
 
   let server;
   let serverLog = '';
@@ -2206,7 +2207,7 @@ async function runConfigureMode() {
     );
     return {
       status: res.status,
-      header: res.headers.get('x-configure-module'),
+      header: res.headers.get('x-server-functions-setup'),
       body: await res.text(),
     };
   };
@@ -2220,38 +2221,38 @@ async function runConfigureMode() {
     captureLog(server);
     await waitForHttp(origin + '/src/api.ts', 30000);
     const clientModule = await (await fetch(origin + '/src/api.ts')).text();
-    functionId = extractFunctionId(clientModule, 'configureProbe');
+    functionId = extractFunctionId(clientModule, 'serverSetupProbe');
     const cold = functionId ? await dispatch(functionId) : null;
     record(
       mode,
       'dev',
-      'configure hook live on cold dispatch (value transformed)',
-      cold?.body.includes('configure-probe+transformed'),
+      'serverSetup hook live on cold dispatch (value transformed)',
+      cold?.body.includes('server-setup-probe+transformed'),
       functionId ? JSON.stringify(cold) : 'could not extract function id',
     );
     record(
       mode,
       'dev',
-      'configure hook header stamped',
-      cold?.header === 'configure-v1',
+      'serverSetup hook header stamped',
+      cold?.header === 'server-setup-v1',
       JSON.stringify(cold),
     );
 
-    writeFileSync(configFile, originalConfigSource.replace(/configure-v1/g, 'configure-v2'));
+    writeFileSync(setupFile, originalSetupSource.replace(/server-setup-v1/g, 'server-setup-v2'));
     let hot = cold;
     const deadline = Date.now() + 15000;
-    while (functionId && Date.now() < deadline && hot?.header !== 'configure-v2') {
+    while (functionId && Date.now() < deadline && hot?.header !== 'server-setup-v2') {
       await new Promise((r) => setTimeout(r, 250));
       hot = await dispatch(functionId);
     }
     record(
       mode,
       'hmr',
-      'configure module edit hot-applies to the handler graph',
-      hot?.header === 'configure-v2',
+      'serverSetup module edit hot-applies to the handler graph',
+      hot?.header === 'server-setup-v2',
       JSON.stringify(hot),
     );
-    writeFileSync(configFile, originalConfigSource);
+    writeFileSync(setupFile, originalSetupSource);
     try {
       process.kill(-server.pid, 'SIGTERM');
     } catch {}
@@ -2264,17 +2265,17 @@ async function runConfigureMode() {
     record(
       mode,
       'build',
-      'configure module bundled into the handler chunk',
-      serverBundle.includes('x-configure-module'),
+      'serverSetup module bundled into the handler chunk',
+      serverBundle.includes('x-server-functions-setup'),
     );
     const assetsDir = path.join(exampleDir, 'dist/client/assets');
     const leaks = readdirSync(assetsDir).filter((f) =>
-      readFileSync(path.join(assetsDir, f), 'utf-8').includes('x-configure-module'),
+      readFileSync(path.join(assetsDir, f), 'utf-8').includes('x-server-functions-setup'),
     );
     record(
       mode,
       'build',
-      'configure module absent from client assets',
+      'serverSetup module absent from client assets',
       leaks.length === 0,
       leaks.join(', '),
     );
@@ -2293,15 +2294,15 @@ async function runConfigureMode() {
     record(
       mode,
       'prod',
-      'configure hook live in the prod handler (value transformed)',
-      prod?.body.includes('configure-probe+transformed'),
+      'serverSetup hook live in the prod handler (value transformed)',
+      prod?.body.includes('server-setup-probe+transformed'),
       JSON.stringify(prod),
     );
     record(
       mode,
       'prod',
-      'configure hook header stamped in prod',
-      prod?.header === 'configure-v1',
+      'serverSetup hook header stamped in prod',
+      prod?.header === 'server-setup-v1',
       JSON.stringify(prod),
     );
   } catch (e) {
@@ -2313,7 +2314,7 @@ async function runConfigureMode() {
       String(e) + (serverLog ? `\nserver: ${serverLog.slice(-2000)}` : ''),
     );
   } finally {
-    writeFileSync(configFile, originalConfigSource);
+    writeFileSync(setupFile, originalSetupSource);
     if (server) {
       try {
         process.kill(-server.pid, 'SIGTERM');
@@ -7370,7 +7371,7 @@ const ALL_MODES = [
   'css-filter',
   'entries',
   'endpoint',
-  'configure',
+  'server-functions-setup',
   'no-middleware',
   'middleware',
   'preview',
@@ -7400,7 +7401,7 @@ for (const mode of modes) {
   else if (mode === 'css-filter') await runCssFilterMode();
   else if (mode === 'entries') await runEntriesMode();
   else if (mode === 'endpoint') await runEndpointMode();
-  else if (mode === 'configure') await runConfigureMode();
+  else if (mode === 'server-functions-setup') await runServerFunctionsSetupMode();
   else if (mode === 'no-middleware') await runNoMiddlewareMode();
   else if (mode === 'middleware') await runMiddlewareMode();
   else if (mode === 'preview') await runPreviewMode();

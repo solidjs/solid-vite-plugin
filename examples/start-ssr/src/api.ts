@@ -52,11 +52,11 @@ export async function nativeAddress() {
   return String(event?.nativeEvent?.socket?.remoteAddress ?? 'no-native-event');
 }
 
-// Probe for the `serverFunctions.configure` e2e: src/serverConfig.ts (when
+// Probe for the `serverFunctions.serverSetup` e2e: src/server-functions-setup.ts (when
 // pinned into the handler graph) rewrites this exact result and stamps a
 // response header — in every other mode the string round-trips untouched.
-export async function configureProbe() {
-  return 'configure-probe';
+export async function serverSetupProbe() {
+  return 'server-setup-probe';
 }
 
 // Containment probe (src/middleware.ts, /mw-direct-throw): called in-process
