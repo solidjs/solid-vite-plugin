@@ -1,6 +1,6 @@
 // Leak-scan fixture (ENV_APP=src/LeakApp.tsx): the literal value of
 // SESSION_SECRET from .env, hand-inlined into client code — no
-// virtual:env/server import anywhere, so only the generateBundle scan can
+// virtual:solid-env/server import anywhere, so only the generateBundle scan can
 // catch it. The scan matches *quoted* string literals of server values in
 // client chunks (the prior-art heuristic — precise, no false positives on
 // substrings), so the fixture keeps the literal in a quoted position

@@ -1,4 +1,4 @@
-import { env } from 'virtual:env/server';
+import { env } from 'virtual:solid-env/server';
 
 // Guard fixture (ENV_APP=src/BadApp.tsx): the app root is part of the
 // client module graph (it hydrates), so this import must fail the client

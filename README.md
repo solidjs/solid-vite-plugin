@@ -846,10 +846,10 @@ The validated values come back through two fully typed virtual modules:
 
 ```ts
 // server-only modules (middleware, "use server" modules, the server entry)
-import { env } from 'virtual:env/server'; // every var
+import { env } from 'virtual:solid-env/server'; // every var
 
 // anywhere
-import { env } from 'virtual:env/client'; // the VITE_-prefixed client vars
+import { env } from 'virtual:solid-env/client'; // the VITE_-prefixed client vars
 ```
 
 - **Validation is node-only and layered.** The plugin loads the `.env*`
@@ -863,9 +863,9 @@ import { env } from 'virtual:env/client'; // the VITE_-prefixed client vars
   `server` failures only warn — a build machine may legitimately not have
   the production secrets — and boot validation enforces them.
 - **Client values are baked, server values are runtime.** That's what the
-  public `VITE_` prefix means: `virtual:env/client` is the validated
+  public `VITE_` prefix means: `virtual:solid-env/client` is the validated
   output serialized as plain JSON (defaults applied, coercions done) with
-  zero schema-library bytes. `virtual:env/server` is not baked — it reads
+  zero schema-library bytes. `virtual:solid-env/server` is not baked: it reads
   `process.env` when the server boots and validates through your own
   schema (imported into the server bundle, where shipping the validator
   is fine). Platform-injected vars that don't exist at build time work,
@@ -879,7 +879,7 @@ import { env } from 'virtual:env/client'; // the VITE_-prefixed client vars
   server key is rejected at config time with the fix in the message
   (`client` keys may stay async; they are awaited at build time where
   the values are baked).
-- **Leaks are errors.** Importing `virtual:env/server` from a client
+- **Leaks are errors.** Importing `virtual:solid-env/server` from a client
   module graph is a hard error naming the importer (the app root and
   everything it imports hydrate — they are client code; keep server env
   in middleware, `"use server"` modules, or an authored server entry).
@@ -897,7 +897,7 @@ carries only the client vars), and in setups without `start` once enabled.
 See `examples/start-env` for the full story, including the failure modes.
 
 Design credit: the shape of this feature — the schema-file convention,
-the `virtual:env/*` module names (kept identical on purpose), baked
+the separate server and client env modules, baked
 client values, the leak scan — follows
 [@vite-env/core](https://github.com/pyyupsk/vite-env) (MIT), the
 design-correct prior art, reimplemented on this plugin's machinery with

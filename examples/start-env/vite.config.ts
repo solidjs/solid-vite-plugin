@@ -10,7 +10,7 @@ import solidPlugin from '@solidjs/vite-plugin';
 // - CLIENT_MODE=1 flips to client start mode (same env layer; the build
 //   output is a static dist/client).
 // - ENV_APP overrides the app root: src/BadApp.tsx imports
-//   virtual:env/server from the client graph (must fail the build with the
+//   virtual:solid-env/server from the client graph (must fail the build with the
 //   server-only error), src/LeakApp.tsx hard-codes the secret's literal
 //   value (must trip the client-chunk leak scan).
 // - ENV_SCHEMA points `env` at a fixture schema (explicit-path option):

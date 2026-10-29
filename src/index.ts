@@ -474,8 +474,8 @@ export interface Options {
    * Typed, validated environment variables. A schema file, conventionally
    * `env.ts` or `env.js` at the project root, default-exports `{ server?,
    * client? }` maps of Standard Schema validators. Validated values are
-   * exposed through `virtual:env/server` (server module graphs only) and
-   * `virtual:env/client` (the `VITE_`-prefixed client side).
+   * exposed through `virtual:solid-env/server` (server module graphs only) and
+   * `virtual:solid-env/client` (the `VITE_`-prefixed client side).
    *
    * Independent of {@link start}: `true` requires the conventional file and
    * a string selects an explicit schema path, in any setup. Left unset,
@@ -3088,7 +3088,7 @@ export default manifest;`;
     ...(tsrxServerFunctionPlugin ? [tsrxServerFunctionPlugin] : []),
   ];
 
-  // Typed env: config-time validation, the virtual:env/{server,client}
+  // Typed env: config-time validation, the virtual:solid-env/{server,client}
   // modules, generated types, and the client-bundle leak scan. An explicit
   // `env` works in any setup; left unset, only start mode probes for the
   // conventional env.ts / env.js.

@@ -6,9 +6,9 @@ import * as v from 'valibot';
 // on purpose (zod for the server side, valibot for the client side) to
 // prove the Standard Schema seam: any compliant library works, per key.
 //
-// `server` vars are exposed through virtual:env/server (server module
+// `server` vars are exposed through virtual:solid-env/server (server module
 // graphs only); `client` vars must be VITE_-prefixed and come through
-// virtual:env/client. ENV_CHECK_PORT proves the *validated output* is what
+// virtual:solid-env/client. ENV_CHECK_PORT proves the *validated output* is what
 // gets baked: no .env entry provides it, so the virtual module must carry
 // the coerced/defaulted number 8080, not a raw string.
 export default {

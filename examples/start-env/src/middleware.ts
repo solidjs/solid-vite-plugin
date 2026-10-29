@@ -1,6 +1,6 @@
-import { env } from 'virtual:env/server';
+import { env } from 'virtual:solid-env/server';
 
-// Middleware is a server-only module, so importing virtual:env/server here
+// Middleware is a server-only module, so importing virtual:solid-env/server here
 // is the intended pattern. The suite reads these headers to prove the
 // server side sees every var — the secret itself never leaves the server
 // (only its length does), and ENV_CHECK_PORT arrives as the schema's

@@ -1,7 +1,7 @@
-import { env } from 'virtual:env/client';
+import { env } from 'virtual:solid-env/client';
 
 // Isomorphic app code (SSR + hydration in ssr mode, client-only in client
-// mode) may import virtual:env/client anywhere — it carries only the
+// mode) may import virtual:solid-env/client anywhere, since it carries only the
 // public VITE_-prefixed values. `env.VITE_APP_NAME` is fully typed as
 // string through the generated solid-env.d.ts.
 export default function App() {

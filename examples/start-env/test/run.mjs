@@ -2,12 +2,12 @@
 // first-party typed environment variables from a root env.ts of Standard
 // Schema validators (zod + valibot mixed per key), with the validator never
 // reaching any bundle:
-//   - dev (ssr mode): the app SSRs with virtual:env/client values, a
-//     server-only middleware reads virtual:env/server (validated output —
+//   - dev (ssr mode): the app SSRs with virtual:solid-env/client values, a
+//     server-only middleware reads virtual:solid-env/server (validated output:
 //     the defaulted/coerced number, not a raw string), the secret never
 //     appears in HTML, solid-env.d.ts is generated, and editing .env
 //     revalidates live (invalid -> error overlay 500, restored -> 200),
-//   - guards: a client-graph import of virtual:env/server fails the build
+//   - guards: a client-graph import of virtual:solid-env/server fails the build
 //     with the server-only error; a hand-inlined secret literal trips the
 //     client-chunk leak scan; a missing SERVER var only warns at build
 //     time (runtime env — deferred to boot) while a missing CLIENT var
@@ -26,7 +26,7 @@
 //     with the middleware headers live,
 //   - client mode: the same env layer on a static build — index.html shell,
 //     no dist/server, no secret anywhere in dist/client, and the app boots
-//     in a browser reading virtual:env/client.
+//     in a browser reading virtual:solid-env/client.
 //
 // Requires the plugin built (pnpm build at the repo root) and Google Chrome.
 //
@@ -285,7 +285,7 @@ async function devMode() {
   try {
     const { status, html, headers } = await fetchPage(origin + '/');
     record('dev', 'ssr', 'responds 200', status === 200);
-    record('dev', 'ssr', 'app SSRs with virtual:env/client value', html.includes('EnvApp') && html.includes('ENV-APP-OK'));
+    record('dev', 'ssr', 'app SSRs with virtual:solid-env/client value', html.includes('EnvApp') && html.includes('ENV-APP-OK'));
     record('dev', 'ssr', 'server secret never in HTML', !html.includes(SECRET));
     checkEnvHeaders('dev', 'ssr', headers);
 
@@ -297,8 +297,8 @@ async function devMode() {
       'dev',
       'types',
       'both virtual modules declared with inferred fields',
-      dts.includes(`declare module 'virtual:env/client'`) &&
-        dts.includes(`declare module 'virtual:env/server'`) &&
+      dts.includes(`declare module 'virtual:solid-env/client'`) &&
+        dts.includes(`declare module 'virtual:solid-env/server'`) &&
         dts.includes('"VITE_APP_NAME"') &&
         dts.includes('"SESSION_SECRET"') &&
         dts.includes(`typeof import("./env")`),
@@ -346,7 +346,7 @@ async function guardsMode() {
     });
 
   let out = await build({ ENV_APP: 'src/BadApp.tsx' }).catch((e) => e.message);
-  record('guards', 'server-only', 'client-graph import of virtual:env/server fails the build', /virtual:env\/server is server-only/.test(out), out.slice(0, 400));
+  record('guards', 'server-only', 'client-graph import of virtual:solid-env/server fails the build', /virtual:solid-env\/server is server-only/.test(out), out.slice(0, 400));
   record('guards', 'server-only', 'error names the importer', /BadApp/.test(out));
 
   out = await build({ ENV_APP: 'src/LeakApp.tsx' }).catch((e) => e.message);
@@ -520,7 +520,7 @@ async function clientMode() {
     record(
       'client',
       'browser',
-      'client-rendered app reads virtual:env/client',
+      'client-rendered app reads virtual:solid-env/client',
       await cdp.waitFor('document.querySelector("#app-name")?.textContent === "EnvApp"'),
     );
     record(
