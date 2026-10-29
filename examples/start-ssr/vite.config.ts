@@ -19,8 +19,9 @@ import solidPlugin from '@solidjs/vite-plugin';
 // Test knobs (all exercised by test/run.mjs):
 // - SSR_DOCUMENT swaps the document shell via the `start.document` escape hatch.
 // - SERVER_FN_ENDPOINT overrides the server-function endpoint.
-// - SERVER_FN_CONFIGURE pins src/serverConfig.ts into the handler graph via
-//   `serverFunctions.configure` (configure mode).
+// - SERVER_FN_SERVER_SETUP pins src/server-functions-setup.ts into the
+//   handler graph via `serverFunctions.serverSetup` (server-functions-setup
+//   mode).
 // - SSR_MIDDLEWARE=1 wires src/middleware.ts through `start.middleware`
 //   (middleware and preview modes): a fetch-style chain fronting every
 //   dispatch path with getRequestEvent() live inside it.
@@ -217,10 +218,10 @@ export default defineConfig({
               // src/server-render-setup.tsx runs between the middleware chain and
               // renderToStream, receiving the event and returning the
               // component to render (the TanStack-style async router seam).
-              ...(process.env.SSR_SERVER_RENDER_SETUP ? { serverRenderSetup: './src/server-render-setup.tsx' } : {}),
-              ...(process.env.SSR_SERVER_SETUP
-                ? { serverSetup: './src/server-setup.ts' }
+              ...(process.env.SSR_SERVER_RENDER_SETUP
+                ? { serverRenderSetup: './src/server-render-setup.tsx' }
                 : {}),
+              ...(process.env.SSR_SERVER_SETUP ? { serverSetup: './src/server-setup.ts' } : {}),
               // SSR_CLIENT_SETUP=1 (client-setup mode): src/client-setup.ts
               // runs in the browser before the generated entry hydrates;
               // src/ClientSetupApp.tsx wraps App to record the order.
@@ -258,7 +259,9 @@ export default defineConfig({
         ? { components: true }
         : {
             ...(process.env.SERVER_FN_ENDPOINT ? { endpoint: process.env.SERVER_FN_ENDPOINT } : {}),
-            ...(process.env.SERVER_FN_CONFIGURE ? { configure: './src/serverConfig.ts' } : {}),
+            ...(process.env.SERVER_FN_SERVER_SETUP
+              ? { serverSetup: './src/server-functions-setup.ts' }
+              : {}),
             ...(process.env.SERVER_FN_DEV_MIDDLEWARE === '0' ? { devMiddleware: false } : {}),
           },
     }),

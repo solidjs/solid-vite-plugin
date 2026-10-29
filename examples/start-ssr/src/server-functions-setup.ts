@@ -1,6 +1,6 @@
 // Server-only runtime configuration, pinned into the
 // `virtual:solid-server-function-handler` graph by
-// `serverFunctions.configure` (see vite.config.ts, SERVER_FN_CONFIGURE).
+// `serverFunctions.serverSetup` (see vite.config.ts, SERVER_FN_SERVER_SETUP).
 // Because the handler graph loads before any dispatch — the dev middleware
 // and the production handler both evaluate it first — whatever registers
 // here is guaranteed to be in place for the very first server-function
@@ -16,9 +16,9 @@ import { respond } from '@solidjs/web';
 
 configureServerFunctionsServer({
   transformResult(_event, result) {
-    if (result === 'configure-probe') {
+    if (result === 'server-setup-probe') {
       return respond(`${result}+transformed`, {
-        headers: { 'x-configure-module': 'configure-v1' },
+        headers: { 'x-server-functions-setup': 'server-setup-v1' },
       });
     }
     return result;

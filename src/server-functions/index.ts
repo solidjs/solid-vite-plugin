@@ -113,7 +113,7 @@ export interface ServerFunctionsOptions {
    * router's single-flight collector:
    *
    * ```ts
-   * // src/server-config.ts
+   * // src/server-functions-setup.ts
    * import { configureServerFunctionsServer } from '@solidjs/web/server-functions/server';
    * configureServerFunctionsServer({ collectFlightData: createFlightDataCollector(router) });
    * ```
@@ -128,7 +128,7 @@ export interface ServerFunctionsOptions {
    *
    * @default undefined
    */
-  configure?: string;
+  serverSetup?: string;
   /**
    * Enable server components (experimental): `"use server"` functions that
    * return a component. Responses for them are served over the
@@ -415,6 +415,12 @@ export function createServerFunctionsPlugins(
     frontendExtensions?: string[];
   } = {},
 ): Plugin[] {
+  if ('configure' in options) {
+    // Renamed before the stable release, without an alias.
+    throw new Error(
+      '[@solidjs/vite-plugin] `serverFunctions.configure` has been renamed to `serverFunctions.serverSetup`.',
+    );
+  }
   const frontendExtensions = internal.frontendExtensions ?? [];
   const withFrontends = (pattern: string) =>
     frontendExtensions.length
@@ -447,9 +453,9 @@ export function createServerFunctionsPlugins(
   // Endpoint with Vite `base` applied; final after configResolved, which
   // runs before every transform/load/middleware that reads it.
   let resolvedEndpoint = endpoint;
-  // Absolute path of the user's `configure` module; resolved (and existence-
-  // checked) in configResolved, before any handler load can read it.
-  let configureModulePath: string | null = null;
+  // Absolute path of the user's `serverSetup` module; resolved (and
+  // existence-checked) in configResolved, before any handler load can read it.
+  let serverSetupModulePath: string | null = null;
 
   const manifest = createManifest();
 
@@ -584,13 +590,13 @@ export function createServerFunctionsPlugins(
       // so the secret is in place for the flash's encode (the form POST)
       // and its decode (the render that follows the redirect) alike.
       deploymentSecretSnippet,
-      // The user's `configure` module comes first: a side-effect import in
+      // The user's `serverSetup` module comes first: a side-effect import in
       // the handler graph, evaluated before any dispatch on both surfaces
       // (dev middleware and prod handler) and bundled into the handler
       // chunk by production builds. Order relative to the configure call
       // below doesn't actually matter — runtime config merges per key —
       // import-first is just the cleaner shape.
-      ...(configureModulePath ? [`import ${JSON.stringify(configureModulePath)};`] : []),
+      ...(serverSetupModulePath ? [`import ${JSON.stringify(serverSetupModulePath)};`] : []),
       ...(includeManifest ? [`import ${JSON.stringify(manifestId)};`] : []),
       `import { handleServerFunctionRequest as handle, configureServerFunctionsServer } from ${JSON.stringify(runtime.server)};`,
       `import { provideRequestEvent } from ${JSON.stringify(STORAGE_SOURCE)};`,
@@ -914,16 +920,16 @@ export function createServerFunctionsPlugins(
         isSsrBuild = !!config.build.ssr;
         outDir = config.build.outDir;
         resolvedEndpoint = joinBase(config.base, endpoint);
-        if (options.configure) {
-          const absolute = path.isAbsolute(options.configure)
-            ? options.configure
-            : path.resolve(root, options.configure);
+        if (options.serverSetup) {
+          const absolute = path.isAbsolute(options.serverSetup)
+            ? options.serverSetup
+            : path.resolve(root, options.serverSetup);
           if (!existsSync(absolute)) {
             throw new Error(
-              `[@solidjs/vite-plugin] serverFunctions.configure does not exist: ${options.configure}`,
+              `[@solidjs/vite-plugin] serverFunctions.serverSetup does not exist: ${options.serverSetup}`,
             );
           }
-          configureModulePath = absolute;
+          serverSetupModulePath = absolute;
         }
         if (isBuild && isSsrBuild) {
           // Classic two-invocation build: pick up the modules the client

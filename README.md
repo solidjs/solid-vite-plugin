@@ -911,7 +911,7 @@ Standard Schema as the only contract (and runtime-read server values).
 Enables `"use server"` server function compilation (experimental). Pass
 `true` for the defaults (runtime from `@solidjs/web/server-functions`,
 endpoint `/_server`) or an options object (`runtime`, `endpoint`, `filter`,
-`directive`, `manifest`, `devMiddleware`, `configure`) to customize.
+`directive`, `manifest`, `devMiddleware`, `serverSetup`) to customize.
 
 The setup is zero-config: in dev a middleware on the Vite server handles the
 endpoint end to end — no server-function code needed in your server entry.
@@ -937,14 +937,17 @@ middleware already stands down automatically; see the `externalServer` option
 under [`start`](#optionsstart) for the whole-server switch and how the
 three options relate.)
 
-**`configure: './src/server-config.ts'`** pins a server-only module (path
-resolved against the Vite root) into the handler graph: the generated
-`virtual:solid-server-function-handler` module side-effect imports it before
-dispatching anything. It's the guaranteed pre-dispatch home for server-side
-runtime registration — e.g. a router's single-flight collector:
+**`serverSetup: './src/server-functions-setup.ts'`** pins a server-only
+module (path resolved against the Vite root) into the handler graph: the
+generated `virtual:solid-server-function-handler` module side-effect imports
+it before dispatching anything. Unlike [`start.serverSetup`](#optionsstart),
+which runs before the whole server graph and needs `start`, it only precedes
+server-function dispatch and works in any setup. It's the guaranteed
+pre-dispatch home for server-side runtime registration, e.g. a router's
+single-flight collector:
 
 ```ts
-// src/server-config.ts
+// src/server-functions-setup.ts
 import { configureServerFunctionsServer } from '@solidjs/web/server-functions/server';
 configureServerFunctionsServer({ collectFlightData: createFlightDataCollector(router) });
 ```
@@ -971,7 +974,7 @@ Set `csrf: false` only when another trusted layer protects the endpoint.
 
 Custom serialization (extra seroval plugins for class instances such as a
 `Money` or an `ObjectId`) is configured the same way, once per side. Set the
-server codec in the `configure` module and the client codec in
+server codec in the `serverSetup` module and the client codec in
 [`start.clientSetup`](#optionsstart), both from one shared options module:
 
 ```ts
@@ -979,7 +982,7 @@ server codec in the `configure` module and the client codec in
 import type { JSONCodecOptions } from '@solidjs/web/serialization';
 export default { plugins: [MoneyPlugin] } satisfies JSONCodecOptions;
 
-// src/server-config.ts (serverFunctions.configure)
+// src/server-functions-setup.ts (serverFunctions.serverSetup)
 import { configureServerFunctionsServer } from '@solidjs/web/server-functions/server';
 import codec from './serialization';
 configureServerFunctionsServer({ codec });
