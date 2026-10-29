@@ -1,5 +1,15 @@
 # Changelog
 
+## 3.0.0-next.53
+
+### Patch Changes
+
+- 2a081c3: Under `vite dev`, a server-function call that arrives before any page has loaded the server handler no longer loads the function's module ahead of `start.serverSetup`. The dev middleware imported the module first and the handler (which runs the server setup module first) second, so the module and everything it imports could load before instrumentation started. It now loads the handler first.
+- 53bb865: With `serverFunctions: { components: true }`, stylesheets that a `'use server'` module reaches (directly or through the components it imports) now reach the production client build, so the SSR document links them. The client compile replaces a server module with references, so its imports never joined the client graph: dev looked right, since its CSS crawl walks the SSR graph, but production rendered server components unstyled (#456). The client build now walks what the module imports and imports those stylesheets from its client module. Script modules on the way are only loaded, never imported, so no server code reaches the client bundle, and compile-time CSS plugins such as StyleX still see them. Builds without `components` are unchanged.
+- 3b0e262: Production builds now stamp server function calls with a build id (solidjs/solid#4215). The client build adds an `X-Server-Function-Build` header to every non-GET call, and the server build configures the runtime with the same id, read from the client build's `.vite/solid-server-functions.json`. A tab still running the previous deploy now gets a 409 (`unknownFunction: true`) for a function whose id survived the deploy, instead of running it with arguments of another shape. The app's own `prepareRequest` hook keeps working: the plugin wraps `configureServerFunctionsClient` so the build's stamp runs first and the app's hook runs after it. Dev is unchanged, a server built without a client build checks nothing, and a custom `runtime` is left alone.
+- 4e64354: Rename `start.setup` to `start.serverRenderSetup` and `start.instrument` to `start.serverSetup`, so the start lifecycle options say where and how often they run: `serverSetup` once before anything else on the server, `middleware` on every request, `serverRenderSetup` before every page render, `clientSetup` once in the browser. The old keys fail at config time with a message naming the replacement.
+- 3236eca: Add a "Migrating from vite-plugin-solid" section to the README, and point the rename banner at it.
+
 ## 3.0.0-next.52
 
 ### Patch Changes
