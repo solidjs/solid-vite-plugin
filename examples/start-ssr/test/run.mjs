@@ -5783,12 +5783,18 @@ async function runNodeMode() {
       env: { ...env, START_NODE: '1' },
     });
     record(mode, 'build', 'dist/server/node.js emitted beside server.js', existsSync(nodeJs));
-    // The one thing that legitimately differs between two builds is the
-    // per-build random deployment secret the server-function handler bakes
-    // in (`globalThis.__SOLID_SECRET__ ??= "<hex>"`); everything else must
-    // be byte-identical — the entry is an emitted asset, not a build input.
+    // The things that legitimately differ between two builds are the
+    // per-build random values the server-function handler bakes in: the
+    // deployment secret (`globalThis.__SOLID_SECRET__ ??= "<hex>"`) and the
+    // build id (`buildId: "<hex>"`), which the client build also stamps on
+    // its calls, so the baked client manifest names client chunks with other
+    // content hashes. Everything else must be byte-identical — the entry is
+    // an emitted asset, not a build input.
     const withoutSecret = (source) =>
-      source.replace(/__SOLID_SECRET__ \?\?= "[0-9a-f]+"/, '__SOLID_SECRET__ ??= "<per-build>"');
+      source
+        .replace(/__SOLID_SECRET__ \?\?= "[0-9a-f]+"/, '__SOLID_SECRET__ ??= "<per-build>"')
+        .replace(/buildId: "[0-9a-f]+"/, 'buildId: "<per-build>"')
+        .replace(/(assets\/[\w.-]+)-[\w-]{8}\.(js|css)/g, '$1-<hash>.$2');
     const serverWith = readFileSync(serverJs, 'utf-8');
     record(
       mode,

@@ -187,6 +187,11 @@ export function normalizeServerFunctionsEndpoint(endpoint?: string): string {
 // Server-only handler: importing it wires the endpoint in one line
 // (registrations via the manifest, request-event scoping, endpoint config).
 const HANDLER_ID = 'virtual:solid-server-function-handler';
+// The client runtime as a production client build sees it: the default
+// runtime with the build-id header installed (see BUILD_HEADER below).
+const CLIENT_RUNTIME_ID = '\0solid:server-functions-client';
+// solidjs/solid#4215. The client runtime never sends it; the build does.
+const BUILD_HEADER = 'X-Server-Function-Build';
 
 // Server functions referenced only from client-side code (e.g. event
 // handlers, which the SSR JSX compile drops) never get imported — or even
@@ -211,22 +216,32 @@ export interface PersistedServerFunctionManifest {
   modules: string[];
   /** Every server function the client build emitted a reference to. */
   functions: Array<{ id: string; name: string; module: string }>;
+  /** The id the client build stamps on its calls, for the server build to check. */
+  buildId?: string;
+}
+
+function readPersistedFile(root: string): string[] | PersistedServerFunctionManifest | undefined {
+  const file = path.resolve(root, 'dist/client', PERSISTED_MANIFEST_PATH);
+  if (!existsSync(file)) return undefined;
+  try {
+    return JSON.parse(readFileSync(file, 'utf-8'));
+  } catch {
+    return undefined;
+  }
 }
 
 function readPersistedManifest(root: string): Set<string> {
-  const file = path.resolve(root, 'dist/client', PERSISTED_MANIFEST_PATH);
-  if (!existsSync(file)) return new Set();
-  try {
-    const parsed: string[] | PersistedServerFunctionManifest = JSON.parse(
-      readFileSync(file, 'utf-8'),
-    );
-    const entries = Array.isArray(parsed) ? parsed : parsed.modules;
-    return new Set(
-      entries.map((entry) => path.resolve(root, entry)).filter((entry) => existsSync(entry)),
-    );
-  } catch {
-    return new Set();
-  }
+  const parsed = readPersistedFile(root);
+  if (!parsed) return new Set();
+  const entries = Array.isArray(parsed) ? parsed : parsed.modules;
+  return new Set(
+    entries.map((entry) => path.resolve(root, entry)).filter((entry) => existsSync(entry)),
+  );
+}
+
+function readPersistedBuildId(root: string): string | undefined {
+  const parsed = readPersistedFile(root);
+  return parsed && !Array.isArray(parsed) ? parsed.buildId : undefined;
 }
 
 function writePersistedManifest(
@@ -234,6 +249,7 @@ function writePersistedManifest(
   outDir: string,
   entries: Set<string>,
   functions: Map<string, FunctionRecord>,
+  buildId: string,
 ): void {
   const file = path.resolve(root, outDir, PERSISTED_MANIFEST_PATH);
   mkdirSync(path.dirname(file), { recursive: true });
@@ -245,6 +261,7 @@ function writePersistedManifest(
       name: record.name,
       module: relative(record.module),
     })),
+    buildId,
   };
   writeFileSync(file, JSON.stringify(manifest, null, 2));
 }
@@ -459,6 +476,42 @@ export function createServerFunctionsPlugins(
   const deploymentSecret = randomBytes(32).toString('hex');
   const deploymentSecretSnippet = `globalThis.__SOLID_SECRET__ ??= ${JSON.stringify(deploymentSecret)};`;
 
+  // THE BUILD ID (solidjs/solid#4215): a tab still running the previous
+  // deploy's client can call a function whose id survived the deploy but
+  // whose arguments or result changed shape. A production client build
+  // stamps every non-GET call with this id, and the server build configures
+  // the runtime with the id the client build persisted, so the server answers
+  // a call from another build with 409 (`unknownFunction: true` on the
+  // client) instead of running it. The server reads the id from the
+  // persisted manifest, not this closure, so the classic two-invocation
+  // build agrees with itself; with no client build there is no id and the
+  // server checks nothing. GET calls stay bare: their identity is the url
+  // (caches, preload matching). Only the default runtime is wrapped: a
+  // custom runtime's configure contract is its own.
+  const buildId = randomBytes(8).toString('hex');
+  const stampsBuild = !options.runtime;
+
+  // The client runtime's `configureServerFunctionsClient` replaces
+  // `prepareRequest` rather than composing it, so the build's hook can't
+  // simply be installed: the app's own hook would drop it. Every client
+  // import of the runtime resolves here instead, where the configure export
+  // is wrapped to run the build's stamp before the app's hook.
+  function clientRuntimeCode(): string {
+    const source = JSON.stringify(runtime.client);
+    return [
+      `import { configureServerFunctionsClient as configure } from ${source};`,
+      `export * from ${source};`,
+      `const stamp = (hook) => (init, context) => {`,
+      `  if (init.method != 'GET') init.headers[${JSON.stringify(BUILD_HEADER)}] = ${JSON.stringify(buildId)};`,
+      `  return hook ? hook(init, context) : init;`,
+      `};`,
+      `configure({ prepareRequest: stamp() });`,
+      `export function configureServerFunctionsClient(config) {`,
+      `  configure(config && config.prepareRequest ? { ...config, prepareRequest: stamp(config.prepareRequest) } : config);`,
+      `}`,
+    ].join('\n');
+  }
+
   const clientOptions: Pick<CompileOptions, 'directive' | 'definitions'> = {
     directive,
     definitions: {
@@ -514,6 +567,7 @@ export function createServerFunctionsPlugins(
   // Builds import it so tree-shaking can't drop registrations for functions
   // only client code references.
   function handlerModuleCode(includeManifest: boolean): string {
+    const serverBuildId = isBuild && stampsBuild ? readPersistedBuildId(root) : undefined;
     // Server components ride the frame-stream wire protocol: the transform
     // serves a function's component result as streamed HTML instead of data.
     // Installing it here (config-level, merged with the other keys) covers
@@ -561,6 +615,8 @@ export function createServerFunctionsPlugins(
       // depend on that: in dev, a mutation from an already-open page can be
       // the first request after a server restart.
       `configureServerFunctionsServer({ provideEvent: provideRequestEvent, endpoint: ${JSON.stringify(resolvedEndpoint)}${
+        serverBuildId ? `, buildId: ${JSON.stringify(serverBuildId)}` : ''
+      }${
         components
           ? ', transformResult: frameTransformResult, transformFlightResult: frameTransformFlightResult, transformDirectResult: frameTransformDirectResult'
           : ''
@@ -620,6 +676,26 @@ export function createServerFunctionsPlugins(
     const relative = path.relative(root, entry).split(path.sep).join('/');
     return relative.startsWith('..') ? '/@fs/' + entry : '/' + relative;
   }
+
+  const clientRuntimePlugin: Plugin = {
+    name: 'solid:server-functions/client-runtime',
+    enforce: 'pre',
+    apply: 'build',
+    resolveId(source, importer, opts) {
+      if (
+        stampsBuild &&
+        source === runtime.client &&
+        importer !== CLIENT_RUNTIME_ID &&
+        getEnvironmentConsumer(this.environment, opts) === 'client'
+      ) {
+        return CLIENT_RUNTIME_ID;
+      }
+      return null;
+    },
+    load(id) {
+      return id === CLIENT_RUNTIME_ID ? clientRuntimeCode() : null;
+    },
+  };
 
   const startPlugins: Plugin[] = [
     {
@@ -872,7 +948,13 @@ export function createServerFunctionsPlugins(
         const consumer = ctx.environment?.config?.consumer;
         const isClient = consumer ? consumer === 'client' : !isSsrBuild;
         if (isBuild && isClient) {
-          writePersistedManifest(root, outDir, manifest.modules.server, manifest.clientFunctions);
+          writePersistedManifest(
+            root,
+            outDir,
+            manifest.modules.server,
+            manifest.clientFunctions,
+            buildId,
+          );
         }
       },
     },
@@ -915,6 +997,7 @@ export function createServerFunctionsPlugins(
         return null;
       },
     },
+    clientRuntimePlugin,
     compilerPlugin,
     ...(internal.tsrxAfterSolid ? [tsrxCompilerPlugin] : []),
     ...startPlugins,
