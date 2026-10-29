@@ -180,8 +180,10 @@ export interface StartOptions {
    *
    * How: the generated handler entry becomes `await import(serverSetup);
    * await import(handler)`. Top-level await sequencing is the only thing in
-   * ESM that guarantees the order, since static imports are hoisted and
-   * evaluated in dependency order regardless of where they are written. The
+   * ESM that guarantees the order: every module in a static graph is loaded
+   * before any of them runs, so a loader hook registered by a first import
+   * comes too late, and an async module does not hold back the imports
+   * after it. The
    * module may be async (top-level `await` is honored) and needs no exports.
    * It runs once per server start; under `vite dev`, again whenever the
    * server environment reloads. The server build must keep code splitting on
