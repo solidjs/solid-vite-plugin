@@ -3,10 +3,10 @@
 // of Standard Schema validators (zod, valibot, arktype — mixable per key),
 // and the plugin exposes the validated values through two virtual modules:
 //
-// - `virtual:env/server` — every var; importable only from server module
-//   graphs (a client-graph import is a hard error naming the importer).
-// - `virtual:env/client` — the `client` side only, whose keys must carry
-//   the public env prefix (`VITE_` unless `envPrefix` says otherwise).
+// - `virtual:solid-env/server`: every var; importable only from server
+//   module graphs (a client-graph import is a hard error naming the importer).
+// - `virtual:solid-env/client`: the `client` side only, whose keys must
+//   carry the public env prefix (`VITE_` unless `envPrefix` says otherwise).
 //
 // Validation runs at config/build time in node only, against Vite's
 // `loadEnv` merge of the `.env*` files with `process.env` winning (CI
@@ -17,7 +17,7 @@
 // Client values are baked into the bundles as validated plain JSON —
 // that's what the public `VITE_` prefix means — so no validator library
 // ever reaches a browser bundle. Server values are NOT baked anywhere:
-// `virtual:env/server` reads `process.env` at module init (server boot)
+// `virtual:solid-env/server` reads `process.env` at module init (server boot)
 // and validates through the user's own schema, which only the server
 // module graph imports. Platform-injected vars that don't exist at build
 // time work, secrets rotate without a rebuild, and no secret value exists
@@ -49,8 +49,13 @@ import { existsSync, readFileSync, writeFileSync } from 'fs';
 import path from 'path';
 import { loadEnv, runnerImport, type Plugin, type ResolvedConfig, type ViteDevServer } from 'vite';
 
-export const CLIENT_ENV_ID = 'virtual:env/client';
-export const SERVER_ENV_ID = 'virtual:env/server';
+export const CLIENT_ENV_ID = 'virtual:solid-env/client';
+export const SERVER_ENV_ID = 'virtual:solid-env/server';
+// The IDs before the stable release; imports of them fail naming the new one.
+const RENAMED_ENV_IDS: Record<string, string> = {
+  'virtual:env/client': CLIENT_ENV_ID,
+  'virtual:env/server': SERVER_ENV_ID,
+};
 const RESOLVED_CLIENT_ENV_ID = '\0' + CLIENT_ENV_ID;
 const RESOLVED_SERVER_ENV_ID = '\0' + SERVER_ENV_ID;
 
@@ -659,6 +664,11 @@ export function envPlugin(option: boolean | string | undefined): Plugin[] {
 
       resolveId(source, importer, options) {
         if (!enabled) return null;
+        if (source in RENAMED_ENV_IDS) {
+          this.error(
+            `[@solidjs/vite-plugin] \`${source}\` has been renamed to \`${RENAMED_ENV_IDS[source]}\`.`,
+          );
+        }
         if (source === CLIENT_ENV_ID) return RESOLVED_CLIENT_ENV_ID;
         if (source === SERVER_ENV_ID) {
           // The dep scanner probes client entries' import graphs without

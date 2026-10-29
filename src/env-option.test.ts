@@ -52,15 +52,19 @@ export default { server: { SESSION_SECRET: required }, client: { VITE_APP_NAME: 
     );
     await writeFile(
       path.join(root, 'server.ts'),
-      `import { env } from 'virtual:env/server';\nexport const secretLength = env.SESSION_SECRET.length;\n`,
+      `import { env } from 'virtual:solid-env/server';\nexport const secretLength = env.SESSION_SECRET.length;\n`,
     );
     await writeFile(
       path.join(root, 'client.ts'),
-      `import { env } from 'virtual:env/client';\nexport const appName = env.VITE_APP_NAME;\n`,
+      `import { env } from 'virtual:solid-env/client';\nexport const appName = env.VITE_APP_NAME;\n`,
+    );
+    await writeFile(
+      path.join(root, 'old-id.ts'),
+      `import { env } from 'virtual:env/server';\nexport const secretLength = env.SESSION_SECRET.length;\n`,
     );
     await writeFile(
       path.join(root, 'leak.ts'),
-      `import { env } from 'virtual:env/server';\nexport const leaked = env.SESSION_SECRET;\n`,
+      `import { env } from 'virtual:solid-env/server';\nexport const leaked = env.SESSION_SECRET;\n`,
     );
   });
 
@@ -88,7 +92,22 @@ export default { server: { SESSION_SECRET: required }, client: { VITE_APP_NAME: 
       const mod = await server.ssrLoadModule('/server.ts');
       expect(mod.secretLength).toBe(SECRET.length);
       await expect(server.environments.client.transformRequest('/leak.ts')).rejects.toThrow(
-        'virtual:env/server is server-only',
+        'virtual:solid-env/server is server-only',
+      );
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('names the new id when code imports a pre-rename one', async () => {
+    const server = await createServer({
+      ...config({ ssr: true, env: true }),
+      appType: 'custom',
+      server: { middlewareMode: true, ws: false },
+    });
+    try {
+      await expect(server.ssrLoadModule('/old-id.ts')).rejects.toThrow(
+        '`virtual:env/server` has been renamed to `virtual:solid-env/server`.',
       );
     } finally {
       await server.close();
