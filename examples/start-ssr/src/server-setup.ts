@@ -9,9 +9,9 @@
 // - it is awaited to COMPLETION: real async work here (a timer) finishes
 //   before the handler graph is even imported, so middleware.ts reads
 //   `done` at its top level and finds it true. A static
-//   `import './server-setup'` would fail this: ESM hoists static imports
-//   and evaluates them in dependency order, so the handler's `@solidjs/web`
-//   import graph would run before this module's body.
+//   `import './server-setup'` would fail this: an async module does not
+//   hold back the imports after it, so the handler's `@solidjs/web` graph
+//   would evaluate while this module's timer is still pending.
 // - it counts evaluations: once per server process (dev and prod), not once
 //   per request.
 // - it records whether node:http was already loaded (node mode asserts not, #418).
