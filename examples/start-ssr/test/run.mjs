@@ -6335,22 +6335,22 @@ async function runNodeMode() {
       process.kill(-server.pid, 'SIGTERM');
     } catch {}
     server = undefined;
-    let bootstrappedMountLog = '';
+    let serverSetupMountLog = '';
     server = startProcess('node', [mountScript], {
       cwd: tmpDir,
       env: { ...env, SSR_SERVER_SETUP: '1' },
     });
-    server.stdout.on('data', (d) => (bootstrappedMountLog += d));
-    server.stderr.on('data', (d) => (bootstrappedMountLog += d));
-    const bootstrappedMounted = await waitForLog(() => bootstrappedMountLog, /MOUNTED=(\d+)/);
+    server.stdout.on('data', (d) => (serverSetupMountLog += d));
+    server.stderr.on('data', (d) => (serverSetupMountLog += d));
+    const serverSetupMounted = await waitForLog(() => serverSetupMountLog, /MOUNTED=(\d+)/);
     record(
       mode,
       'serverSetup',
       'node.js with serverSetup exports createListener, listener and serve without auto-listening',
-      !!bootstrappedMounted &&
-        /EXPORTS=createListener,listener,serve/.test(bootstrappedMountLog) &&
-        !bootstrappedMountLog.includes('Listening on'),
-      bootstrappedMountLog.slice(-300),
+      !!serverSetupMounted &&
+        /EXPORTS=createListener,listener,serve/.test(serverSetupMountLog) &&
+        !serverSetupMountLog.includes('Listening on'),
+      serverSetupMountLog.slice(-300),
     );
     try {
       process.kill(-server.pid, 'SIGTERM');
