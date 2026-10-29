@@ -7,13 +7,15 @@
     "build": "vite build",
     "preview": "vite preview",
     "test": "vitest --browser.headless --run",
-    "test-dev": "vitest"
+    "test-dev": "vitest",
+    "test:jsdom": "NODE_OPTIONS=--import=./tests/deno-conditions.mjs vitest --run --config vitest.jsdom.config.ts --pool=forks"
   },
   "devDependencies": {
     "@solidjs/testing-library": "^0.8.10",
     "@testing-library/jest-dom": "^6.6.3",
     "@testing-library/user-event": "^14.6.1",
     "@vitest/browser": "^3.0.7",
+    "jsdom": "^26.0.0",
     "playwright": "^1.50.1",
     "vite": "^6.2.0",
     "vite-plugin-solid": "workspace:*",
