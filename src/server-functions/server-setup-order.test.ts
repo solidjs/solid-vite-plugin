@@ -45,9 +45,9 @@ afterAll(async () => {
 
 // A server-function call can be the first request the dev server's SSR
 // runner sees (no page has loaded the handler yet). The function's module
-// must still load after the instrument module, like everything else in the
+// must still load after the server setup module, like everything else in the
 // server graph.
-it('loads the instrument module before the function module on a first server-function request', async () => {
+it('loads the server setup module before the function module on a first server-function request', async () => {
   const server = await createServer({
     root,
     configFile: false,
@@ -58,7 +58,7 @@ it('loads the instrument module before the function module on a first server-fun
     optimizeDeps: { noDiscovery: true, include: [] },
     plugins: [
       solidPlugin({
-        start: { instrument: './src/instrument.ts' },
+        start: { serverSetup: './src/instrument.ts' },
         ssr: true,
         serverFunctions: true,
       }),

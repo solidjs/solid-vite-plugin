@@ -687,8 +687,8 @@ export function createServerFunctionsPlugins(
             // middleware chain and one stub-backed request event front the
             // endpoint exactly as they front page SSR.
             // Loaded before the function's module below: with
-            // `start.instrument` the handler is the wrapper that runs the
-            // instrument module first, and a server-function call can be the
+            // `start.serverSetup` the handler is the wrapper that runs the
+            // server setup module first, and a server-function call can be the
             // first request this runner sees, so nothing may load ahead of it.
             const handler = await ssrEnvironment.runner.import(internal.ssrHandler ?? HANDLER_ID);
             // Make sure the referenced module has been evaluated in the SSR
