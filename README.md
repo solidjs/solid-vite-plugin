@@ -1258,8 +1258,8 @@ the build with an error naming the importer (and vice versa for
 module. This turns "server code silently shipped to the browser and crashed
 at runtime" into a build-time error at the exact import edge.
 
-For TypeScript, the ambient declarations ship with the plugin — add to an
-`env.d.ts`:
+For TypeScript, the ambient declarations ship with the plugin (TypeScript 6
+and later reject the bare import without them). Add to an `env.d.ts`:
 
 ```ts
 /// <reference types="@solidjs/vite-plugin/boundary-modules" />

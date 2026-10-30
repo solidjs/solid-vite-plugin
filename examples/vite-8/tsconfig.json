@@ -9,10 +9,11 @@
     "jsx": "preserve",
     "jsxImportSource": "@solidjs/web",
     "types": ["vite/client"],
-    "baseUrl": ".",
     "paths": {
       "@/*": ["./pages/*"],
       "@@/*": ["./assets/*"]
     }
-  }
+  },
+  // vitest.config.ts imports the plugin's unbuilt source, so it stays out.
+  "include": ["src", "tests", "vite.config.ts"]
 }
