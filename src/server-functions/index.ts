@@ -220,18 +220,30 @@ export interface PersistedServerFunctionManifest {
   buildId?: string;
 }
 
-function readPersistedFile(root: string): string[] | PersistedServerFunctionManifest | undefined {
-  const file = path.resolve(root, 'dist/client', PERSISTED_MANIFEST_PATH);
-  if (!existsSync(file)) return undefined;
-  try {
-    return JSON.parse(readFileSync(file, 'utf-8'));
-  } catch {
-    return undefined;
+/**
+ * Reads the client build's file from the first of `clientDirs` that has one
+ * (see `clientOutDirs` in createServerFunctionsPlugins), then the
+ * `dist/client` convention.
+ */
+function readPersistedFile(
+  root: string,
+  clientDirs: (string | null)[],
+): string[] | PersistedServerFunctionManifest | undefined {
+  for (const dir of [...clientDirs, 'dist/client']) {
+    if (!dir) continue;
+    const file = path.resolve(root, dir, PERSISTED_MANIFEST_PATH);
+    if (!existsSync(file)) continue;
+    try {
+      return JSON.parse(readFileSync(file, 'utf-8'));
+    } catch {
+      return undefined;
+    }
   }
+  return undefined;
 }
 
-function readPersistedManifest(root: string): Set<string> {
-  const parsed = readPersistedFile(root);
+function readPersistedManifest(root: string, clientDirs: (string | null)[]): Set<string> {
+  const parsed = readPersistedFile(root, clientDirs);
   if (!parsed) return new Set();
   const entries = Array.isArray(parsed) ? parsed : parsed.modules;
   return new Set(
@@ -239,8 +251,8 @@ function readPersistedManifest(root: string): Set<string> {
   );
 }
 
-function readPersistedBuildId(root: string): string | undefined {
-  const parsed = readPersistedFile(root);
+function readPersistedBuildId(root: string, clientDirs: (string | null)[]): string | undefined {
+  const parsed = readPersistedFile(root, clientDirs);
   return parsed && !Array.isArray(parsed) ? parsed.buildId : undefined;
 }
 
@@ -450,6 +462,14 @@ export function createServerFunctionsPlugins(
   let isBuild = false;
   let isSsrBuild = false;
   let outDir = 'dist';
+  // Where the client build writes the persisted manifest, for the server
+  // build to read it back. Recorded by the client build's writeBundle (the
+  // real output directory: builder mode shares this closure with the server
+  // build), else the client environment's configured outDir; readers fall
+  // back to the `dist/client` convention after both.
+  let writtenClientOutDir: string | null = null;
+  let configuredClientOutDir: string | null = null;
+  const clientOutDirs = () => [writtenClientOutDir, configuredClientOutDir];
   // Endpoint with Vite `base` applied; final after configResolved, which
   // runs before every transform/load/middleware that reads it.
   let resolvedEndpoint = endpoint;
@@ -492,10 +512,11 @@ export function createServerFunctionsPlugins(
   // persisted manifest, not this closure, so the classic two-invocation
   // build agrees with itself; with no client build there is no id and the
   // server checks nothing. GET calls stay bare: their identity is the url
-  // (caches, preload matching). Only the default runtime is wrapped: a
-  // custom runtime's configure contract is its own.
+  // (caches, preload matching). Only the default runtime is wrapped, whether
+  // `runtime` is unset or spells out the default: a custom runtime's
+  // configure contract is its own.
   const buildId = randomBytes(8).toString('hex');
-  const stampsBuild = !options.runtime;
+  const stampsBuild = runtime.server === DEFAULT_RUNTIME && runtime.client === DEFAULT_RUNTIME;
 
   // The client runtime's `configureServerFunctionsClient` replaces
   // `prepareRequest` rather than composing it, so the build's hook can't
@@ -573,7 +594,8 @@ export function createServerFunctionsPlugins(
   // Builds import it so tree-shaking can't drop registrations for functions
   // only client code references.
   function handlerModuleCode(includeManifest: boolean): string {
-    const serverBuildId = isBuild && stampsBuild ? readPersistedBuildId(root) : undefined;
+    const serverBuildId =
+      isBuild && stampsBuild ? readPersistedBuildId(root, clientOutDirs()) : undefined;
     // Server components ride the frame-stream wire protocol: the transform
     // serves a function's component result as streamed HTML instead of data.
     // Installing it here (config-level, merged with the other keys) covers
@@ -919,6 +941,9 @@ export function createServerFunctionsPlugins(
         isBuild = config.command === 'build';
         isSsrBuild = !!config.build.ssr;
         outDir = config.build.outDir;
+        configuredClientOutDir =
+          (config as { environments?: Record<string, { build?: { outDir?: string } }> })
+            .environments?.client?.build?.outDir ?? null;
         resolvedEndpoint = joinBase(config.base, endpoint);
         if (options.serverSetup) {
           const absolute = path.isAbsolute(options.serverSetup)
@@ -935,7 +960,7 @@ export function createServerFunctionsPlugins(
           // Classic two-invocation build: pick up the modules the client
           // build discovered so the server manifest registers them even when
           // the SSR module graph never imports them.
-          for (const entry of readPersistedManifest(root)) {
+          for (const entry of readPersistedManifest(root, clientOutDirs())) {
             manifest.modules.server.add(entry);
           }
         }
@@ -946,7 +971,7 @@ export function createServerFunctionsPlugins(
       watchChange(id, change) {
         if (change.event === 'delete') forgetModule(id);
       },
-      writeBundle() {
+      writeBundle(outputOptions) {
         // Same client-build detection as the main plugin: builder-mode builds
         // run both environments in one process, so prefer the per-environment
         // consumer over the process-wide --ssr flag.
@@ -954,9 +979,12 @@ export function createServerFunctionsPlugins(
         const consumer = ctx.environment?.config?.consumer;
         const isClient = consumer ? consumer === 'client' : !isSsrBuild;
         if (isBuild && isClient) {
+          // The directory this build actually wrote, which a host may have
+          // moved away from the top-level `build.outDir`.
+          writtenClientOutDir = outputOptions.dir ?? outDir;
           writePersistedManifest(
             root,
-            outDir,
+            writtenClientOutDir,
             manifest.modules.server,
             manifest.clientFunctions,
             buildId,
@@ -982,7 +1010,7 @@ export function createServerFunctionsPlugins(
             // `vite build` with the environments API) all environment
             // configs resolve before the client build has written the file,
             // but this load runs once the SSR environment builds — after it.
-            for (const entry of readPersistedManifest(root)) {
+            for (const entry of readPersistedManifest(root, clientOutDirs())) {
               manifest.modules.server.add(entry);
             }
           }
