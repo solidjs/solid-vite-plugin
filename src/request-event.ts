@@ -2,7 +2,7 @@
 // event. The generated handler reads both after the middleware chain ran
 // down to the page render; the generated entries pass the nonce to
 // renderToStream.
-import type { CSPNonce, RequestEvent } from '@solidjs/web';
+import type { CSPNonce, RequestEvent, ResponseStub } from '@solidjs/web';
 
 declare module '@solidjs/web' {
   interface RequestEvent {
@@ -30,6 +30,22 @@ declare module '@solidjs/web' {
 }
 
 /**
+ * The request event in start mode. Every event the generated handler creates
+ * carries `response`, the mutable response head: status and headers written
+ * to it before the head is sent land on the `Response` the handler returns,
+ * whether that is a page, a server-function call or a middleware's own
+ * `Response`. `nativeEvent` is the platform's raw request object when the
+ * server entry passed one (the plugin's dev and preview middlewares and the
+ * emitted `node.js` pass the Node `IncomingMessage`), so narrow it before use.
+ * `@solidjs/web` types `getRequestEvent()` as the base `RequestEvent`, which
+ * has neither field; cast its result to this type in start-mode code.
+ */
+export type StartRequestEvent = RequestEvent & {
+  response: ResponseStub;
+  nativeEvent?: unknown;
+};
+
+/**
  * A `start.middleware` function: receives the request event (the request is
  * `event.request`) and `next`, and returns the `Response`. `next()` takes no
  * arguments — assign `event.request` before calling it to hand a different
@@ -38,6 +54,6 @@ declare module '@solidjs/web' {
  * runs inside it.
  */
 export type StartMiddleware = (
-  event: RequestEvent,
+  event: StartRequestEvent,
   next: () => Promise<Response>,
 ) => Response | Promise<Response>;
