@@ -17,8 +17,10 @@ import {
   type FilterPattern,
   type Plugin,
   type ViteDevServer,
+  withFilter,
 } from 'vite';
 import { getEnvironmentConsumer, isRunnableEnvironment } from '../environment.js';
+import { exactIds } from '../hook-filters.js';
 import { joinBase, parseRequestTarget, sendWebResponse, webRequestFromNode } from '../http.js';
 import { isTsrxModule } from '../tsrx.js';
 import { compile, type CompileOptions } from './compile.js';
@@ -931,7 +933,16 @@ export function createServerFunctionsPlugins(
     },
   };
 
-  return [
+  // A compiler as two plugins: the build one filters on the directive
+  // (src/hook-filters.ts), so Rolldown skips the call for every module
+  // without it. Dev keeps every call, since transformModule forgets a
+  // module whose directive was edited away.
+  const serveAndBuild = (plugin: Plugin): Plugin[] => [
+    { ...plugin, apply: 'serve' },
+    withFilter({ ...plugin, apply: 'build' }, { transform: { code: directive } }),
+  ];
+
+  const plugins: Plugin[] = [
     {
       name: 'solid:server-functions/setup',
       enforce: 'pre',
@@ -1034,8 +1045,27 @@ export function createServerFunctionsPlugins(
       },
     },
     clientRuntimePlugin,
-    compilerPlugin,
-    ...(internal.tsrxAfterSolid ? [tsrxCompilerPlugin] : []),
+    ...serveAndBuild(compilerPlugin),
+    ...(internal.tsrxAfterSolid ? serveAndBuild(tsrxCompilerPlugin) : []),
     ...startPlugins,
   ];
+  // Hook filters (src/hook-filters.ts) for the virtual modules.
+  withFilter(plugins, [
+    {
+      pluginNamePattern: ['solid:server-functions/client-runtime'],
+      resolveId: { id: exactIds(runtime.client) },
+      load: { id: exactIds(CLIENT_RUNTIME_ID) },
+    },
+    {
+      pluginNamePattern: ['solid:server-functions/handler'],
+      resolveId: { id: exactIds(HANDLER_ID) },
+      load: { id: exactIds(HANDLER_ID) },
+    },
+    {
+      pluginNamePattern: ['solid:server-functions/manifest'],
+      resolveId: { id: exactIds(MANIFEST_ID) },
+      load: { id: exactIds(MANIFEST_ID) },
+    },
+  ]);
+  return plugins;
 }

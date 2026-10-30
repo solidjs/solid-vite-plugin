@@ -59,8 +59,10 @@ import {
   type Plugin,
   type PreviewServer,
   type ViteDevServer,
+  withFilter,
 } from 'vite';
 import { getEnvironmentConsumer, isRunnableEnvironment } from '../environment.js';
+import { exactIds } from '../hook-filters.js';
 import {
   DEVTOOLS_MOUNT_ID,
   DEVTOOLS_PACKAGE,
@@ -1700,7 +1702,7 @@ export function startServe(
     return lines.join('\n');
   }
 
-  return [
+  const plugins: Plugin[] = [
     {
       name: 'solid:ssr/setup',
       enforce: 'pre',
@@ -2101,38 +2103,6 @@ export function startServe(
         }
         return null;
       },
-      async transform(code, id, opts) {
-        if (isBuild || (!devtoolsEnabled && !diagnostics && !performanceTracks)) return null;
-        const current = requireEntries();
-        if (current.generated || getEnvironmentConsumer(this.environment, opts) !== 'client') {
-          return null;
-        }
-        // Module ids are always forward-slashed; normalize the path.resolve
-        // side too so the comparison holds on Windows.
-        if (normalizePath(id.split('?')[0]) !== normalizePath(path.resolve(root, current.entryClient))) {
-          return null;
-        }
-        const injected: string[] = [];
-        // First, for the same reason as in the generated entry: enabled
-        // before the authored entry's own imports evaluate.
-        if (performanceTracks) {
-          injected.push(`import ${JSON.stringify(PERFORMANCE_TRACKS_CLIENT_ID)};`);
-        }
-        if (diagnostics) injected.push(`import ${JSON.stringify(DIAGNOSTICS_CLIENT_ID)};`);
-        if (devtoolsEnabled) {
-          const toolbar = await resolveDevtools(
-            (source, importer) => this.resolve(source, importer, { skipSelf: true }),
-            id,
-            'client',
-          );
-          if (toolbar) injected.push(`import ${JSON.stringify(DEVTOOLS_MOUNT_ID)};`);
-        }
-        if (injected.length === 0) return null;
-        return {
-          code: `${injected.join('\n')}\n${code}`,
-          map: null,
-        };
-      },
       configurePreviewServer(server: PreviewServer) {
         // `vite build && vite preview` runs the production artifact as-is:
         // Vite's preview statics serve dist/client (see the config hook) and
@@ -2286,6 +2256,45 @@ export function startServe(
         };
       },
     },
+    {
+      // Dev only: injects the dev surfaces into an authored client entry.
+      // Its own serve plugin, so builds never call it for every module.
+      name: 'solid:ssr/entry-client',
+      enforce: 'pre',
+      apply: 'serve',
+      async transform(code, id, opts) {
+        if (isBuild || (!devtoolsEnabled && !diagnostics && !performanceTracks)) return null;
+        const current = requireEntries();
+        if (current.generated || getEnvironmentConsumer(this.environment, opts) !== 'client') {
+          return null;
+        }
+        // Module ids are always forward-slashed; normalize the path.resolve
+        // side too so the comparison holds on Windows.
+        if (normalizePath(id.split('?')[0]) !== normalizePath(path.resolve(root, current.entryClient))) {
+          return null;
+        }
+        const injected: string[] = [];
+        // First, for the same reason as in the generated entry: enabled
+        // before the authored entry's own imports evaluate.
+        if (performanceTracks) {
+          injected.push(`import ${JSON.stringify(PERFORMANCE_TRACKS_CLIENT_ID)};`);
+        }
+        if (diagnostics) injected.push(`import ${JSON.stringify(DIAGNOSTICS_CLIENT_ID)};`);
+        if (devtoolsEnabled) {
+          const toolbar = await resolveDevtools(
+            (source, importer) => this.resolve(source, importer, { skipSelf: true }),
+            id,
+            'client',
+          );
+          if (toolbar) injected.push(`import ${JSON.stringify(DEVTOOLS_MOUNT_ID)};`);
+        }
+        if (injected.length === 0) return null;
+        return {
+          code: `${injected.join('\n')}\n${code}`,
+          map: null,
+        };
+      },
+    },
     ...(clientMode
       ? [
           {
@@ -2372,4 +2381,34 @@ export function startServe(
         ]
       : []),
   ];
+  // Hook filters (src/hook-filters.ts) for the generated and virtual modules.
+  withFilter(plugins, {
+    pluginNamePattern: ['solid:ssr/setup'],
+    resolveId: {
+      id: exactIds(
+        HANDLER_ID,
+        HANDLER_IMPL_ID,
+        DEV_STYLES_ID,
+        ENTRY_SERVER_ID,
+        ENTRY_CLIENT_ID,
+        DOCUMENT_ID,
+        ERROR_BOUNDARY_ID,
+        DEVTOOLS_MOUNT_ID,
+        DEVTOOLS_PACKAGE,
+      ),
+    },
+    load: {
+      id: exactIds(
+        HANDLER_ID,
+        HANDLER_IMPL_ID,
+        RESOLVED_DEV_STYLES_ID,
+        ENTRY_SERVER_ID,
+        ENTRY_CLIENT_ID,
+        DOCUMENT_ID,
+        ERROR_BOUNDARY_ID,
+        DEVTOOLS_MOUNT_ID,
+      ),
+    },
+  });
+  return plugins;
 }

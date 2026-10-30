@@ -25,7 +25,8 @@
 import fs from 'fs';
 import path from 'path';
 import type { IncomingMessage, ServerResponse } from 'http';
-import type { Plugin } from 'vite';
+import { type Plugin, withFilter } from 'vite';
+import { escapeRegExp, exactIds } from '../hook-filters.js';
 import { joinBase } from '../http.js';
 
 type Protocol = typeof import('@solidjs/diagnostics/protocol');
@@ -153,7 +154,7 @@ export function solidDiagnostics(mode: true | 'auto' = 'auto'): Plugin {
   // only when the app has the package installed.
   let enabled = mode === true;
 
-  return {
+  const plugin: Plugin = {
     name: 'solid:diagnostics',
     // Dev-serve only: the channels this fronts exist in dev builds only.
     // Test mode excluded — vitest (including browser mode) runs a dev
@@ -340,4 +341,12 @@ export function solidDiagnostics(mode: true | 'auto' = 'auto'): Plugin {
       });
     },
   };
+  // Hook filters (src/hook-filters.ts).
+  withFilter(plugin, {
+    resolveId: {
+      id: [exactIds(DIAGNOSTICS_CLIENT_ID), new RegExp(`^${escapeRegExp(DIAGNOSTICS_PACKAGE)}`)],
+    },
+    load: { id: exactIds(DIAGNOSTICS_CLIENT_ID) },
+  });
+  return plugin;
 }

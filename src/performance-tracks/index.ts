@@ -35,7 +35,8 @@
  */
 import fs from 'fs';
 import path from 'path';
-import type { Plugin } from 'vite';
+import { type Plugin, withFilter } from 'vite';
+import { exactIds } from '../hook-filters.js';
 import type { PerformanceTracksOptions } from '@solidjs/web/performance-tracks';
 import { joinBase } from '../http.js';
 
@@ -115,7 +116,7 @@ export function solidPerformanceTracks(options: PerformanceTracksOptions): Plugi
   // the subpath the injected module imports.
   let enabled = false;
 
-  return {
+  const plugin: Plugin = {
     name: 'solid:performance-tracks',
     // Dev-serve only (see the module comment). Test mode excluded for the
     // same reason as the diagnostics surface: vitest runs a dev serve, and
@@ -178,4 +179,10 @@ export function solidPerformanceTracks(options: PerformanceTracksOptions): Plugi
       ];
     },
   };
+  // Hook filters (src/hook-filters.ts).
+  withFilter(plugin, {
+    resolveId: { id: exactIds(PERFORMANCE_TRACKS_CLIENT_ID, PERFORMANCE_TRACKS_PACKAGE) },
+    load: { id: exactIds(PERFORMANCE_TRACKS_CLIENT_ID) },
+  });
+  return plugin;
 }
