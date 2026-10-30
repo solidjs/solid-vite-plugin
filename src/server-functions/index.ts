@@ -474,6 +474,11 @@ export function createServerFunctionsPlugins(
   let writtenClientOutDir: string | null = null;
   let configuredClientOutDir: string | null = null;
   const clientOutDirs = () => [writtenClientOutDir, configuredClientOutDir];
+  // Set once this plugin instance has built the client (an app build in one
+  // process, nitro's included). The server build then uses this build's id
+  // and discoveries from memory: a persisted file can be stale, or live in a
+  // directory the host moved (#511).
+  let builtClient = false;
   // Endpoint with Vite `base` applied; final after configResolved, which
   // runs before every transform/load/middleware that reads it.
   let resolvedEndpoint = endpoint;
@@ -526,9 +531,17 @@ export function createServerFunctionsPlugins(
   // `prepareRequest` rather than composing it, so the build's hook can't
   // simply be installed: the app's own hook would drop it. Every client
   // import of the runtime resolves here instead, where the configure export
-  // is wrapped to run the build's stamp before the app's hook.
-  function clientRuntimeCode(): string {
-    const source = JSON.stringify(runtime.client);
+  // is wrapped to run the build's stamp before the app's hook. That covers
+  // the package root, which compiled references import, and its `/client`
+  // subpath, which apps configure the client through (#511): both are the
+  // same module in the browser.
+  const clientRuntimes = new Map([
+    [runtime.client, CLIENT_RUNTIME_ID],
+    [`${runtime.client}/client`, `${CLIENT_RUNTIME_ID}/client`],
+  ]);
+  const clientRuntimeIds = new Set(clientRuntimes.values());
+  function clientRuntimeCode(specifier: string): string {
+    const source = JSON.stringify(specifier);
     return [
       `import { configureServerFunctionsClient as configure } from ${source};`,
       `export * from ${source};`,
@@ -599,7 +612,11 @@ export function createServerFunctionsPlugins(
   // only client code references.
   function handlerModuleCode(includeManifest: boolean): string {
     const serverBuildId =
-      isBuild && stampsBuild ? readPersistedBuildId(root, clientOutDirs()) : undefined;
+      isBuild && stampsBuild
+        ? builtClient
+          ? buildId
+          : readPersistedBuildId(root, clientOutDirs())
+        : undefined;
     // Server components ride the frame-stream wire protocol: the transform
     // serves a function's component result as streamed HTML instead of data.
     // Installing it here (config-level, merged with the other keys) covers
@@ -714,18 +731,22 @@ export function createServerFunctionsPlugins(
     enforce: 'pre',
     apply: 'build',
     resolveId(source, importer, opts) {
+      const id = clientRuntimes.get(source);
       if (
         stampsBuild &&
-        source === runtime.client &&
-        importer !== CLIENT_RUNTIME_ID &&
+        id &&
+        !(importer && clientRuntimeIds.has(importer)) &&
         getEnvironmentConsumer(this.environment, opts) === 'client'
       ) {
-        return CLIENT_RUNTIME_ID;
+        return id;
       }
       return null;
     },
     load(id) {
-      return id === CLIENT_RUNTIME_ID ? clientRuntimeCode() : null;
+      for (const [specifier, runtimeId] of clientRuntimes) {
+        if (id === runtimeId) return clientRuntimeCode(specifier);
+      }
+      return null;
     },
   };
 
@@ -995,6 +1016,7 @@ export function createServerFunctionsPlugins(
           // The directory this build actually wrote, which a host may have
           // moved away from the top-level `build.outDir`.
           writtenClientOutDir = outputOptions.dir ?? outDir;
+          builtClient = true;
           writePersistedManifest(
             root,
             writtenClientOutDir,
@@ -1017,7 +1039,9 @@ export function createServerFunctionsPlugins(
       async load(id, opts) {
         const mode = getEnvironmentConsumer(this.environment, opts);
         if (id === MANIFEST_ID) {
-          if (isBuild && mode === 'server') {
+          // After a client build in this process, its discoveries are
+          // already in memory (see `builtClient`).
+          if (isBuild && mode === 'server' && !builtClient) {
             // Merge the client build's persisted discoveries at load time,
             // not just configResolved: in builder mode (single process,
             // `vite build` with the environments API) all environment
@@ -1053,8 +1077,8 @@ export function createServerFunctionsPlugins(
   withFilter(plugins, [
     {
       pluginNamePattern: ['solid:server-functions/client-runtime'],
-      resolveId: { id: exactIds(runtime.client) },
-      load: { id: exactIds(CLIENT_RUNTIME_ID) },
+      resolveId: { id: exactIds(...clientRuntimes.keys()) },
+      load: { id: exactIds(...clientRuntimeIds) },
     },
     {
       pluginNamePattern: ['solid:server-functions/handler'],
