@@ -6,6 +6,9 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   vitest:
     name: 'Vitest'
@@ -27,6 +30,14 @@ jobs:
       - name: Install project dependencies
         run: pnpm i
 
+      # tests/workspace-root.mjs and tests/node-conditions.mjs import the
+      # built plugin (`vite-plugin-solid` resolves to dist/)
+      - name: Build plugin
+        run: pnpm run build
+
+      - name: Run unit tests
+        run: pnpm run test:unit
+
       - name: Install playwright browser
         working-directory: examples/vite-6
         run: pnpm exec playwright install chromium
@@ -34,3 +45,7 @@ jobs:
       - name: Run tests
         working-directory: examples/vite-6
         run: pnpm run test
+
+      - name: Run jsdom tests
+        working-directory: examples/vite-6
+        run: pnpm run test:jsdom

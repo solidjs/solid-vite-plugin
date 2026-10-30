@@ -3,9 +3,10 @@ import solid from 'babel-preset-solid';
 import { readFileSync } from 'fs';
 import { mergeAndConcat } from 'merge-anything';
 import { createRequire } from 'module';
+import path from 'path';
 import solidRefresh from 'solid-refresh/babel';
-import type { Alias, AliasOptions, FilterPattern, Plugin } from 'vite';
-import { createFilter, version } from 'vite';
+import type { FilterPattern, Plugin } from 'vite';
+import { createFilter, searchForWorkspaceRoot, version } from 'vite';
 import { crawlFrameworkPkgs } from 'vitefu';
 
 const require = createRequire(import.meta.url);
@@ -45,6 +46,11 @@ export interface Options {
   dev?: boolean;
   /**
    * This will force SSR code in the produced files.
+   *
+   * With `true`, client code is hydratable and server code is hydratable SSR
+   * output. With `false`, client code is non-hydratable DOM output, and modules
+   * loaded on the server (for example through `ssrLoadModule` to prerender a
+   * page) get non-hydratable SSR output.
    *
    * @default false
    */
@@ -178,7 +184,18 @@ export interface Options {
 
 function getExtension(filename: string): string {
   const index = filename.lastIndexOf('.');
-  return index < 0 ? '' : filename.substring(index).replace(/\?.+$/, '');
+  return index < 0 ? '' : filename.substring(index);
+}
+
+/**
+ * The path the transform compiles for `id`. This is normally `id` without its
+ * query. Some plugins put the extension after the query instead, such as
+ * unplugin-icons' `~icons/mdi/folder?width=2em.tsx`. Then the full id is used,
+ * as it was before queries were stripped. #206
+ */
+function getTransformPath(id: string, isHandled: (path: string) => boolean): string {
+  const cleanId = id.replace(/\?.*$/, '');
+  return cleanId !== id && !isHandled(cleanId) && isHandled(id) ? id : cleanId;
 }
 function containsSolidField(fields: Record<string, any>) {
   const keys = Object.keys(fields);
@@ -191,19 +208,54 @@ function containsSolidField(fields: Record<string, any>) {
   return false;
 }
 
-function getJestDomExport(setupFiles: string[]) {
-  return setupFiles?.some((path) => /jest-dom/.test(path))
-    ? undefined
-    : ['@testing-library/jest-dom/vitest', '@testing-library/jest-dom/extend-expect'].find(
-        (path) => {
-          try {
-            require.resolve(path);
-            return true;
-          } catch (e) {
-            return false;
-          }
-        },
-      );
+function getJestDomExport(setupFiles: string[], root: string) {
+  if (setupFiles?.some((file) => /jest-dom/.test(file))) return undefined;
+
+  // Resolve from the project root, not from this plugin's own location. With pnpm's
+  // isolated node_modules layout the plugin can reach a jest-dom that only exists as a
+  // transitive dependency (e.g. of Storybook), while Vitest resolves `setupFiles` from the
+  // project root, where it isn't installed, and fails to load it.
+  // https://github.com/solidjs/solid-vite-plugin/issues/231
+  // The bare specifier (not the resolved path) is injected on purpose: `require.resolve` picks
+  // jest-dom's CommonJS entry, which Vitest refuses to load, while Vitest itself resolves the
+  // specifier to the ESM entry.
+  const projectRequire = createRequire(path.join(root, 'package.json'));
+  return ['@testing-library/jest-dom/vitest', '@testing-library/jest-dom/extend-expect'].find(
+    (specifier) => {
+      try {
+        projectRequire.resolve(specifier);
+        return true;
+      } catch (e) {
+        return false;
+      }
+    },
+  );
+}
+
+function readPackageJson(specifier: string, requires: NodeRequire[]) {
+  for (const req of requires) {
+    try {
+      const file = req.resolve(`${specifier}/package.json`);
+      return { dir: path.dirname(file), pkg: JSON.parse(readFileSync(file, 'utf-8')) };
+    } catch (e) {}
+  }
+  return undefined;
+}
+
+/**
+ * Vitest before 1.0 resolves `setupFiles` with `require.resolve`, which picks
+ * jest-dom's CommonJS `vitest` entry. In that file `require('vitest').expect`
+ * is undefined, so it throws "Cannot read properties of undefined (reading
+ * 'extend')". For those versions, return the path of jest-dom's ESM entry. #141
+ */
+function getJestDomVitestEsmPath(root: string): string | undefined {
+  const rootRequire = createRequire(path.join(path.resolve(root), 'package.json'));
+  const vitest = readPackageJson('vitest', [rootRequire, require]);
+  if (!vitest || +String(vitest.pkg.version).split('.')[0] >= 1) return undefined;
+  const jestDom = readPackageJson('@testing-library/jest-dom', [rootRequire, require]);
+  const entry = jestDom?.pkg.exports?.['./vitest']?.import;
+  const file = typeof entry === 'string' ? entry : entry?.default;
+  return typeof file === 'string' ? path.join(jestDom.dir, file) : undefined;
 }
 
 export default function solidPlugin(options: Partial<Options> = {}): Plugin {
@@ -214,6 +266,14 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin {
   let projectRoot = process.cwd();
   let isTestMode = false;
   let solidPkgsConfig: Awaited<ReturnType<typeof crawlFrameworkPkgs>>;
+  // Packages that import solid-js without a `solid` export condition, found
+  // by the crawl in test mode. They are inlined with solid-js (see
+  // `test.server.deps` below).
+  const testRuntimeConsumers = new Set<string>();
+  // True when a DOM test run inlines the Solid runtime. The `ssr`
+  // environment then does not get the `browser` condition (see
+  // `configEnvironment` below).
+  let domTestRuntimeInlined = false;
 
   return {
     name: 'solid',
@@ -224,9 +284,11 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin {
       replaceDev = options.dev === true || (options.dev !== false && command === 'serve');
       projectRoot = userConfig.root;
       isTestMode = userConfig.mode === 'test';
+      domTestRuntimeInlined = false;
 
-      if (!userConfig.resolve) userConfig.resolve = {};
-      userConfig.resolve.alias = normalizeAliases(userConfig.resolve && userConfig.resolve.alias);
+      // Leave the user's `resolve.alias` as it is. Turning an object into an
+      // array changes how Vite merges it with aliases from later plugins:
+      // their entries then take priority over the user's. #130
 
       solidPkgsConfig = await crawlFrameworkPkgs({
         viteUserConfig: userConfig,
@@ -235,12 +297,52 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin {
         isFrameworkPkgByJson(pkgJson) {
           return containsSolidField(pkgJson.exports || {});
         },
+        // Only records the runtime consumers for the jsdom test posture.
+        // Returning false keeps vitefu's output unchanged.
+        isSemiFrameworkPkgByJson(pkgJson) {
+          if (
+            isTestMode &&
+            !options.ssr &&
+            typeof pkgJson.name === 'string' &&
+            (pkgJson.dependencies?.['solid-js'] || pkgJson.peerDependencies?.['solid-js'])
+          ) {
+            testRuntimeConsumers.add(pkgJson.name);
+          }
+          return false;
+        },
       });
 
+      const solidDeps = ['solid-js', 'solid-js/web', 'solid-js/store', 'solid-js/html', 'solid-js/h'];
+
+      // vitefu only reads the dependencies of the package.json at the Vite
+      // root. In a workspace, the project can also import packages that are
+      // only declared in the workspace root's package.json (npm and yarn
+      // hoist them). A framework package found that way was left external,
+      // so Node loaded its raw `.jsx` source and failed with
+      // `Unknown file extension ".jsx"` (#157). Crawl the workspace root too
+      // and inline its framework packages. Only `ssr.noExternal` is merged:
+      // inlining a name that is never imported does nothing, while
+      // `optimizeDeps.include` entries must resolve from the project root.
+      const crawlRoot = path.resolve(projectRoot || process.cwd());
+      const workspaceRoot = searchForWorkspaceRoot(crawlRoot);
+      if (workspaceRoot !== crawlRoot) {
+        const workspacePkgs = await crawlFrameworkPkgs({
+          viteUserConfig: userConfig,
+          root: workspaceRoot,
+          isBuild: command === 'build',
+          isFrameworkPkgByJson(pkgJson) {
+            return containsSolidField(pkgJson.exports || {});
+          },
+        });
+        for (const name of workspacePkgs.ssr.noExternal) {
+          if (!solidPkgsConfig.ssr.noExternal.includes(name)) {
+            solidPkgsConfig.ssr.noExternal.push(name);
+          }
+        }
+      }
+
       // fix for bundling dev in production
-      const nestedDeps = replaceDev
-        ? ['solid-js', 'solid-js/web', 'solid-js/store', 'solid-js/html', 'solid-js/h']
-        : [];
+      const nestedDeps = replaceDev ? solidDeps : [];
 
       const userTest = (userConfig as any).test ?? {};
       const test = {} as any;
@@ -251,8 +353,19 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin {
             ? [userTest.setupFiles]
             : userTest.setupFiles || [];
 
-        if (!userTest.environment && !options.ssr) {
+        if (!userTest.environment && !userTest.workspace && !userTest.projects && !options.ssr) {
           test.environment = 'jsdom';
+        }
+
+        // Vitest 5 defaults `test.sharedViteServer` to true: inline projects
+        // then reuse the root Vite server and take their `test` options from
+        // the raw root block captured before any `config` hook runs, so
+        // nothing injected here (jsdom, jest-dom, server.deps) reaches them.
+        // Vitest reads the option off the resolved root config, so this
+        // restores per-project resolution as under Vitest 4. Older Vitest
+        // versions ignore the option.
+        if (userTest.projects && userTest.sharedViteServer === undefined) {
+          test.sharedViteServer = false;
         }
 
         if (
@@ -260,17 +373,74 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin {
             /solid-js/.test(item.toString()),
           )
         ) {
-          test.server = { deps: { external: [/solid-js/] } };
+          if (options.ssr) {
+            test.server = { deps: { external: [/solid-js/] } };
+          } else if (userTest.server?.deps?.inline !== true) {
+            // An externalized package is imported natively, and its own
+            // imports are resolved by the host runtime, not by Vite. Node
+            // gets the `browser` condition from vitest's worker
+            // `--conditions`, but Deno (in a worker thread) resolves
+            // `deno`/`node` and lands on the server build: `render` from
+            // `@solidjs/testing-library` threw "Client-only API called on the
+            // server side" (#369). Inline solid-js and the packages that
+            // import it, so these imports go through Vite's `browser`
+            // condition and load one client-build instance. A consumer left
+            // external would load a second, native copy. Packages with a
+            // `solid` export condition are inlined already through vitefu.
+            // A user `inline` list is merged with this one; `inline: true`
+            // inlines everything already.
+            test.server = {
+              deps: {
+                inline: [/[\\/]node_modules[\\/]solid-js[\\/]/, ...testRuntimeConsumers],
+              },
+            };
+          }
+          const environment = userTest.environment ?? test.environment;
+          domTestRuntimeInlined =
+            !options.ssr &&
+            !userTest.browser?.enabled &&
+            (environment === 'jsdom' || environment === 'happy-dom');
         }
         if (!userTest.browser?.enabled) {
           // vitest browser mode already has bundled jest-dom assertions
           // https://main.vitest.dev/guide/browser/assertion-api.html#assertion-api
-          const jestDomImport = getJestDomExport(userSetupFiles);
+          const jestDomImport = getJestDomExport(
+            userSetupFiles,
+            path.resolve(projectRoot || process.cwd()),
+          );
           if (jestDomImport) {
-            test.setupFiles = [jestDomImport];
+            test.setupFiles = [
+              (jestDomImport === '@testing-library/jest-dom/vitest' &&
+                getJestDomVitestEsmPath(userConfig.root || process.cwd())) ||
+                jestDomImport,
+            ];
           }
         }
       }
+
+      // Before Vite 6, conditions are set here for every build.
+      const legacyConditions = [
+        'solid',
+        ...(replaceDev ? ['development'] : []),
+        ...(userConfig.mode === 'test' && !options.ssr ? ['browser'] : []),
+      ];
+      // A server build with `ssr.target: 'webworker'` resolves solid-js to its
+      // browser build, so add the `worker` condition, which selects the server
+      // build. #153 Vite 4 and 5 read `ssr.resolve.conditions` instead of
+      // `resolve.conditions` when it is set, so it repeats the top-level list
+      // unless the user set their own. Vite 3 has no such option.
+      const userSsrConditions = (userConfig.ssr as any)?.resolve?.conditions;
+      const legacySsr =
+        userConfig.ssr?.target === 'webworker'
+          ? {
+              ...solidPkgsConfig.ssr,
+              resolve: {
+                conditions: userSsrConditions
+                  ? ['solid', 'worker']
+                  : [...legacyConditions, ...(userConfig.resolve?.conditions ?? []), 'worker'],
+              },
+            }
+          : solidPkgsConfig.ssr;
 
       return {
         /**
@@ -279,29 +449,29 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin {
          */
         // esbuild: { include: /\.ts$/ },
         resolve: {
-          conditions: isVite6OrNewer
-            ? undefined
-            : [
-                'solid',
-                ...(replaceDev ? ['development'] : []),
-                ...(userConfig.mode === 'test' && !options.ssr ? ['browser'] : []),
-              ],
-          dedupe: nestedDeps,
-          alias: [{ find: /^solid-refresh$/, replacement: runtimePublicPath }],
+          conditions: isVite6OrNewer ? undefined : legacyConditions,
+          // Dedupe in builds too. A dependency that ships its own nested
+          // solid-js would otherwise add a second runtime to the bundle. #112
+          dedupe: solidDeps,
         },
         optimizeDeps: {
           include: [...nestedDeps, ...solidPkgsConfig.optimizeDeps.include],
           exclude: solidPkgsConfig.optimizeDeps.exclude,
           // Vite 8+ uses Rolldown for dependency scanning. Rolldown defaults to
           // React's automatic JSX runtime for .tsx files, injecting a
-          // react/jsx-dev-runtime import. Tell it to preserve JSX as-is since
-          // this plugin handles JSX transformation via babel-preset-solid.
+          // react/jsx-dev-runtime import that fails to resolve and aborts the
+          // scan. 'preserve' is no fix: the scanner re-parses the transformed
+          // output as plain JS, so any preserved JSX is a hard parse error
+          // (issue #262). The classic runtime is the only scan-safe lowering:
+          // it emits bare `React.createElement` calls without injecting any
+          // import, and the scan output is never executed — it only exists so
+          // rolldown can walk the import graph.
           ...(isVite8OrNewer
-            ? { rolldownOptions: { transform: { jsx: 'preserve' as const } } }
+            ? { rolldownOptions: { transform: { jsx: { runtime: 'classic' as const } } } }
             : {}),
         },
-        ...(!isVite6OrNewer ? { ssr: solidPkgsConfig.ssr } : {}),
-        ...(test.server ? { test } : {}),
+        ...(!isVite6OrNewer ? { ssr: legacySsr } : {}),
+        ...(Object.keys(test).length ? { test } : {}),
       };
     },
 
@@ -318,10 +488,26 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin {
           config.resolve.conditions = [...defaultServerConditions];
         }
       }
+      // Vitest passes the `ssr` environment's conditions to Node as
+      // `--conditions` for the packages it leaves external. With `browser`
+      // there, Node-only packages fail to load. For example, `msw/node`
+      // imports `@mswjs/interceptors/ClientRequest`, whose `browser`
+      // export is `null` (#125). DOM tests run in the `client` environment,
+      // and the Solid runtime is inlined in that case, so the `ssr`
+      // environment does not need `browser`.
+      const addBrowser =
+        isTestMode &&
+        !opts.isSsrTargetWebworker &&
+        !options.ssr &&
+        !(domTestRuntimeInlined && name === 'ssr');
       config.resolve.conditions = [
         'solid',
+        // A server build with `ssr.target: 'webworker'` starts from Vite's
+        // client conditions, which select the browser build of solid-js. Its
+        // `worker` export points at the server build. #153
+        ...(opts.isSsrTargetWebworker ? ['worker'] : []),
         ...(replaceDev ? ['development'] : []),
-        ...(isTestMode && !opts.isSsrTargetWebworker && !options.ssr ? ['browser'] : []),
+        ...(addBrowser ? ['browser'] : []),
         ...config.resolve.conditions,
       ];
 
@@ -342,11 +528,18 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin {
     },
 
     configResolved(config) {
-      needHmr = config.command === 'serve' && config.mode !== 'production' && options.hot !== false;
+      needHmr =
+        !isTestMode &&
+        config.command === 'serve' &&
+        config.mode !== 'production' &&
+        options.hot !== false;
     },
 
     resolveId(id) {
-      if (id === runtimePublicPath) return id;
+      // `solid-refresh` is the import added by the HMR transform. It is
+      // resolved here rather than through `resolve.alias`, because adding an
+      // alias array would also change how the user's aliases merge. #130
+      if (id === runtimePublicPath || id === 'solid-refresh') return runtimePublicPath;
     },
 
     load(id) {
@@ -357,7 +550,6 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin {
       const isSsr = this.environment
         ? this.environment.config.consumer === 'server'
         : Boolean(transformOptions?.ssr);
-      const currentFileExtension = getExtension(id);
 
       const extensionsToWatch = options.extensions || [];
       const allExtensions = extensionsToWatch.map((extension) =>
@@ -369,7 +561,13 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin {
         return null;
       }
 
-      id = id.replace(/\?.*$/, '');
+      id = getTransformPath(
+        id,
+        (path) => /\.[mc]?[tj]sx$/i.test(path) || allExtensions.includes(getExtension(path)),
+      );
+      // Read the extension from the query-free path, so a dot inside the
+      // query (`a.mdx?x=1.5`) is not taken as the extension.
+      const currentFileExtension = getExtension(id);
 
       if (!(/\.[mc]?[tj]sx$/i.test(id) || allExtensions.includes(currentFileExtension))) {
         return null;
@@ -386,7 +584,15 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin {
           solidOptions = { generate: 'dom', hydratable: true };
         }
       } else {
-        solidOptions = { generate: 'dom', hydratable: false };
+        // A client-rendered app can still load modules on the server, for
+        // example to prerender static pages with `ssrLoadModule`. DOM output
+        // cannot run there, so server transforms use the SSR generate. Nothing
+        // hydrates the result, so it stays non-hydratable. Vitest keeps DOM
+        // output, since tests resolve the browser build of solid-js.
+        solidOptions = {
+          generate: isSsr && !isTestMode ? 'ssr' : 'dom',
+          hydratable: false,
+        };
       }
 
       // We need to know if the current file extension has a typescript options tied to it
@@ -455,16 +661,4 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin {
       return { code, map };
     },
   };
-}
-
-/**
- * This basically normalize all aliases of the config into
- * the array format of the alias.
- *
- * eg: alias: { '@': 'src/' } => [{ find: '@', replacement: 'src/' }]
- */
-function normalizeAliases(alias: AliasOptions = []): Alias[] {
-  return Array.isArray(alias)
-    ? alias
-    : Object.entries(alias).map(([find, replacement]) => ({ find, replacement }));
 }
