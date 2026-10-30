@@ -1,3 +1,4 @@
+import type { ParentProps } from 'solid-js';
 import { HydrationScript } from '@solidjs/web';
 
 // The document shell, shared by both modes (the flip story): it carries
@@ -5,7 +6,7 @@ import { HydrationScript } from '@solidjs/web';
 // the event-capture script from the served/prerendered shell — the suite
 // asserts no _$HY leaks into client-mode HTML while flip-mode hydration
 // still works from this same file.
-export default function Document(props) {
+export default function Document(props: ParentProps) {
   return (
     <html lang="en">
       <head>

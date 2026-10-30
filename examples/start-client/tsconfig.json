@@ -6,6 +6,8 @@
     "jsx": "preserve",
     "jsxImportSource": "@solidjs/web",
     "strict": true,
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
     "skipLibCheck": true,
     "types": ["vite/client"]
   },

@@ -1,3 +1,4 @@
+import type { StartMiddleware } from '@solidjs/vite-plugin';
 import { env } from 'virtual:solid-env/server';
 
 // Middleware is a server-only module, so importing virtual:solid-env/server here
@@ -5,11 +6,13 @@ import { env } from 'virtual:solid-env/server';
 // server side sees every var — the secret itself never leaves the server
 // (only its length does), and ENV_CHECK_PORT arrives as the schema's
 // *validated output* (a defaulted number, not a raw env string).
-export default async function envCheck(_event, next: () => Promise<Response>) {
+const envCheck: StartMiddleware = async (_event, next) => {
   const response = await next();
   response.headers.set('x-env-secret-len', String(env.SESSION_SECRET.length));
   response.headers.set('x-env-port', JSON.stringify(env.ENV_CHECK_PORT));
   response.headers.set('x-env-port-type', typeof env.ENV_CHECK_PORT);
   response.headers.set('x-env-app-name', env.VITE_APP_NAME);
   return response;
-}
+};
+
+export default envCheck;
