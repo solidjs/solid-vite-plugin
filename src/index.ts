@@ -80,6 +80,7 @@ import {
   withFilter,
 } from 'vite';
 import { type AssetUrlOptions, transformAssetUrls } from './asset-urls.js';
+import { createCssModuleClasses } from './css-module-classes.js';
 import { getEnvironmentConsumer, isRunnableEnvironment } from './environment.js';
 import { exactIds, extensionIds } from './hook-filters.js';
 import { crawlFrameworkPkgs } from 'vitefu';
@@ -1575,6 +1576,8 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
   let isSsrBuild = false;
   let base = '/';
   let publicDir = '';
+  // CSS module class names inlined in builds (src/css-module-classes.ts).
+  const cssModuleClasses = createCssModuleClasses();
   let renderBuiltUrl = false;
   let logger: Logger | null = null;
   // Set in configResolved when a worker-targeted server build would carry
@@ -2855,6 +2858,21 @@ export default manifest;`;
         }
       }
 
+      // In builds, CSS module class names in JSX attributes become strings,
+      // which compile into the templates (src/css-module-classes.ts).
+      if (isBuild && !isTsrx && !frontend) {
+        const classes = await cssModuleClasses.inline(
+          this,
+          code,
+          id,
+          shouldBeProcessedWithTypescript,
+        );
+        if (classes) {
+          code = classes.code;
+          maps.push(classes.map);
+        }
+      }
+
       // Authored TSRX (or another front end's source) cannot be parsed by a
       // standalone pass; its primitives are named after Solid lowering, on
       // the generated module, below.
@@ -3174,6 +3192,7 @@ export default manifest;`;
   );
   const plugins: Plugin[] = [
     boundaryModules(),
+    cssModuleClasses.plugin,
     ...serverFunctionPlugins.filter((plugin) => !tsrxServerFunctionPlugins.includes(plugin)),
     mainPlugin,
     ...tsrxServerFunctionPlugins,

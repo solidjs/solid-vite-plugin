@@ -1261,6 +1261,14 @@ takes the base (`/icon.svg` becomes `/app/icon.svg` under `base: '/app/'`),
 and a build with a relative base, such as an Electron app's, imports it so
 it resolves next to the chunk. Other URLs stay as written.
 
+## CSS module classes in JSX
+
+In builds, a CSS module class used directly in a JSX attribute
+(`class={styles.button}`, `` class={`${styles.a} ${styles.b}`} ``, or a
+named import) is inlined as a string, so it compiles into the element's
+template instead of an effect. The stylesheet is kept even when every use
+was inlined. Dev serving leaves the classes as written.
+
 ## `server-only` and `client-only` boundary markers
 
 The plugin always claims the bare specifiers `server-only` and `client-only`
