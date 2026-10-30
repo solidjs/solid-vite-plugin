@@ -1250,6 +1250,50 @@ modules compile with no option. The plugin loads the package's `/vite`
 front end the first time it meets an `.rx` module, so a project without
 `.rx` files never loads it. A `.rx` entry in `frontends` replaces it.
 
+## Deployment contract
+
+Start mode ships no platform adapters. An app deploys through a provider
+Vite plugin (Nitro's `nitro/vite`, `@cloudflare/vite-plugin`, and others) or
+through the Node server `start.nodeServer` emits. From 3.0, providers can
+rely on the following; virtual modules and generated files not documented
+in this README are internal.
+
+1. **Environments.** The app builds as two Vite environments, `client` and
+   `ssr` (consumer `server`).
+2. **Server entry.** The `ssr` environment's build input `index` is the
+   app's handler (`dist/server/server.js` by default). Its default export is
+   `{ fetch(request) }`; its named `handleRequest(request, options)` takes
+   per-call options, such as `event: { nativeEvent }` to hand the platform's
+   raw request to `getRequestEvent()`. It answers pages, `start.middleware`
+   and the server-function endpoint. With `ssr: true`, the `ssr` dev
+   environment has the same `index` input.
+3. **Build order.** The client builds before the server, which embeds the
+   client manifest. The plugin builds the client from its own `buildApp`
+   hook, so a provider that builds from a later one (`order: 'post'`, as
+   Nitro does) may take the environments in any order.
+4. **Output.** Client files go to the `client` environment's `outDir`
+   (default `dist/client`): content-hashed files under `build.assetsDir`,
+   safe to cache forever, and Vite's manifest under `.vite/`, which is not
+   for serving. The server bundle goes to the `ssr` environment's `outDir`.
+   A provider may move either directory; the plugin follows the configured
+   `outDir`.
+5. **Modes.** With `ssr: true`, every request that isn't a static file goes
+   to the handler. In client mode, `dist/client` is a static site with a
+   prerendered `index.html`, the fallback for page navigations. Its server
+   bundle stays when `serverFunctions` needs it for their endpoint
+   (`/_server`, joined with `base`) or when a provider's `buildApp` hook
+   orchestrates the build; a standalone build drops it.
+6. **Dev.** When a provider replaces the `ssr` dev environment with one that
+   can't run in Vite's process (workerd, for example), the plugin's dev
+   middlewares stand down and the provider dispatches requests to `index`;
+   dev CSS reaches that runtime over HTTP from the dev server, with nothing
+   to configure. `start.externalServer` hands over the whole server
+   environment, and `serverFunctions.devMiddleware: false` only the
+   endpoint.
+
+The provider owns the rest: the runtime, serving static files and routing
+other requests to the handler, platform configuration, and bindings.
+
 ## Asset URLs in JSX
 
 Static asset URLs in `src`, `srcset` and `poster` on `<img>`, `<source>` and
