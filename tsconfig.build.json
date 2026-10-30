@@ -1,0 +1,11 @@
+{
+  // The published declarations: src only, so the Cypress test code the root
+  // tsconfig also covers stays out of the package. rootDir keeps the
+  // dist/types/src layout package.json points at.
+  "extends": "./tsconfig.json",
+  "include": ["src"],
+  "compilerOptions": {
+    "rootDir": ".",
+    "emitDeclarationOnly": true
+  }
+}

@@ -26,7 +26,7 @@
     }
   },
   "scripts": {
-    "build": "rollup -c && tsc --emitDeclarationOnly",
+    "build": "rollup -c && tsc --noEmit && tsc -p tsconfig.build.json",
     "dev": "rollup -c -w",
     "prepublishOnly": "pnpm build",
     "release": "pnpm build && changeset publish",
