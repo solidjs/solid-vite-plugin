@@ -19,21 +19,29 @@ declare module "virtual:solid-server-function-manifest" {}
 // provideRequestEvent, and configures the endpoint; mount
 // `handleServerFunctionRequest` on the endpoint in your server.
 declare module "virtual:solid-server-function-handler" {
+  import type { HandleServerFunctionOptions } from "@solidjs/web/server-functions/server";
+
   /** The resolved endpoint path (plugin `endpoint` option joined with Vite `base`). */
   export const endpoint: string;
+  /**
+   * The runtime's handler options (passed through; a custom
+   * `serverFunctions.runtime` can augment `HandleServerFunctionOptions` with
+   * its own), plus `event`.
+   */
+  export type ServerFunctionRequestOptions = HandleServerFunctionOptions & {
+    /**
+     * Extra fields spread into the request event at creation: the public
+     * wrapper-to-event extension seam, same as the SSR handler's
+     * `handleRequest`. Conventionally `nativeEvent` carries the platform's
+     * raw request object (the plugin's dev middleware and a Node server
+     * entry pass the Node `IncomingMessage`); read it back with
+     * `getRequestEvent()`.
+     */
+    event?: Record<string, unknown>;
+  };
   export function handleServerFunctionRequest(
     request: Request,
-    options?: {
-      /**
-       * Extra fields spread into the request event at creation — the public
-       * wrapper→event extension seam, same as the SSR handler's
-       * `handleRequest`. Conventionally `nativeEvent` carries the platform's
-       * raw request object (the plugin's dev middleware and a Node server
-       * entry pass the Node `IncomingMessage`); read it back with
-       * `getRequestEvent()`.
-       */
-      event?: Record<string, unknown>;
-    } & Record<string, unknown>,
+    options?: ServerFunctionRequestOptions,
   ): Promise<Response>;
 }
 
@@ -47,6 +55,7 @@ declare module "virtual:solid-server-function-handler" {
 // server-function endpoint ahead of SSR.
 declare module "virtual:solid-ssr-handler" {
   import type { CSPNonce } from "@solidjs/web";
+  import type { ServerFunctionRequestOptions } from "virtual:solid-server-function-handler";
 
   export function handleRequest(
     request: Request,
@@ -91,7 +100,7 @@ declare module "virtual:solid-ssr-handler" {
        */
       event?: Record<string, unknown>;
       /** Options forwarded to the server-function handler for endpoint requests. */
-      serverFunctions?: Record<string, unknown>;
+      serverFunctions?: ServerFunctionRequestOptions;
     },
   ): Promise<Response>;
 

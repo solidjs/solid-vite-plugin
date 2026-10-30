@@ -111,8 +111,9 @@ export interface StartOptions {
     /**
      * Server entry module. Must export `render(request?, context?)` returning
      * a `renderToStream` result, an HTML string, or a `Response`.
-     * `context.clientEntry` carries the resolved client entry URL.
-     * `context.nonce` is this request's CSP nonce — forward it into `renderToStream`.
+     * `context` (typed `StartServerRenderContext`) carries the resolved
+     * client entry URL as `context.clientEntry` and this request's CSP nonce
+     * as `context.nonce`: forward it into `renderToStream`.
      *
      * Server mode only — ignored in client mode, where the server entry is
      * always generated (it renders the document shell without the app, for
@@ -197,9 +198,10 @@ export interface StartOptions {
    * Path to a server-only module (resolved relative to the Vite root) whose
    * default export runs before every page render in the generated server
    * entry, after the middleware chain has dispatched to the page render and
-   * immediately before `renderToStream`: `(event, App) => Component | void |
-   * Promise<Component | void>`. The seam for routers that must prepare an
-   * app instance per request before SSR begins (create a router bound to the
+   * immediately before `renderToStream`: a `StartServerRenderSetup`,
+   * `(event, App) => Component | void | Promise<Component | void>`. The
+   * seam for routers that must prepare an app instance per request before
+   * SSR begins (create a router bound to the
    * request, `await router.load()`, then render): return a component and the
    * generated entry renders it in the app's place inside the Document;
    * return nothing and `<App />` renders unchanged. `event` is the shared

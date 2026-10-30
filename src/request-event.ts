@@ -3,6 +3,7 @@
 // down to the page render; the generated entries pass the nonce to
 // renderToStream.
 import type { CSPNonce, RequestEvent, ResponseStub } from '@solidjs/web';
+import type { Component } from 'solid-js';
 
 declare module '@solidjs/web' {
   interface RequestEvent {
@@ -57,3 +58,26 @@ export type StartMiddleware = (
   event: StartRequestEvent,
   next: () => Promise<Response>,
 ) => Response | Promise<Response>;
+
+/**
+ * A `start.serverRenderSetup` module's default export: runs before every
+ * page render with the request event (middleware `locals` included) and the
+ * app component. Return a component to render it in the app's place inside
+ * the Document, or nothing to keep `<App />`.
+ */
+export type StartServerRenderSetup = (
+  event: StartRequestEvent,
+  App: Component,
+) => Component | void | Promise<Component | void>;
+
+/**
+ * The `context` an authored server entry's `render(request, context)`
+ * receives: the resolved client entry URL, this request's CSP nonce when
+ * one is set (forward it to `renderToStream`), and any fields the host
+ * passed as `handleRequest`'s `context` option.
+ */
+export type StartServerRenderContext = {
+  clientEntry: string;
+  nonce?: CSPNonce | null;
+  [key: string]: unknown;
+};
