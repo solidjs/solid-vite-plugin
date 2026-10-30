@@ -68,7 +68,7 @@ if (process.env.SSR_SERVER_ERRORS) {
           : error instanceof Response
             ? `Response ${error.status}`
             : isResponseEnvelope(error)
-              ? `ResponseEnvelope ${error.response.status}`
+              ? `ResponseEnvelope ${error.response?.status}`
               : String(error);
       serverErrors.push({ message, kind, handling, event: !!event });
     },

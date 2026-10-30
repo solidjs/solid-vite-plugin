@@ -1,6 +1,7 @@
 import { onSettled } from "solid-js";
 import { CounterProvider, useCounter } from "./CounterContext";
 import { title } from './UnusedLazyImporter';
+// @ts-expect-error TypeScript has no TSRX support yet; the plugin compiles the module.
 import { TsrxCard } from './TsrxCard.tsrx';
 
 function Count() {

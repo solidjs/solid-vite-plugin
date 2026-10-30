@@ -31,3 +31,6 @@ const alreadyLoaded = state.order.length;
 await new Promise((resolve) => setTimeout(resolve, 20));
 state.order.push(`server-setup(before:${alreadyLoaded})`);
 state.done = true;
+
+// A module, not a script: `declare global` and the top-level await above need it.
+export {};

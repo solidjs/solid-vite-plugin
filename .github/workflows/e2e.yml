@@ -31,6 +31,9 @@ jobs:
       - name: Build project
         run: pnpm run build
 
+      - name: Type-check examples
+        run: pnpm run typecheck:examples
+
       - name: Dev manifest startup test
         working-directory: examples/css-matrix
         run: node test/startup.mjs

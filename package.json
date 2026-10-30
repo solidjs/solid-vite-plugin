@@ -37,6 +37,7 @@
     "check": "package-check",
     "test": "node scripts/test-examples.ts",
     "test:unit": "vitest run",
+    "typecheck:examples": "node scripts/typecheck-examples.ts",
     "test:ecosystem": "node scripts/test-ecosystem.mjs"
   },
   "repository": {
