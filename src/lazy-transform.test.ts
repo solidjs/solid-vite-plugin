@@ -27,8 +27,8 @@ beforeAll(async () => {
   );
   await mkdir(path.join(root, 'vendor/node_modules/cjslib'), { recursive: true });
   await writeFile(path.join(root, 'vendor/node_modules/cjslib/index.js'), cjsSource);
-  // A dependency's plain script reaches the pipeline through the
-  // content-filtered `solid:dependency-scripts` hook.
+  // A dependency's plain script must still pass the main transform's hook
+  // filter.
   await mkdir(path.join(root, 'vendor/node_modules/routeslib'), { recursive: true });
   await writeFile(
     path.join(root, 'vendor/node_modules/routeslib/index.js'),

@@ -1398,9 +1398,7 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
   const isLoweredModule = (id: string) => isTsrxModule(id) || !!frontendFor(id);
   const scanExtensions = ['.tsrx', ...frontends.map(([extension]) => extension)];
   // The main transform's hook filter (src/hook-filters.ts): scripts,
-  // `.tsrx`, other front ends' and registered extensions. A dependency's
-  // plain scripts, unless an extension claims them, go through
-  // `dependencyScriptsPlugin` instead.
+  // `.tsrx`, other front ends' and registered extensions.
   const registeredExtensions = (options.extensions || []).map((extension) =>
     typeof extension === 'string' ? extension : extension[0],
   );
@@ -1408,13 +1406,6 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
     /\.[mc]?[jt]sx?(?:$|\?)/i,
     extensionIds([...scanExtensions, ...registeredExtensions]),
   ];
-  const dependencyScriptExtensions = ['.js', '.ts', '.mjs', '.cjs', '.mts', '.cts'].filter(
-    (extension) =>
-      !registeredExtensions.some((registered) => registered.toLowerCase() === extension),
-  );
-  const dependencyScriptIds = dependencyScriptExtensions.length
-    ? new RegExp(`node_modules.*${extensionIds(dependencyScriptExtensions).source}`, 'i')
-    : null;
   const serverComponentsOption =
     typeof options.serverFunctions === 'object' ? options.serverFunctions.components : undefined;
   const serverComponents = !!serverComponentsOption;
@@ -3112,11 +3103,7 @@ export default manifest;`;
     },
   };
 
-  // Hook filters (src/hook-filters.ts). A dependency's plain scripts only
-  // reach the transform's `lazy()` pass, which needs `solid-js` in the code
-  // (or a lazy placeholder), so they take the same transform through
-  // `dependencyScriptsPlugin`, filtered on content.
-  const solidTransform = mainPlugin.transform;
+  // Hook filters (src/hook-filters.ts).
   withFilter(mainPlugin, {
     resolveId: { id: [TSRX_CSS_IDS, exactIds(VIRTUAL_MANIFEST_ID, VIRTUAL_MANIFEST_BRIDGE_ID)] },
     load: {
@@ -3125,24 +3112,8 @@ export default manifest;`;
         exactIds(RESOLVED_VIRTUAL_MANIFEST_ID, RESOLVED_VIRTUAL_MANIFEST_BRIDGE_ID),
       ],
     },
-    transform: {
-      id: {
-        include: solidModuleIds,
-        exclude: [TSRX_CSS_IDS, ...(dependencyScriptIds ? [dependencyScriptIds] : [])],
-      },
-    },
+    transform: { id: { include: solidModuleIds, exclude: TSRX_CSS_IDS } },
   });
-  let dependencyScriptsPlugin: Plugin | null = null;
-  if (dependencyScriptIds) {
-    dependencyScriptsPlugin = {
-      name: 'solid:dependency-scripts',
-      enforce: 'pre',
-      transform: solidTransform,
-    };
-    withFilter(dependencyScriptsPlugin, {
-      transform: { id: dependencyScriptIds, code: ['solid-js', LAZY_PLACEHOLDER_PREFIX] },
-    });
-  }
 
   // Ordinary modules need the directive transform before JSX. Authored TSRX
   // cannot be parsed by that standalone pass, so its companion compiler runs
@@ -3172,7 +3143,6 @@ export default manifest;`;
     boundaryModules(),
     ...serverFunctionPlugins.filter((plugin) => !tsrxServerFunctionPlugins.includes(plugin)),
     mainPlugin,
-    ...(dependencyScriptsPlugin ? [dependencyScriptsPlugin] : []),
     ...tsrxServerFunctionPlugins,
   ];
 
