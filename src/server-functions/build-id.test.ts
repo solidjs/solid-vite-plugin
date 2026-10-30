@@ -103,3 +103,96 @@ describe('server function build id', () => {
     expect(server).toContain(`buildId: ${JSON.stringify(buildId)}`);
   });
 });
+
+describe('server function build id outside the defaults', () => {
+  let root: string;
+
+  beforeAll(async () => {
+    root = await realpath(await mkdtemp(path.join(tmpdir(), 'solid-vite-plugin-build-id-out-')));
+    await symlink(
+      fileURLToPath(new URL('../../node_modules', import.meta.url)),
+      path.join(root, 'node_modules'),
+      'dir',
+    );
+    await mkdir(path.join(root, 'src'));
+    await writeFile(
+      path.join(root, 'src/greet.ts'),
+      '"use server";\nexport async function greet(name: string) {\n  return `hello ${name}`;\n}\n',
+    );
+    await writeFile(
+      path.join(root, 'src/client.ts'),
+      "import { greet } from './greet';\ngreet('a');\n",
+    );
+    await writeFile(
+      path.join(root, 'src/server.ts'),
+      `export { handleServerFunctionRequest } from ${JSON.stringify(HANDLER_ID)};\n`,
+    );
+  });
+
+  afterAll(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+
+  // Builds the client into `clientOutDir`, then the server, and returns the
+  // id the client build persisted with both outputs.
+  async function buildPair(
+    clientOutDir: string,
+    plugins: () => ReturnType<typeof serverFunctions>,
+    serverConfig: Record<string, unknown> = {},
+  ) {
+    const shared = {
+      root,
+      configFile: false as const,
+      cacheDir: path.join(root, '.vite'),
+      logLevel: 'silent' as const,
+    };
+    await rm(path.join(root, 'out'), { recursive: true, force: true });
+    const client = chunkCode(
+      await build({
+        ...shared,
+        plugins: plugins(),
+        build: {
+          outDir: clientOutDir,
+          minify: false,
+          rollupOptions: { input: path.join(root, 'src/client.ts') },
+        },
+      }),
+    );
+    const persisted = JSON.parse(
+      await readFile(path.join(root, clientOutDir, '.vite/solid-server-functions.json'), 'utf-8'),
+    );
+    const server = chunkCode(
+      await build({
+        ...shared,
+        ...serverConfig,
+        plugins: plugins(),
+        build: { outDir: 'out/server', minify: false, ssr: path.join(root, 'src/server.ts') },
+      }),
+    );
+    return { buildId: persisted.buildId as string, client, server };
+  }
+
+  it('reads the id back from a custom client outDir in one process', async () => {
+    const instance = serverFunctions();
+    const { buildId, server } = await buildPair('out/public', () => instance);
+    expect(server).toContain(`buildId: ${JSON.stringify(buildId)}`);
+  }, 60_000);
+
+  it("reads the id back from the client environment's configured outDir", async () => {
+    const { buildId, server } = await buildPair('out/public', () => serverFunctions(), {
+      environments: { client: { build: { outDir: 'out/public' } } },
+    });
+    expect(server).toContain(`buildId: ${JSON.stringify(buildId)}`);
+  }, 60_000);
+
+  it('still stamps when runtime spells out the default', async () => {
+    const runtime = {
+      server: '@solidjs/web/server-functions',
+      client: '@solidjs/web/server-functions',
+    };
+    const instance = serverFunctions({ runtime });
+    const { buildId, client, server } = await buildPair('out/public', () => instance);
+    expect(client).toContain('X-Server-Function-Build');
+    expect(server).toContain(`buildId: ${JSON.stringify(buildId)}`);
+  }, 60_000);
+});
