@@ -62,6 +62,8 @@ beforeAll(async () => {
   server = await createServer({
     root,
     configFile: false,
+    // Own optimizer cache: node_modules is a symlink to the repo's.
+    cacheDir: path.join(root, '.vite'),
     appType: 'custom',
     logLevel: 'silent',
     server: { middlewareMode: true, hmr: false, watch: null },

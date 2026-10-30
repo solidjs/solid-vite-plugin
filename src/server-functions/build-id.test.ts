@@ -58,6 +58,8 @@ describe('server function build id', () => {
     const shared = {
       root,
       configFile: false as const,
+      // Own optimizer cache: node_modules is a symlink to the repo's.
+      cacheDir: path.join(root, '.vite'),
       logLevel: 'silent' as const,
       plugins: [serverFunctions()],
     };
