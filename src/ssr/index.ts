@@ -403,8 +403,7 @@ const NODE_RUNTIME_FILE = 'node-runtime.js';
 // The Node entry's runtime, built by rollup.config.js as a separate artifact
 // of this package (dist/node-entry.mjs) from src/node-entry/index.ts plus
 // the shared bridge in src/http.ts. Located relative to the plugin module
-// itself — both plugin builds (dist/esm/index.mjs, dist/cjs/index.cjs) sit
-// one directory below it.
+// itself: the plugin build (dist/esm/index.mjs) sits one directory below it.
 const NODE_ENTRY_RUNTIME = new URL('../node-entry.mjs', import.meta.url);
 
 /** Emit-time constants the runtime reads off its generated header. */
