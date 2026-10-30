@@ -1250,6 +1250,17 @@ modules compile with no option. The plugin loads the package's `/vite`
 front end the first time it meets an `.rx` module, so a project without
 `.rx` files never loads it. A `.rx` entry in `frontends` replaces it.
 
+## Asset URLs in JSX
+
+Static asset URLs in `src`, `srcset` and `poster` on `<img>`, `<source>` and
+`<video>`, and in `href` / `xlink:href` on SVG `<image>` and `<use>`, are
+resolved like Vite resolves them in HTML. A relative URL
+(`<img src="./logo.png" />`) becomes an import of the asset, so it is
+bundled and its URL follows `base`. A `/` URL naming a file in `publicDir`
+takes the base (`/icon.svg` becomes `/app/icon.svg` under `base: '/app/'`),
+and a build with a relative base, such as an Electron app's, imports it so
+it resolves next to the chunk. Other URLs stay as written.
+
 ## `server-only` and `client-only` boundary markers
 
 The plugin always claims the bare specifiers `server-only` and `client-only`

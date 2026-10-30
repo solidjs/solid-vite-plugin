@@ -35,6 +35,9 @@ importers:
       '@types/babel__core':
         specifier: ^7.20.4
         version: 7.20.5
+      magic-string:
+        specifier: ^0.30.21
+        version: 0.30.21
       merge-anything:
         specifier: ^5.1.7
         version: 5.1.7
