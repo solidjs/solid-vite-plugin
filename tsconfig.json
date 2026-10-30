@@ -16,7 +16,6 @@
     "esModuleInterop": true,
     "allowSyntheticDefaultImports": true,
     "declarationDir": "dist/types",
-    "types":["cypress", "node"],
-    "baseUrl": "."
+    "types":["cypress", "node"]
   }
 }
