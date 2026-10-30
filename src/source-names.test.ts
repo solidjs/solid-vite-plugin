@@ -265,6 +265,8 @@ describe('the plugin under vite dev', () => {
     return createServer({
       root,
       configFile: false,
+      // Own optimizer cache: node_modules is a symlink to the repo's.
+      cacheDir: path.join(root, '.vite'),
       appType: 'custom',
       logLevel: 'silent',
       customLogger: {
