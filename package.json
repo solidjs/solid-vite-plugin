@@ -28,7 +28,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/solidjs/vite-plugin-solid.git"
+    "url": "git+https://github.com/solidjs/solid-vite-plugin.git"
   },
   "keywords": [
     "vite",
@@ -41,9 +41,9 @@
   "author": "Alexandre Mouton-Brady <amoutonbrady@gmail.com>",
   "license": "MIT",
   "bugs": {
-    "url": "https://github.com/solidjs/vite-plugin-solid/issues"
+    "url": "https://github.com/solidjs/solid-vite-plugin/issues"
   },
-  "homepage": "https://github.com/solidjs/vite-plugin-solid#readme",
+  "homepage": "https://github.com/solidjs/solid-vite-plugin#readme",
   "dependencies": {
     "@babel/core": "^7.23.3",
     "@types/babel__core": "^7.20.4",
