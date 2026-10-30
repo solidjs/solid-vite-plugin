@@ -51,14 +51,6 @@ export interface ServerFunctionsOptions {
     server: string;
     client: string;
   };
-  /**
-   * Virtual module id that imports every module containing server functions.
-   * Import it for side effects in your server entry so all registrations
-   * exist before requests are handled.
-   *
-   * @default "virtual:solid-server-function-manifest"
-   */
-  manifest?: string;
   filter?: ServerFunctionsFilter;
   /**
    * @default "use server"
@@ -165,7 +157,7 @@ export interface ServerFunctionsOptions {
 
 const DEFAULT_INCLUDE = 'src/**/*.{jsx,tsx,tsrx,ts,js,mjs,cjs}';
 const DEFAULT_EXCLUDE = 'node_modules/**/*.{jsx,tsx,tsrx,ts,js,mjs,cjs}';
-const DEFAULT_MANIFEST = 'virtual:solid-server-function-manifest';
+const MANIFEST_ID = 'virtual:solid-server-function-manifest';
 const DEFAULT_DIRECTIVE = 'use server';
 const DEFAULT_RUNTIME = '@solidjs/web/server-functions';
 // Must match the runtime's built-in default — when the resolved endpoint
@@ -433,6 +425,12 @@ export function createServerFunctionsPlugins(
       '[@solidjs/vite-plugin] `serverFunctions.configure` has been renamed to `serverFunctions.serverSetup`.',
     );
   }
+  if ('manifest' in options) {
+    // Removed before the stable release, without an alias.
+    throw new Error(
+      `[@solidjs/vite-plugin] \`serverFunctions.manifest\` has been removed: the module id is always \`${MANIFEST_ID}\`.`,
+    );
+  }
   const frontendExtensions = internal.frontendExtensions ?? [];
   const withFrontends = (pattern: string) =>
     frontendExtensions.length
@@ -447,7 +445,6 @@ export function createServerFunctionsPlugins(
   // must resolve against the Vite root, not process.cwd() — running `vite`
   // from outside the project would otherwise silently skip every module.
   let filter = createFilter(filterInclude, filterExclude);
-  const manifestId = options.manifest || DEFAULT_MANIFEST;
   const directive = options.directive || DEFAULT_DIRECTIVE;
   const runtime = options.runtime || { server: DEFAULT_RUNTIME, client: DEFAULT_RUNTIME };
   const endpoint = normalizeServerFunctionsEndpoint(options.endpoint);
@@ -619,7 +616,7 @@ export function createServerFunctionsPlugins(
       // below doesn't actually matter — runtime config merges per key —
       // import-first is just the cleaner shape.
       ...(serverSetupModulePath ? [`import ${JSON.stringify(serverSetupModulePath)};`] : []),
-      ...(includeManifest ? [`import ${JSON.stringify(manifestId)};`] : []),
+      ...(includeManifest ? [`import ${JSON.stringify(MANIFEST_ID)};`] : []),
       `import { handleServerFunctionRequest as handle, configureServerFunctionsServer } from ${JSON.stringify(runtime.server)};`,
       `import { provideRequestEvent } from ${JSON.stringify(STORAGE_SOURCE)};`,
       ...(components
@@ -697,7 +694,7 @@ export function createServerFunctionsPlugins(
     }
     hashIndexSize = -1;
     const result = removeManifestRecord(manifest.modules.server, id);
-    invalidateModules(currentServer, result, manifestId);
+    invalidateModules(currentServer, result, MANIFEST_ID);
   }
 
   function moduleDevUrl(entry: string): string {
@@ -897,7 +894,7 @@ export function createServerFunctionsPlugins(
     invalidateModules(
       currentServer,
       mergeManifestRecord(manifest.modules.server, new Set([id])),
-      manifestId,
+      MANIFEST_ID,
     );
 
     // A client build has no other way to learn a server component's
@@ -996,14 +993,14 @@ export function createServerFunctionsPlugins(
       name: 'solid:server-functions/manifest',
       enforce: 'pre',
       resolveId(source) {
-        if (source === manifestId) {
-          return { id: manifestId, moduleSideEffects: true };
+        if (source === MANIFEST_ID) {
+          return { id: MANIFEST_ID, moduleSideEffects: true };
         }
         return null;
       },
       async load(id, opts) {
         const mode = getEnvironmentConsumer(this.environment, opts);
-        if (id === manifestId) {
+        if (id === MANIFEST_ID) {
           if (isBuild && mode === 'server') {
             // Merge the client build's persisted discoveries at load time,
             // not just configResolved: in builder mode (single process,

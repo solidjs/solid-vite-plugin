@@ -107,10 +107,10 @@ export default defineConfig({
   define: {
     __JSX_COMPILER__: JSON.stringify(jsxCompiler),
   },
-  // test-css-lib is written into node_modules by the css-filter mode; it
+  // test-css-lib is written into node_modules by the css-dev-inline mode; it
   // imports its own CSS, so the SSR environment must transform it (a
   // Node-externalized import of a bare .css file would crash the render).
-  ...(process.env.CSS_FILTER === 'include' || process.env.CSS_FILTER === 'default'
+  ...(process.env.CSS_DEV_INLINE === 'include' || process.env.CSS_DEV_INLINE === 'default'
     ? { ssr: { noExternal: ['test-css-lib'] } }
     : {}),
   // VITEST_PROJECTS=1 (vitest mode): both test postures in ONE workspace —
@@ -193,10 +193,11 @@ export default defineConfig({
           ? { document: process.env.SSR_DOCUMENT }
           : {
               externalServer: !!process.env.SOLID_EXTERNAL,
-              // CSS_FILTER=include|default (css-filter mode) roots the app at
+              // CSS_DEV_INLINE=include|default (css-dev-inline mode) roots the app at
               // the temp src/CssLibApp.tsx; the filter itself is the
               // top-level `css` option below.
-              ...(process.env.CSS_FILTER === 'include' || process.env.CSS_FILTER === 'default'
+              ...(process.env.CSS_DEV_INLINE === 'include' ||
+              process.env.CSS_DEV_INLINE === 'default'
                 ? { app: 'src/CssLibApp.tsx' }
                 : {}),
               // SSR_DEVTOOLS=0 (dev-mode sub-run) opts out of the development
@@ -236,7 +237,7 @@ export default defineConfig({
                 ? { renderMode: process.env.SSR_RENDER_MODE as 'stream' | 'async' }
                 : {}),
             },
-      // CSS_FILTER (css-filter mode) exercises the top-level `css.filter`
+      // CSS_DEV_INLINE (css-dev-inline mode) exercises the top-level `css.devInline`
       // against a temp app (src/CssLibApp.tsx, written by the test) whose
       // graph pulls a temp node_modules package with CSS (test-css-lib, also
       // written by the test):
@@ -248,12 +249,12 @@ export default defineConfig({
       //   (createFilter's exclude-wins rule).
       // - default: no filter — the node_modules graph is pruned by the
       //   default exclusion while app CSS is collected.
-      ...(process.env.CSS_FILTER === 'exclude'
-        ? { css: { filter: { exclude: /App\.tsx$/ } } }
-        : process.env.CSS_FILTER === 'include'
-          ? { css: { filter: { include: /test-css-lib/ } } }
-          : process.env.CSS_FILTER === 'conflict'
-            ? { css: { filter: { include: /App\.tsx$/, exclude: /App\.tsx$/ } } }
+      ...(process.env.CSS_DEV_INLINE === 'exclude'
+        ? { css: { devInline: { exclude: /App\.tsx$/ } } }
+        : process.env.CSS_DEV_INLINE === 'include'
+          ? { css: { devInline: { include: /test-css-lib/ } } }
+          : process.env.CSS_DEV_INLINE === 'conflict'
+            ? { css: { devInline: { include: /App\.tsx$/, exclude: /App\.tsx$/ } } }
             : {}),
       serverFunctions: serverComponents
         ? { components: true }

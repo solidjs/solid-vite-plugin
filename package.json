@@ -8,7 +8,7 @@
   },
   "files": [
     "dist",
-    "virtual-solid-manifest.d.ts",
+    "virtual-modules.d.ts",
     "boundary-modules.d.ts"
   ],
   "main": "dist/esm/index.mjs",
@@ -18,8 +18,8 @@
       "types": "./dist/types/src/index.d.ts",
       "default": "./dist/esm/index.mjs"
     },
-    "./virtual-solid-manifest": {
-      "types": "./virtual-solid-manifest.d.ts"
+    "./virtual-modules": {
+      "types": "./virtual-modules.d.ts"
     },
     "./boundary-modules": {
       "types": "./boundary-modules.d.ts"
