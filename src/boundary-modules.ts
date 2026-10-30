@@ -1,4 +1,5 @@
-import type { Plugin } from 'vite';
+import { type Plugin, withFilter } from 'vite';
+import { exactIds } from './hook-filters.js';
 import { getEnvironmentConsumer } from './environment';
 
 const VIRTUAL_ID = '\0@solidjs/vite-plugin:boundary-modules';
@@ -20,7 +21,7 @@ const VIRTUAL_ID = '\0@solidjs/vite-plugin:boundary-modules';
  * keeps the behavior deterministic and the errors identifiable as ours.
  */
 export function boundaryModules(): Plugin {
-  return {
+  const plugin: Plugin = {
     name: 'solid:boundary-modules',
     enforce: 'pre',
     resolveId(id, importer, options) {
@@ -60,4 +61,10 @@ export function boundaryModules(): Plugin {
       if (id === VIRTUAL_ID) return 'export {}';
     },
   };
+  // Hook filters (src/hook-filters.ts).
+  withFilter(plugin, {
+    resolveId: { id: exactIds('server-only', 'client-only') },
+    load: { id: exactIds(VIRTUAL_ID) },
+  });
+  return plugin;
 }

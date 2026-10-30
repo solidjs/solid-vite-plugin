@@ -1,4 +1,6 @@
 export const TSRX_CSS_QUERY = '?solid-tsrx-css&lang.css';
+// Hook filter for the stylesheet modules (see isTsrxCssModule).
+export const TSRX_CSS_IDS = /[?&]solid-tsrx-css(?:&|$)/;
 const NULL_BYTE_PLACEHOLDER = '/@id/__x00__';
 
 export function cleanModuleId(id: string): string {

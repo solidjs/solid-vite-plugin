@@ -27,6 +27,13 @@ beforeAll(async () => {
   );
   await mkdir(path.join(root, 'vendor/node_modules/cjslib'), { recursive: true });
   await writeFile(path.join(root, 'vendor/node_modules/cjslib/index.js'), cjsSource);
+  // A dependency's plain script reaches the pipeline through the
+  // content-filtered `solid:dependency-scripts` hook.
+  await mkdir(path.join(root, 'vendor/node_modules/routeslib'), { recursive: true });
+  await writeFile(
+    path.join(root, 'vendor/node_modules/routeslib/index.js'),
+    "import { lazy } from 'solid-js';\nexport const Page = lazy(() => import('../../../src/Page'));\n",
+  );
   server = await createServer({
     root,
     configFile: false,
@@ -55,6 +62,13 @@ describe('lazy module URLs in non-JSX modules', () => {
 
   it('still adds the module URL to lazy imported from solid-js', async () => {
     const result = await server.environments.client.transformRequest('/src/routes.ts');
+    expect(result?.code).toContain('"src/Page.tsx"');
+  });
+
+  it("adds the module URL to a dependency's lazy imported from solid-js", async () => {
+    const result = await server.environments.client.transformRequest(
+      '/vendor/node_modules/routeslib/index.js',
+    );
     expect(result?.code).toContain('"src/Page.tsx"');
   });
 });

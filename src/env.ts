@@ -47,7 +47,15 @@
 // user's schema instead of introspected per-library.
 import { existsSync, readFileSync, writeFileSync } from 'fs';
 import path from 'path';
-import { loadEnv, runnerImport, type Plugin, type ResolvedConfig, type ViteDevServer } from 'vite';
+import {
+  loadEnv,
+  runnerImport,
+  type Plugin,
+  type ResolvedConfig,
+  type ViteDevServer,
+  withFilter,
+} from 'vite';
+import { exactIds } from './hook-filters.js';
 
 export const CLIENT_ENV_ID = 'virtual:solid-env/client';
 export const SERVER_ENV_ID = 'virtual:solid-env/server';
@@ -601,7 +609,7 @@ export function envPlugin(option: boolean | string | undefined): Plugin[] {
     };
   }
 
-  return [
+  const plugins: Plugin[] = [
     {
       name: 'solid:env',
 
@@ -814,4 +822,10 @@ export function envPlugin(option: boolean | string | undefined): Plugin[] {
       },
     },
   ];
+  // Hook filters (src/hook-filters.ts).
+  withFilter(plugins, {
+    resolveId: { id: exactIds(CLIENT_ENV_ID, SERVER_ENV_ID, ...Object.keys(RENAMED_ENV_IDS)) },
+    load: { id: exactIds(RESOLVED_CLIENT_ENV_ID, RESOLVED_SERVER_ENV_ID) },
+  });
+  return plugins;
 }
