@@ -9,9 +9,9 @@
 
 A simple integration to run [solid-js](https://github.com/solidjs/solid) with [vite](https://github.com/vitejs/vite)
 
-<img alt="HMR gif demonstrationdemodemodemo" src=".github/hmr.gif">
+<img alt="HMR demonstration" src=".github/hmr.gif">
 
-# Got a question? / Need help?
+## Got a question? / Need help?
 
 Join [solid discord](https://discord.com/invite/solidjs) and check the [troubleshooting section](#troubleshooting) to see if your question hasn't been already answered.
 
@@ -225,18 +225,14 @@ With `start`, the boolean selects the start
 mode: `ssr: true` is SSR start mode, `ssr: false`/omitted is client start
 mode — see below.
 
-Objects are no longer accepted (config-time error): the start-mode options
-that used to live on `ssr: { ... }` moved to `start: { ... }`, with
-`ssr: true` set alongside.
-
 #### options.start
 
 - Type: Boolean | Object
 - Default: undefined
 
-**Start is now a mode of the plugin**: the serving layer that
-replaces SolidStart. The plugin owns entries, dev serving, and the build —
-no entry files, no `index.html`, no dev server script. `start: true` is the
+**Start mode** is the plugin's application layer, in place of SolidStart:
+the plugin owns the entries, dev serving and the build, so there are no
+entry files, no `index.html` and no dev server script. `start: true` is the
 zero-config spelling; add `ssr: true` for streaming SSR:
 
 ```ts
@@ -256,12 +252,13 @@ client-rendered onto a prerendered static shell. Flipping a project between
 SPA and SSR is toggling that one boolean — same `App`, same `Document`,
 same server functions.
 
-The object form carries the options (`start: true` is pure sugar for
-`start: {}` — both mean the identical start mode with defaults, and
-`false`/absent means off): `app`, `document`, `entries`,
-`middleware`, `serverRenderSetup`, `serverSetup`, `clientSetup`, `renderMode`,
-`devtools`, `productionErrorBoundary`,
-`externalServer`, `nodeServer`, all documented below.
+The object form carries the options (`start: true` is sugar for
+`start: {}`, and `false` or absent means off): `app`, `document`,
+`entries`, `middleware`, `serverRenderSetup`, `serverSetup`, `clientSetup`,
+`renderMode`, `devtools`, `productionErrorBoundary`, `externalServer` and
+`nodeServer`, all documented below. Only options that need start mode live
+under `start`; those that also work without it (`ssr`, `serverFunctions`,
+`env`, `css`, `diagnostics`, `performanceTracks`) stay top-level.
 
 Install `@solidjs/start-devtools` as a development dependency to add the
 development toolbar with runtime errors and server function calls:
@@ -1452,11 +1449,11 @@ Install the library and import it. No extra configuration is needed. This also w
 
 If a library ships only compiled code and fails during SSR, ask its author to add a `solid` export condition.
 
-# Troubleshooting
+## Troubleshooting
 
-- It appears that Webstorm generate some weird triggers when saving a file. In order to prevent that you can follow [this thread](https://intellij-support.jetbrains.com/hc/en-us/community/posts/360000154544-I-m-having-a-huge-problem-with-Webstorm-and-react-hot-loader-) and disable the **"Safe Write"** option in **"Settings | Appearance & Behavior | System Settings"**.
+- WebStorm can trigger extra reloads when saving a file. To prevent that, follow [this thread](https://intellij-support.jetbrains.com/hc/en-us/community/posts/360000154544-I-m-having-a-huge-problem-with-Webstorm-and-react-hot-loader-) and disable the **"Safe Write"** option in **"Settings | Appearance & Behavior | System Settings"**.
 
-- If one of your dependency spit out React code instead of Solid that means that they don't expose JSX properly. To get around it, you might want to manually exclude it from the [dependencies optimization](https://vitejs.dev/config/dep-optimization-options.html#optimizedeps-exclude)
+- If a dependency outputs React code instead of Solid, it doesn't expose its JSX source properly. Exclude it from [dependency optimization](https://vitejs.dev/config/dep-optimization-options.html#optimizedeps-exclude) to work around it.
 
 ## Migrating from vite-plugin-solid
 
@@ -1501,15 +1498,7 @@ Everything else is new and opt-in. [`start`](#optionsstart) is the framework lay
 provide), alongside [`serverFunctions`](#optionsserverfunctions), [`env`](#optionsenv) and
 [`css`](#optionscss).
 
-## Migration from v1
-
-The master branch now target vite 2.
-
-The main breaking change from previous version is that the package has been renamed from `@amoutonbrady/vite-plugin-solid` to `vite-plugin-solid` (since renamed again to `@solidjs/vite-plugin` — see the note at the top).
-
-For other breaking changes, check [the migration guide of vite](https://vitejs.dev/guide/migration.html).
-
-# Testing
+## Testing
 
 If you are using [vitest](https://vitest.dev/), this plugin already injects the necessary configuration for you. It even automatically detects if you have `@testing-library/jest-dom` installed in your project and automatically adds it to the `setupFiles`. All you need to add (if you want) is `globals`, `coverage`, and other testing configuration of your choice. If you can live without those, enjoy using vitest without the need to configure it yourself.
 
@@ -1535,7 +1524,7 @@ test: {
 
 The posture is chosen while each project resolves its own Vite config. Vitest 5 lets inline projects reuse the root Vite server instead (`test.sharedViteServer`, on by default), which skips that step, so the plugin sets `sharedViteServer: false` when the root config declares `test.projects` — trading Vitest 5's shared-server optimization for the per-project resolution Vitest 4 always did. Setting the option yourself overrides this; with `true`, every shared project runs with the root config's posture, without the injected `jest-dom` setup file, and without the plugin's `server.deps` handling (the framework inlined in both postures, together with its consumers such as `@solidjs/testing-library` in the client one).
 
-# Credits
+## Credits
 
 - [solid-js](https://github.com/solidjs/solid)
 - [vite](https://github.com/vitejs/vite)
