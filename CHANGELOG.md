@@ -1,5 +1,37 @@
 # Changelog
 
+## 2.11.15
+
+### Patch Changes
+
+- 62e2b75: Production builds now dedupe `solid-js` the same way dev does. A dependency with its own nested copy of `solid-js` no longer adds a second runtime to the bundle, which broke context lookups (#112).
+- a732eeb: Avoid overriding environments configured in Vitest workspaces and projects with the `jsdom` default
+- 9e67618: fix: exclude test mode from HMR setup
+- a7ec25f: Fix `TypeError: Cannot read properties of undefined (reading 'extend')` in tests on Vitest before 1.0 with `@testing-library/jest-dom` 6 or later installed (#141). The plugin now injects jest-dom's ESM `vitest` entry as an absolute path for those Vitest versions, because they load the CommonJS entry from a bare specifier.
+- 6cc30fe: Only inject the `@testing-library/jest-dom` Vitest setup file when the package resolves from the project root. Previously the check ran from the plugin's own location, so with pnpm a transitive jest-dom (for example via Storybook) made Vitest fail with `Failed to load url .../@testing-library/jest-dom/vitest`.
+- d0e47f1: Vitest runs keep the `jsdom` environment and the `@testing-library/jest-dom` setup file when `test.server.deps.external` already lists `solid-js`. The plugin used to drop its whole `test` config in that case.
+- f8439e8: The plugin no longer changes `resolve.alias`. An alias object in your config now keeps priority over aliases that later plugins add, such as `vite-plugin-node-polyfills` mapping `path` (#130).
+- df3ba8a: Compile modules whose id has the extension after the query, such as unplugin-icons' `~icons/mdi/folder?width=2em.tsx`. Since 2.11.2 these were left to Vite's default JSX transform, which produced React code (#206). Custom `extensions` are now also matched when the query contains a dot.
+- b50c064: Keep `$ServerOnly` templates in client transforms while HMR is active so hot updates of components using `$ServerOnly` no longer throw `template is not a function`. An explicit `solid.omitServerOnlyTemplates` setting still takes precedence.
+- cd79ed9: Without `ssr: true`, modules loaded on the server now compile to non-hydratable SSR output instead of DOM output. Prerendering a client-rendered app with `ssrLoadModule` no longer throws "Client-only API called on the server side" (#64). Vitest keeps DOM output.
+- 9c17655: Server builds with `ssr.target: 'webworker'` now resolve the server build of `solid-js`. The plugin adds the `worker` export condition to that build, so `renderToString` and the other server APIs no longer resolve to their browser stubs (#153). This works on Vite 4 and later.
+- 8909380: Vite 8's dependency scan no longer breaks on `.tsx` files (issue #262).
+  The plugin previously set `optimizeDeps.rolldownOptions.transform.jsx:
+'preserve'` to stop Rolldown from injecting `react/jsx-dev-runtime`
+  imports during the scan — but the scanner re-parses the transformed
+  output as plain JS (`import.meta.glob` handling force-tags modules as
+  `js`), so any `.tsx` with JSX was a hard `PARSE_ERROR: Unexpected JSX
+expression` that aborted the whole scan and skipped pre-bundling. The
+  scan transform now uses the classic JSX runtime, which lowers JSX to bare
+  `React.createElement` calls without injecting any import: the scan output
+  is never executed, it only exists so rolldown can walk the import graph,
+  so the undefined identifier is harmless. Backport of the fix already on
+  the 3.0.0-next line.
+- 5d6846c: When the root config declares `test.projects` and leaves `test.sharedViteServer` unset, the plugin now sets it to `false` so every inline project resolves its own Vite config, as under Vitest 4. An explicit value is respected. Vitest 5 defaults the option to `true`, and a shared inline project takes its `test` options from the raw root block captured before any `config` hook runs, so it lost everything the plugin injects (the `jsdom` default, the `@testing-library/jest-dom` setup file, `server.deps`). Ports solidjs/solid-vite-plugin#370; refs #369.
+- 32adc90: In Vitest DOM tests (the jsdom default, no `ssr` option), the plugin now inlines `solid-js` and the packages that import it without a `solid` export condition, such as `@solidjs/testing-library`. Before, they stayed external, and the host runtime resolved their own imports. Node gets the `browser` condition from Vitest's worker `--conditions`, but Deno does not apply it in worker threads and resolves `deno`/`node`. Under Deno, `@solidjs/testing-library` loaded the server build of `solid-js/web` and `render` threw "Client-only API called on the server side" (solidjs/solid-vite-plugin#369). Inlining sends these imports through Vite's `browser` condition and loads one client-build instance. A `test.server.deps.inline` list is merged with the plugin's, and a `test.server.deps.external` entry for `solid-js` still opts out. With `ssr: true`, tests keep `solid-js` external as before.
+- 765a406: In jsdom and happy-dom tests, Node no longer gets the `browser` condition for packages that Vitest leaves external. Node-only packages such as `msw/node` now load under Vitest 4 and later (#125).
+- c750c34: Packages with a `solid` export condition that are declared only in the workspace root's `package.json` are now inlined for projects in that workspace. Before, Vitest loaded them with Node and failed with `Unknown file extension ".jsx"` (#157).
+
 ## 2.11.14
 
 ### Patch Changes
