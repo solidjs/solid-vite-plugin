@@ -13,7 +13,7 @@
 // injects into the handler graph — surfaces it as a marker for the e2e, and
 // clears the cookie so the next render reads "no flash".
 import type { Component } from 'solid-js';
-import type { RequestEvent } from '@solidjs/web';
+import type { StartRequestEvent } from '@solidjs/vite-plugin';
 import {
   clearFlashCookie,
   decodeFlashCookie,
@@ -22,7 +22,7 @@ import {
 
 let invocations = 0;
 
-export default async function serverRenderSetup(event: RequestEvent, App: Component) {
+export default async function serverRenderSetup(event: StartRequestEvent, App: Component) {
   // Simulates the router's pre-render load; must complete before the shell
   // streams, so the marker below always lands in the first chunk.
   await new Promise((resolve) => setTimeout(resolve, 10));
