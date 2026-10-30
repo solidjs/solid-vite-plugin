@@ -1,7 +1,6 @@
-import * as babel from '@babel/core';
+import type * as babel from '@babel/core';
 import type { TransformOptions as JsxCompilerOptions } from '@solidjs/compiler';
 import remapping from '@ampproject/remapping';
-import solid from '@solidjs/babel-plugin';
 import { existsSync, readFileSync, realpathSync } from 'fs';
 import { mergeAndConcat } from 'merge-anything';
 import { createRequire } from 'module';
@@ -85,6 +84,20 @@ import { crawlFrameworkPkgs } from 'vitefu';
  * — the emitting side lives in @solidjs/compiler and must match.
  */
 const LAZY_PLACEHOLDER_PREFIX = '__SOLID_LAZY_MODULE__:';
+
+/**
+ * Babel and @solidjs/babel-plugin load on first use: the default native
+ * compiler never calls them, and importing them up front was about half of
+ * this plugin's own import time.
+ */
+let babelLoad:
+  Promise<{ transformAsync: typeof babel.transformAsync; solid: babel.PluginItem }> | undefined;
+function loadBabel() {
+  babelLoad ??= Promise.all([import('@babel/core'), import('@solidjs/babel-plugin')]).then(
+    ([core, plugin]) => ({ transformAsync: core.transformAsync, solid: plugin.default }),
+  );
+  return babelLoad;
+}
 
 /**
  * The HMR runtime: the dev-only `solid-js/refresh` core entry. Refresh
@@ -1718,6 +1731,7 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
         projectRoot,
       );
       const babelUserOptions = await getBabelUserOptions(options, source, id, false);
+      const { transformAsync, solid } = await loadBabel();
       const babelOptions = mergeAndConcat(babelUserOptions, {
         root: projectRoot,
         // Keep .tsrx: the Babel plugin uses it to select its TSRX parser.
@@ -1733,7 +1747,7 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
         },
         plugins: [[solid, solidOptions]],
       }) as babel.TransformOptions;
-      const result = await babel.transformAsync(source, babelOptions);
+      const result = await transformAsync(source, babelOptions);
       return result ? babelTsrxCss(result) : '';
     }
 
@@ -2867,17 +2881,19 @@ export default manifest;`;
             // This pass sees native-lowered ordinary JavaScript, so do not
             // route it back through Babel's TSRX parser.
             supportOptions.filename = generatedFilename;
-            const supportResult = await babel.transformAsync(code, supportOptions);
+            const { transformAsync } = await loadBabel();
+            const supportResult = await transformAsync(code, supportOptions);
             if (!supportResult) return undefined;
             code = supportResult.code || '';
             maps.push(supportResult.map);
           }
         } else {
+          const { transformAsync, solid } = await loadBabel();
           const babelOptions = mergeAndConcat(babelUserOptions, {
             ...babelBaseOptions,
             plugins: [[solid, solidOptions]],
           }) as babel.TransformOptions;
-          const result = await babel.transformAsync(code, babelOptions);
+          const result = await transformAsync(code, babelOptions);
           if (!result) return undefined;
           code = result.code || '';
           css = babelTsrxCss(result);
@@ -3006,7 +3022,8 @@ export default manifest;`;
             babelUserOptions,
             babelBaseOptions,
           ) as babel.TransformOptions;
-          const supportResult = await babel.transformAsync(code, supportOptions);
+          const { transformAsync } = await loadBabel();
+          const supportResult = await transformAsync(code, supportOptions);
           if (!supportResult) {
             return undefined;
           }
@@ -3039,12 +3056,13 @@ export default manifest;`;
       // sole preset pre-rename): user plugins still run before it, user
       // presets still run after — babel runs plugins before presets and
       // presets in reverse order, so the pass order is unchanged.
+      const { transformAsync, solid } = await loadBabel();
       const babelOptions = mergeAndConcat(babelUserOptions, {
         ...babelBaseOptions,
         plugins: [[solid, solidOptions]],
       }) as babel.TransformOptions;
 
-      const result = await babel.transformAsync(code, babelOptions);
+      const result = await transformAsync(code, babelOptions);
       if (!result) {
         return undefined;
       }
