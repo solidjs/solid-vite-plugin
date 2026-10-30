@@ -200,7 +200,7 @@ in the peer range does); an older install warns once at startup and skips the in
 - Type: `boolean | { granular?: boolean }`
 - Default: true
 
-Component hot replacement under `vite dev` through the solid-refresh transform (see
+Component hot replacement under `vite dev` through the native refresh transform (see
 [Note on HMR](#note-on-hmr)). `false` turns it off, so edits fall back to a full reload. Has no
 effect on `vite build`, and is off with `dev: false`, since the production refresh runtime is
 an inert stub.
@@ -542,14 +542,14 @@ request, `await router.load()`, then render):
 solid({ start: { serverRenderSetup: './src/server-render-setup.tsx' }, ssr: true });
 
 // src/server-render-setup.tsx
-import type { Component } from 'solid-js';
-import type { StartRequestEvent } from '@solidjs/vite-plugin';
+import type { StartServerRenderSetup } from '@solidjs/vite-plugin';
 
-export default async function serverRenderSetup(event: StartRequestEvent, App: Component) {
+const serverRenderSetup: StartServerRenderSetup = async (event, App) => {
   const router = createRouter({ url: event.request.url });
   await router.load(); // async work completes before the shell streams
   return () => <App router={router} />; // rendered in the app's place
-}
+};
+export default serverRenderSetup;
 ```
 
 `event` is the shared request event, the same one the middleware chain
@@ -711,10 +711,11 @@ sees the throw when no boundary catches it first). Default: `true`.
    `src/entry-client.{tsx,jsx,ts,js,mjs,tsrx}`. Entry files come in pairs —
    providing only one is an error. The server entry must export
    `render(request?, context?)` returning a `renderToStream` result, an HTML
-   string, or a `Response`; `context.clientEntry` carries the resolved
-   client entry URL, and in production any literal
-   `"/src/entry-client.tsx"` reference in the rendered HTML is rewritten to
-   the hashed asset (the classic harness convention keeps working).
+   string, or a `Response`; `context` (typed `StartServerRenderContext`)
+   carries the resolved client entry URL as `context.clientEntry`, and in
+   production any literal `"/src/entry-client.tsx"` reference in the
+   rendered HTML is rewritten to the hashed asset (the classic harness
+   convention keeps working).
 3. Generated entries (the zero-config path): when no entry files exist, both
    are generated from a root component — `start.app`, defaulting to
    `src/App.{tsx,jsx,ts,js,tsrx}` (or lowercase `src/app.*`) — wrapped in a
@@ -929,6 +930,13 @@ with `ssr: true`, whose handler serves the endpoint automatically) or
 import `virtual:solid-server-function-handler` in your server entry and
 mount its `handleServerFunctionRequest(request)` export on the endpoint.
 
+The client build also writes `.vite/solid-server-functions.json` into its
+output directory (`dist/client` in start mode), typed
+`PersistedServerFunctionManifest`: the modules containing server functions,
+every function the client references (by wire id), and the build id, with
+paths relative to the Vite root. The server build reads it back, and build
+tooling such as a prerenderer can read it once the client build finishes.
+
 **`devMiddleware: false`** hands endpoint dispatch in dev to a host instead
 of the plugin's middleware. The middleware executes functions in Vite's
 node-side SSR environment; when another plugin's server environment should
@@ -1073,7 +1081,7 @@ assets.
 Choose the JSX compiler backend. The default `"native"` compiles JSX through
 the native compiler from `@solidjs/compiler`. `"babel"` runs
 `@solidjs/babel-plugin` instead and only switches the JSX transform — every
-other pass (the `lazy()` module-URL transform and the solid-refresh HMR
+other pass (the `lazy()` module-URL transform and the HMR refresh
 transform) is native in both modes.
 
 `"babel"` is the escape hatch: if the native output ever differs from what

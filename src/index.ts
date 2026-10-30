@@ -60,7 +60,12 @@ export type {
   ServerFunctionsFilter,
 } from './server-functions/index.js';
 export type { StartOptions };
-export type { StartMiddleware, StartRequestEvent } from './request-event.js';
+export type {
+  StartMiddleware,
+  StartRequestEvent,
+  StartServerRenderContext,
+  StartServerRenderSetup,
+} from './request-event.js';
 export type { DevAssetResolver } from './dev-manifest.js';
 import path from 'path';
 import type { FilterPattern, Logger, Plugin, ViteDevServer } from 'vite';
@@ -475,10 +480,6 @@ export interface Options {
    * pipelines — client mode still compiles the document shell through the
    * SSR transforms to serve/prerender it.
    *
-   * Objects are no longer accepted: start-mode options moved to {@link start}
-   * (`ssr: { ... }` from 3.0.0-next.23 and earlier becomes
-   * `start: { ... }, ssr: true`).
-   *
    * @default false
    */
   ssr?: boolean;
@@ -631,8 +632,9 @@ export interface Options {
     | ((source: string, id: string, ssr: boolean) => babel.TransformOptions)
     | ((source: string, id: string, ssr: boolean) => Promise<babel.TransformOptions>);
   /**
-   * Pass any additional [@solidjs/babel-plugin](https://github.com/solidjs/solid/tree/main/packages/babel-plugin) options.
-   * They will be merged with the plugin's Solid defaults.
+   * Solid JSX compiler options, for whichever compiler runs:
+   * `@solidjs/compiler` by default, `@solidjs/babel-plugin` with
+   * `compiler: "babel"`. They are merged with the plugin's Solid defaults.
    *
    * @default {}
    */
@@ -678,7 +680,7 @@ export interface Options {
   serverFunctions?: boolean | ServerFunctionsOptions;
 
   /**
-   * Component hot replacement through the solid-refresh transform (dev
+   * Component hot replacement through the native refresh transform (dev
    * only). `false` turns it off, so edits fall back to a full reload; an
    * object tunes the transform.
    *
@@ -687,7 +689,7 @@ export interface Options {
   refresh?: boolean | RefreshOptions;
 }
 
-/** Options for the solid-refresh HMR transform (dev only). */
+/** Options for the native HMR refresh transform (dev only). */
 export interface RefreshOptions {
   /**
    * Emit per-component `signature`/`dependencies` metadata so edits only

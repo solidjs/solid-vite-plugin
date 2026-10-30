@@ -202,11 +202,15 @@ const BUILD_HEADER = 'X-Server-Function-Build';
 // function was captured, for example). Paths are root-relative, posix.
 const PERSISTED_MANIFEST_PATH = '.vite/solid-server-functions.json';
 
-/** The persisted manifest's on-disk shape (the array form is the pre-`functions` legacy). */
+/**
+ * `.vite/solid-server-functions.json` in the client build's output
+ * directory (`dist/client` in start mode), written when the client build
+ * finishes. Paths are relative to the Vite root, with `/` separators.
+ */
 export interface PersistedServerFunctionManifest {
-  /** Modules containing server functions, root-relative. */
+  /** Modules containing server functions. */
   modules: string[];
-  /** Every server function the client build emitted a reference to. */
+  /** Every server function the client build emitted a reference to, by wire id. */
   functions: Array<{ id: string; name: string; module: string }>;
   /** The id the client build stamps on its calls, for the server build to check. */
   buildId?: string;
@@ -237,6 +241,7 @@ function readPersistedFile(
 function readPersistedManifest(root: string, clientDirs: (string | null)[]): Set<string> {
   const parsed = readPersistedFile(root, clientDirs);
   if (!parsed) return new Set();
+  // Builds from before `functions` existed wrote a bare module list.
   const entries = Array.isArray(parsed) ? parsed : parsed.modules;
   return new Set(
     entries.map((entry) => path.resolve(root, entry)).filter((entry) => existsSync(entry)),

@@ -5,10 +5,10 @@ import { expect, it } from 'vitest';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 
-// Type-checks a consumer of `virtual:solid-manifest` against the shipped
+// Type-checks a consumer of the plugin's virtual modules against the shipped
 // ambient declaration and the plugin's own types.
 function diagnostics(source: string): string[] {
-  const file = path.join(root, 'src/__virtual-manifest-consumer.ts');
+  const file = path.join(root, 'src/__virtual-modules-consumer.ts');
   const options: ts.CompilerOptions = {
     strict: true,
     noEmit: true,
@@ -27,11 +27,7 @@ function diagnostics(source: string): string[] {
     (exists) => (name: string) =>
       path.resolve(name) === file || exists(name)
   )(host.fileExists.bind(host));
-  const program = ts.createProgram(
-    [file, path.join(root, 'virtual-modules.d.ts')],
-    options,
-    host,
-  );
+  const program = ts.createProgram([file, path.join(root, 'virtual-modules.d.ts')], options, host);
   return ts
     .getPreEmitDiagnostics(program, program.getSourceFile(file))
     .map((d) => ts.flattenDiagnosticMessageText(d.messageText, '\n'));
@@ -65,4 +61,21 @@ it('does not let the union pass as a build manifest without narrowing', () => {
     export const built: ViteManifest = manifest;
   `);
   expect(errors.join('\n')).toContain("is not assignable to type 'ViteManifest'");
+});
+
+it('types the server-function handler options, so a typo fails', () => {
+  expect(
+    diagnostics(`
+      import { handleServerFunctionRequest } from 'virtual:solid-server-function-handler';
+      import { handleRequest } from 'virtual:solid-ssr-handler';
+      const request = new Request('http://localhost/_server');
+      handleServerFunctionRequest(request, { event: { nativeEvent: {} }, onError: () => {} });
+      handleRequest(request, { serverFunctions: { event: { nativeEvent: {} } } });
+    `),
+  ).toEqual([]);
+  const errors = diagnostics(`
+    import { handleServerFunctionRequest } from 'virtual:solid-server-function-handler';
+    handleServerFunctionRequest(new Request('http://localhost/_server'), { evnet: {} });
+  `);
+  expect(errors.join('\n')).toContain("'evnet' does not exist");
 });
