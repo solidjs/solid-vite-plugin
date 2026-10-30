@@ -13,7 +13,7 @@
     "jsxImportSource": "@solidjs/web",
     "types": [
       "vite/client",
-      "@solidjs/vite-plugin/virtual-solid-manifest",
+      "@solidjs/vite-plugin/virtual-modules",
       "@solidjs/vite-plugin/boundary-modules"
     ]
   }

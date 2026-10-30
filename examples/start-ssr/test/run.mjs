@@ -78,7 +78,7 @@
 //     generated entries and client assets carry no reference to the
 //     server-components runtime when the option is off.
 //
-//   - `css.filter` (css-filter mode, CSS_FILTER=<shape> in
+//   - `css.devInline` (css-dev-inline mode, CSS_DEV_INLINE=<shape> in
 //     vite.config.ts): the dev CSS crawl's include/exclude semantics against
 //     a temp node_modules package written by the test — `exclude` prunes an
 //     app graph (replacing the default node_modules exclusion), `include`
@@ -173,7 +173,7 @@
 //
 // Requires the plugin built (pnpm build at the repo root) and Google Chrome.
 // Usage: node test/run.mjs
-// [dev|prod|document|css-filter|entries|endpoint|server-functions-setup|no-middleware|middleware|preview|render-mode|nonce|base|builder-order|builder-prepare|extra-input|file-names|babel-hmr|frames|external|observe|perf-tracks|detect|vitest|node|client-setup]
+// [dev|prod|document|css-dev-inline|entries|endpoint|server-functions-setup|no-middleware|middleware|preview|render-mode|nonce|base|builder-order|builder-prepare|extra-input|file-names|babel-hmr|frames|external|observe|perf-tracks|detect|vitest|node|client-setup]
 // (default: all)
 
 import { spawn, execSync, execFileSync } from 'node:child_process';
@@ -1802,10 +1802,10 @@ async function runDocumentMode() {
 
 // Distinctive rule from the temp test-css-lib package's stylesheet: proves a
 // node_modules graph's CSS was opted into the dev SSR crawl by
-// `css.filter.include`. Keep in sync with CSS_LIB_FIXTURES below.
+// `css.devInline.include`. Keep in sync with CSS_LIB_FIXTURES below.
 const LIB_CSS_COLOR = 'rgb(7, 140, 210)';
 
-// Temp fixtures for the css-filter mode (written before the sub-runs,
+// Temp fixtures for the css-dev-inline mode (written before the sub-runs,
 // removed after): a real — not symlinked — node_modules package whose JS
 // imports its own CSS (the JS module is what the filter sees; CSS files
 // themselves bypass it), plus an app wrapper that pulls the package into
@@ -1829,8 +1829,8 @@ export default function CssLibApp() {
 `,
 };
 
-async function runCssFilterMode() {
-  const mode = 'css-filter';
+async function runCssDevInlineMode() {
+  const mode = 'css-dev-inline';
   console.log(`\n=== ${mode.toUpperCase()} ===`);
 
   for (const [file, source] of Object.entries(CSS_LIB_FIXTURES)) {
@@ -1904,7 +1904,7 @@ async function runCssFilterMode() {
         ['exec', 'vite', '--port', String(port), '--strictPort'],
         {
           cwd: exampleDir,
-          env: { ...process.env, CSS_FILTER: filter },
+          env: { ...process.env, CSS_DEV_INLINE: filter },
         },
       );
       let serverLog = '';
@@ -7368,7 +7368,7 @@ const ALL_MODES = [
   'dev',
   'prod',
   'document',
-  'css-filter',
+  'css-dev-inline',
   'entries',
   'endpoint',
   'server-functions-setup',
@@ -7398,7 +7398,7 @@ for (const mode of modes) {
   if (mode === 'dev') await runDevMode();
   else if (mode === 'prod') await runProdMode();
   else if (mode === 'document') await runDocumentMode();
-  else if (mode === 'css-filter') await runCssFilterMode();
+  else if (mode === 'css-dev-inline') await runCssDevInlineMode();
   else if (mode === 'entries') await runEntriesMode();
   else if (mode === 'endpoint') await runEndpointMode();
   else if (mode === 'server-functions-setup') await runServerFunctionsSetupMode();

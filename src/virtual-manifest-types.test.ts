@@ -28,7 +28,7 @@ function diagnostics(source: string): string[] {
       path.resolve(name) === file || exists(name)
   )(host.fileExists.bind(host));
   const program = ts.createProgram(
-    [file, path.join(root, 'virtual-solid-manifest.d.ts')],
+    [file, path.join(root, 'virtual-modules.d.ts')],
     options,
     host,
   );

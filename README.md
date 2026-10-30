@@ -761,8 +761,9 @@ the seam for frameworks and routers that do their own asset gating —
 deciding which scripts and styles a response carries, as the TanStack Start
 integration does — without re-reading the manifest from disk or re-deriving
 `base`. Ambient types ship with the plugin
-(`/// <reference types="@solidjs/vite-plugin/virtual-solid-manifest" />`):
-the default export is typed `ViteManifest | DevAssetResolver` (both exported
+(`/// <reference types="@solidjs/vite-plugin/virtual-modules" />`, which
+also covers the plugin's other virtual modules): the default export is
+typed `ViteManifest | DevAssetResolver` (both exported
 from the plugin). Either one can be passed to `renderToStream`'s `manifest`
 option as is; code that reads it narrows with `if (manifest.resolve)`.
 
@@ -919,7 +920,7 @@ Standard Schema as the only contract (and runtime-read server values).
 Enables `"use server"` server function compilation (experimental). Pass
 `true` for the defaults (runtime from `@solidjs/web/server-functions`,
 endpoint `/_server`) or an options object (`runtime`, `endpoint`, `filter`,
-`directive`, `manifest`, `devMiddleware`, `serverSetup`) to customize.
+`directive`, `devMiddleware`, `serverSetup`) to customize.
 
 The setup is zero-config: in dev a middleware on the Vite server handles the
 endpoint end to end — no server-function code needed in your server entry.
@@ -1038,27 +1039,27 @@ the option is enabled without SSR start mode. It reuses the plugin's
 - Type: Object
 - Default: undefined
 
-`css.filter` takes include/exclude patterns
+`css.devInline` takes include/exclude patterns
 ([picomatch](https://github.com/micromatch/picomatch) globs or regexes;
 relative globs resolve against the Vite root) for the module graphs the dev
 server crawls when collecting the CSS it inlines into `<head>` (the no-FOUC
 guarantee), in start mode and in `ssr: true` setups reading
 `virtual:solid-manifest`. By default the crawl covers the app's own sources and skips
-`node_modules`. `exclude` prunes matching graphs — providing one replaces
-the default `node_modules` exclusion — and `include` opts matching files in
+`node_modules`. `exclude` prunes matching graphs (providing one replaces
+the default `node_modules` exclusion), and `include` opts matching files in
 on top of that baseline, which is how a dependency's CSS gets
 server-inlined in dev:
 
 ```ts
 solid({
   start: true,
-  css: { filter: { include: /node_modules\/some-ui-lib/ } },
+  css: { devInline: { include: /node_modules\/some-ui-lib/ } },
   ssr: true,
 });
 ```
 
-CSS files themselves and virtual modules always pass — the filter decides
-which module graphs are traversed, not which stylesheets are kept — and a
+CSS files themselves and virtual modules always pass (the patterns decide
+which module graphs are traversed, not which stylesheets are kept), and a
 file matching both patterns stays excluded (Vite `createFilter`'s
 conflict rule). Development only: excluding a graph does not remove its
 CSS from the production build, where CSS always comes from the built

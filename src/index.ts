@@ -560,23 +560,23 @@ export interface Options {
   /** Options for development CSS crawling. */
   css?: {
     /**
-     * Filter for the modules traversed while collecting the CSS that dev
-     * SSR inlines into `<head>`, in start mode and in `ssr: true` setups
-     * reading `virtual:solid-manifest`. Patterns are
+     * Which module graphs dev SSR crawls for the CSS it inlines into
+     * `<head>`, in start mode and in `ssr: true` setups reading
+     * `virtual:solid-manifest`. Patterns are
      * [picomatch](https://github.com/micromatch/picomatch) globs or regexes;
-     * relative globs resolve against the Vite root. CSS files themselves
-     * and virtual modules always pass — the filter decides which module
-     * graphs are crawled, not which stylesheets are kept.
+     * relative globs resolve against the Vite root. The patterns select the
+     * modules whose imports are followed, not stylesheets: CSS files and
+     * virtual modules always pass.
      *
      * `exclude` prunes matching graphs and defaults to `/node_modules/`
-     * (providing your own replaces the default). `include` opts matching
-     * files back in on top of that baseline — typically a package whose
-     * CSS should be server-inlined to avoid a development FOUC, e.g.
-     * `{ include: /node_modules\/some-ui-lib/ }`. A file matching both
-     * stays excluded. Development only: production CSS always comes from
-     * the built assets.
+     * (providing your own replaces the default). `include` adds matching
+     * files back on top of that baseline rather than narrowing the crawl to
+     * them: typically a package whose CSS should be server-inlined to avoid
+     * a development FOUC, e.g. `{ include: /node_modules\/some-ui-lib/ }`. A
+     * file matching both stays excluded. Development only: production CSS
+     * always comes from the built assets.
      */
-    filter?: {
+    devInline?: {
       include?: FilterPattern;
       exclude?: FilterPattern;
     };
@@ -1425,8 +1425,8 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
     // Moved before the stable release, without an alias.
     throw new Error(
       '[@solidjs/vite-plugin] `start.css` has moved to the top-level `css` option. ' +
-        'Example: `solid({ start: { css: { filter } } })` becomes ' +
-        '`solid({ start: true, css: { filter } })`.',
+        'Example: `solid({ start: { css: { devInline } } })` becomes ' +
+        '`solid({ start: true, css: { devInline } })`.',
     );
   }
   if (startOptions && 'external' in startOptions) {
@@ -1453,7 +1453,11 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
       '[@solidjs/vite-plugin] `start.node` has been renamed to `start.nodeServer`.',
     );
   }
-  const styleFilterOptions = options.css?.filter;
+  if (options.css && 'filter' in options.css) {
+    // Renamed before the stable release, without an alias.
+    throw new Error('[@solidjs/vite-plugin] `css.filter` has been renamed to `css.devInline`.');
+  }
+  const styleFilterOptions = options.css?.devInline;
   // The CSS crawl walks the module graph from the app's own entries, so a
   // plain createFilter allowlist can't express the option's purpose (opting
   // node_modules graphs in): a bare `include` would reject the app sources
