@@ -63,6 +63,7 @@
     "@solidjs/babel-plugin": "^2.0.0-rc.19",
     "@solidjs/compiler": "^2.0.0-rc.19",
     "@types/babel__core": "^7.20.4",
+    "magic-string": "^0.30.21",
     "merge-anything": "^5.1.7",
     "vitefu": "^1.0.4"
   },

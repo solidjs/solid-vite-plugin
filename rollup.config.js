@@ -13,6 +13,7 @@ const external = [
   '@solidjs/babel-plugin',
   'merge-anything',
   'vitefu',
+  'magic-string',
   'vite',
 ];
 

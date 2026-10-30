@@ -79,6 +79,7 @@ import {
   transformWithOxc,
   withFilter,
 } from 'vite';
+import { type AssetUrlOptions, transformAssetUrls } from './asset-urls.js';
 import { getEnvironmentConsumer, isRunnableEnvironment } from './environment.js';
 import { exactIds, extensionIds } from './hook-filters.js';
 import { crawlFrameworkPkgs } from 'vitefu';
@@ -1573,6 +1574,8 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
   let isBuild = false;
   let isSsrBuild = false;
   let base = '/';
+  let publicDir = '';
+  let renderBuiltUrl = false;
   let logger: Logger | null = null;
   // Set in configResolved when a worker-targeted server build would carry
   // the plugin's `@solidjs/web/storage` import; emitted once from buildStart.
@@ -1611,6 +1614,19 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
       if (existsSync(manifestPath)) return manifestPath;
     }
     return null;
+  }
+
+  // Asset URLs in JSX (src/asset-urls.ts): a `/name` public-directory URL
+  // takes the base. With a relative base (builds only) or a custom
+  // `renderBuiltUrl`, only Vite's asset plugin can compute the URL, so it is
+  // imported instead.
+  function assetUrlOptions(): AssetUrlOptions {
+    const relativeBase = base === '' || base.startsWith('.');
+    return {
+      publicDir,
+      publicUrls:
+        isBuild && (relativeBase || renderBuiltUrl) ? 'import' : base === '/' ? null : { base },
+    };
   }
 
   // Dynamically imported project modules in the client build. Each is
@@ -2327,6 +2343,8 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
       isBuild = config.command === 'build';
       isSsrBuild = !!config.build.ssr;
       base = config.base;
+      publicDir = config.publicDir;
+      renderBuiltUrl = !!config.experimental?.renderBuiltUrl;
       projectRoot = config.root;
       clientBuildConfig = (config as any).environments?.client?.build ?? config.build;
       filter = createFilter(options.include, options.exclude, { resolve: projectRoot });
@@ -2821,6 +2839,21 @@ export default manifest;`;
       warnMissingLocations(this, options);
       let code = source;
       const maps: ChainableMap[] = [];
+
+      // Asset URLs in JSX attributes become imports or take the base, ahead
+      // of every other pass (src/asset-urls.ts).
+      if (!isTsrx && !frontend) {
+        const assets = transformAssetUrls(
+          code,
+          id,
+          shouldBeProcessedWithTypescript,
+          assetUrlOptions(),
+        );
+        if (assets) {
+          code = assets.code;
+          maps.push(assets.map);
+        }
+      }
 
       // Authored TSRX (or another front end's source) cannot be parsed by a
       // standalone pass; its primitives are named after Solid lowering, on
