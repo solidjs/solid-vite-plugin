@@ -29,19 +29,13 @@ const babelPlugin = (options = {}) =>
  */
 const config = {
   input: 'src/index.ts',
-  output: [
-    {
-      format: 'esm',
-      file: 'dist/esm/index.mjs',
-      sourcemap: true,
-    },
-    {
-      format: 'cjs',
-      file: 'dist/cjs/index.cjs',
-      sourcemap: true,
-      exports: 'named',
-    },
-  ],
+  // ESM only: Vite is ESM-only, and the Node versions the plugin supports
+  // (22.12+) load this build through require() too.
+  output: {
+    format: 'esm',
+    file: 'dist/esm/index.mjs',
+    sourcemap: true,
+  },
   external,
   plugins: [
     cleaner({ targets: ['./dist/'] }),
@@ -52,7 +46,7 @@ const config = {
 };
 
 /**
- * The runtime of the Node server entry `start.node` emits into a build's
+ * The runtime of the Node server entry `start.nodeServer` emits into a build's
  * dist/server/node.js: the plugin reads this artifact at build time and
  * prepends the emit-time constants. Bundles the shared node<->web bridge
  * (src/http.ts) with it; `./server.js` — the sibling server bundle — stays
