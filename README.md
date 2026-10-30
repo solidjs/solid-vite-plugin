@@ -453,7 +453,11 @@ the runtime's response-head lifecycle (`createSSRResponse`):
 `httpStatus()` / `httpHeader()` writes made during the render land on the
 wire at shell flush, a `Location` header set before the flush becomes a
 real 3xx redirect, and one set after it (streamed responses) falls back to
-a `<script>window.location=...</script>` tail.
+a `<script>window.location=...</script>` tail. That stub is
+`event.response`, which `@solidjs/web`'s base `RequestEvent` type does not
+declare: type start-mode events as `StartRequestEvent` (exported from the
+plugin, and what `StartMiddleware` receives), or cast a `getRequestEvent()`
+result to it.
 
 **`middleware`** points at a server-only module default-exporting one
 middleware — `(event, next) => Response | Promise<Response>`, the request
@@ -539,9 +543,9 @@ solid({ start: { serverRenderSetup: './src/server-render-setup.tsx' }, ssr: true
 
 // src/server-render-setup.tsx
 import type { Component } from 'solid-js';
-import type { RequestEvent } from '@solidjs/web';
+import type { StartRequestEvent } from '@solidjs/vite-plugin';
 
-export default async function serverRenderSetup(event: RequestEvent, App: Component) {
+export default async function serverRenderSetup(event: StartRequestEvent, App: Component) {
   const router = createRouter({ url: event.request.url });
   await router.load(); // async work completes before the shell streams
   return () => <App router={router} />; // rendered in the app's place

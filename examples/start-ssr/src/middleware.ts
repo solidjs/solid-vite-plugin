@@ -43,7 +43,7 @@ import {
   respond,
   type RequestEvent,
 } from '@solidjs/web';
-import type { StartMiddleware } from '@solidjs/vite-plugin';
+import type { StartMiddleware, StartRequestEvent } from '@solidjs/vite-plugin';
 import { failDirect } from './api';
 
 // `start.serverSetup` evidence (SSR_SERVER_SETUP=1): this module
@@ -116,7 +116,7 @@ const renderPolicy: StartMiddleware = async (event, next) => {
 
 // A minimal filesystem-routing/createAPIHandler stand-in: owns /api/* and
 // the no-JS form endpoint, passes everything else down the chain.
-async function api(event: RequestEvent, next: Next): Promise<Response> {
+async function api(event: StartRequestEvent, next: Next): Promise<Response> {
   const { request } = event;
   const { pathname } = new URL(request.url);
   if (request.method === 'GET' && pathname === '/api/info') {
@@ -202,7 +202,7 @@ async function api(event: RequestEvent, next: Next): Promise<Response> {
   return next();
 }
 
-async function first(event: RequestEvent, next: Next): Promise<Response> {
+async function first(event: StartRequestEvent, next: Next): Promise<Response> {
   // The argument and the ambient lookup are the same event.
   if (getRequestEvent() !== event) throw new Error('middleware event is not the request event');
   const { request } = event;

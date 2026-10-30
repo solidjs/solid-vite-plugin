@@ -16,6 +16,7 @@
 //   /redirect-post, /whoami, /boom — plain-HTTP surfaces for the http and
 //   middleware e2e checks; the default path is untouched).
 import { createMemo, createSignal, lazy, Loading } from 'solid-js';
+import type { StartRequestEvent } from '@solidjs/vite-plugin';
 import { clientOnly, getRequestEvent, httpHeader, httpStatus, isServer } from '@solidjs/web';
 import { getServerMessage, greet, hasSecret, requestMethod } from './api';
 import HmrTarget from './HmrTarget';
@@ -68,7 +69,10 @@ function LateRedirect() {
     if (isServer) {
       // httpHeader() would no-op here (the head is committed); routers write
       // the stub directly for post-flush redirects, so do the same.
-      getRequestEvent()!.response.headers.set('Location', '/redirected-target');
+      (getRequestEvent() as StartRequestEvent).response.headers.set(
+        'Location',
+        '/redirected-target',
+      );
     }
     yield 'LATE-REDIRECT-CONTENT';
   });
