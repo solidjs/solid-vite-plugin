@@ -1,90 +1,38 @@
-import { spawn, exec, ChildProcess } from 'node:child_process';
-import { promisify } from 'node:util';
+// Builds each example, failing on Vite future deprecations in the build
+// output, then runs the Playwright suite in e2e/ against its `vite preview`
+// (see playwright.config.ts).
+import { spawnSync } from 'node:child_process';
 
-const execAsync = promisify(exec);
 const examples = ['vite-8'];
 const futureDeprecations = [
   "Plugin hook `options.ssr` is replaced with `this.environment.config.consumer === 'server'`.",
   'Plugin hook `handleHotUpdate()` is replaced with `hotUpdate()`.',
   'The `server.ssrLoadModule` is replaced with Environment Runner.',
 ];
-const PORT = 4173;
-const TEST_TIMEOUT = 5 * 60 * 1000; // 5 minutes
-const cypressEnv = { ...process.env, ELECTRON_RUN_AS_NODE: undefined };
 
-// Track active processes for cleanup
-const activeProcesses = new Set<ChildProcess>();
-
-// Cleanup function
-function cleanup(exitCode = 0) {
-  for (const proc of activeProcesses) {
-    proc.kill('SIGTERM');
-  }
-  process.exit(exitCode);
-}
-
-// Handle termination signals
-process.on('SIGTERM', cleanup);
-process.on('SIGINT', cleanup);
-
-async function runExample(example) {
+let failed = false;
+for (const example of examples) {
   console.log(`Testing ${example}...`);
-  const examplePath = `examples/${example}`;
-
-  try {
-    // Install and build
-    await execAsync('pnpm install', { cwd: examplePath });
-    const { stdout, stderr } = await execAsync('pnpm run build', { cwd: examplePath });
-    const output = `${stdout}\n${stderr}`;
-    const deprecation = futureDeprecations.find((message) => output.includes(message));
-    if (deprecation) {
-      throw new Error(`Vite future deprecation in ${example}: ${deprecation}`);
-    }
-
-    // Start preview server with timeout
-    const server = spawn('pnpm', ['run', 'preview'], { cwd: examplePath });
-    activeProcesses.add(server);
-
-    server.on('error', (err) => {
-      console.error(`Server error for ${example}:`, err);
-      throw err;
-    });
-
-    // Wait for server to be ready
-    await new Promise(resolve => setTimeout(resolve, 2000));
-
-    // Run Cypress tests with timeout
-    const testPromise = execAsync(
-      `pnpm exec cypress run --config-file cypress.config.ts --env example=${example}`,
-      { env: cypressEnv },
+  const build = spawnSync('pnpm', ['run', 'build'], {
+    cwd: `examples/${example}`,
+    encoding: 'utf-8',
+  });
+  const output = `${build.stdout}\n${build.stderr}`;
+  const deprecation = futureDeprecations.find((message) => output.includes(message));
+  if (build.status !== 0 || deprecation) {
+    console.error(output);
+    console.error(
+      deprecation
+        ? `Vite future deprecation in ${example}: ${deprecation}`
+        : `Build failed for ${example}`,
     );
-    const timeoutPromise = new Promise((_, reject) => 
-      setTimeout(() => reject(new Error(`Test timeout for ${example}`)), TEST_TIMEOUT)
-    );
-
-    await Promise.race([testPromise, timeoutPromise]);
-  } finally {
-    // Clean up processes
-    for (const proc of activeProcesses) {
-      proc.kill('SIGTERM');
-      activeProcesses.delete(proc);
-    }
+    failed = true;
+    continue;
   }
+  const test = spawnSync('pnpm', ['exec', 'playwright', 'test'], {
+    stdio: 'inherit',
+    env: { ...process.env, EXAMPLE: example },
+  });
+  if (test.status !== 0) failed = true;
 }
-
-async function runAll() {
-  for (const example of examples) {
-    try {
-      await runExample(example);
-    } catch (error) {
-      console.error(`Error testing ${example}:`, error);
-      cleanup(1);
-    }
-  }
-  process.exit(0);
-}
-
-runAll().catch(error => {
-  console.error('Unexpected error:', error);
-  cleanup(1);
-});
+process.exit(failed ? 1 : 0);
