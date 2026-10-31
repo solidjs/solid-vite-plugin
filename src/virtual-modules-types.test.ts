@@ -1,36 +1,52 @@
+import { spawnSync } from 'node:child_process';
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import ts from 'typescript';
-import { expect, it } from 'vitest';
+import { afterAll, expect, it } from 'vitest';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
+// Inside node_modules, so the consumer resolves the repo's packages.
+const dir = path.join(root, 'node_modules/.cache/virtual-modules-types');
+const tsc = path.join(
+  path.dirname(createRequire(import.meta.url).resolve('typescript/package.json')),
+  'bin/tsc',
+);
+
+afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
 // Type-checks a consumer of the plugin's virtual modules against the shipped
-// ambient declaration and the plugin's own types.
+// ambient declaration and the plugin's own types. Through the `tsc` CLI:
+// TypeScript 7 has no compiler API.
 function diagnostics(source: string): string[] {
-  const file = path.join(root, 'src/__virtual-modules-consumer.ts');
-  const options: ts.CompilerOptions = {
-    strict: true,
-    noEmit: true,
-    skipLibCheck: true,
-    target: ts.ScriptTarget.ESNext,
-    module: ts.ModuleKind.ESNext,
-    moduleResolution: ts.ModuleResolutionKind.Bundler,
-    types: ['node'],
-    baseUrl: root,
-    paths: { '@solidjs/vite-plugin': ['./src/index.ts'] },
-  };
-  const host = ts.createCompilerHost(options);
-  const readFile = host.readFile.bind(host);
-  host.readFile = (name) => (path.resolve(name) === file ? source : readFile(name));
-  host.fileExists = (
-    (exists) => (name: string) =>
-      path.resolve(name) === file || exists(name)
-  )(host.fileExists.bind(host));
-  const program = ts.createProgram([file, path.join(root, 'virtual-modules.d.ts')], options, host);
-  return ts
-    .getPreEmitDiagnostics(program, program.getSourceFile(file))
-    .map((d) => ts.flattenDiagnosticMessageText(d.messageText, '\n'));
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(path.join(dir, 'consumer.ts'), source);
+  writeFileSync(
+    path.join(dir, 'tsconfig.json'),
+    JSON.stringify({
+      compilerOptions: {
+        strict: true,
+        noEmit: true,
+        skipLibCheck: true,
+        target: 'esnext',
+        module: 'esnext',
+        moduleResolution: 'bundler',
+        types: ['node'],
+        paths: { '@solidjs/vite-plugin': [path.join(root, 'src/index.ts')] },
+      },
+      files: ['consumer.ts', path.join(root, 'virtual-modules.d.ts')],
+    }),
+  );
+  const { stdout } = spawnSync(process.execPath, [tsc, '-p', '.', '--pretty', 'false'], {
+    cwd: dir,
+    encoding: 'utf-8',
+  });
+  // `file(line,col): error TSn: message`, continued on indented lines. Only
+  // the consumer's own errors count.
+  return stdout
+    .split(/\n(?=\S)/)
+    .filter((diagnostic) => diagnostic.startsWith('consumer.ts('))
+    .map((diagnostic) => diagnostic.replace(/^[^:]+: error TS\d+: /, '').trim());
 }
 
 it('types virtual:solid-manifest as the build manifest or the dev resolver', () => {
