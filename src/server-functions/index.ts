@@ -19,6 +19,7 @@ import {
   type ViteDevServer,
   withFilter,
 } from 'vite';
+import { removeClientBuildFile } from '../build-files.js';
 import { getEnvironmentConsumer, isRunnableEnvironment } from '../environment.js';
 import { exactIds } from '../hook-filters.js';
 import { joinBase, parseRequestTarget, sendWebResponse, webRequestFromNode } from '../http.js';
@@ -207,7 +208,8 @@ const PERSISTED_MANIFEST_PATH = '.vite/solid-server-functions.json';
 /**
  * `.vite/solid-server-functions.json` in the client build's output
  * directory (`dist/client` in start mode), written when the client build
- * finishes. Paths are relative to the Vite root, with `/` separators.
+ * finishes. A server build in the same process then moves it into its own
+ * output directory. Paths are relative to the Vite root, with `/` separators.
  */
 export interface PersistedServerFunctionManifest {
   /** Modules containing server functions. */
@@ -255,15 +257,12 @@ function readPersistedBuildId(root: string, clientDirs: (string | null)[]): stri
   return parsed && !Array.isArray(parsed) ? parsed.buildId : undefined;
 }
 
-function writePersistedManifest(
+function persistedManifestJson(
   root: string,
-  outDir: string,
   entries: Set<string>,
   functions: Map<string, FunctionRecord>,
   buildId: string,
-): void {
-  const file = path.resolve(root, outDir, PERSISTED_MANIFEST_PATH);
-  mkdirSync(path.dirname(file), { recursive: true });
+): string {
   const relative = (entry: string) => path.relative(root, entry).split(path.sep).join('/');
   const manifest: PersistedServerFunctionManifest = {
     modules: [...entries].map(relative),
@@ -274,7 +273,15 @@ function writePersistedManifest(
     })),
     buildId,
   };
-  writeFileSync(file, JSON.stringify(manifest, null, 2));
+  return JSON.stringify(manifest, null, 2);
+}
+
+/** Writes the file into `outDir` and returns its path. */
+function writePersistedManifest(root: string, outDir: string, json: string): string {
+  const file = path.resolve(root, outDir, PERSISTED_MANIFEST_PATH);
+  mkdirSync(path.dirname(file), { recursive: true });
+  writeFileSync(file, json);
+  return file;
 }
 
 interface FunctionRecord {
@@ -479,6 +486,12 @@ export function createServerFunctionsPlugins(
   // and discoveries from memory: a persisted file can be stale, or live in a
   // directory the host moved (#511).
   let builtClient = false;
+  // The file that client build wrote, and the server environments that
+  // then loaded the manifest from memory. When one of them writes its
+  // bundle, the file moves beside it, out of the client output that hosts
+  // may publish (#511).
+  let clientPersisted: { json: string; file: string } | null = null;
+  const clientPersistedReaders = new Set<string>();
   // Endpoint with Vite `base` applied; final after configResolved, which
   // runs before every transform/load/middleware that reads it.
   let resolvedEndpoint = endpoint;
@@ -1009,7 +1022,9 @@ export function createServerFunctionsPlugins(
         // Same client-build detection as the main plugin: builder-mode builds
         // run both environments in one process, so prefer the per-environment
         // consumer over the process-wide --ssr flag.
-        const ctx = this as { environment?: { config?: { consumer?: string } } };
+        const ctx = this as {
+          environment?: { name?: string; config?: { consumer?: string } };
+        };
         const consumer = ctx.environment?.config?.consumer;
         const isClient = consumer ? consumer === 'client' : !isSsrBuild;
         if (isBuild && isClient) {
@@ -1017,13 +1032,20 @@ export function createServerFunctionsPlugins(
           // moved away from the top-level `build.outDir`.
           writtenClientOutDir = outputOptions.dir ?? outDir;
           builtClient = true;
-          writePersistedManifest(
+          const json = persistedManifestJson(
             root,
-            writtenClientOutDir,
             manifest.modules.server,
             manifest.clientFunctions,
             buildId,
           );
+          clientPersisted = { json, file: writePersistedManifest(root, writtenClientOutDir, json) };
+        } else if (
+          isBuild &&
+          clientPersisted &&
+          clientPersistedReaders.has(ctx.environment?.name ?? '')
+        ) {
+          writePersistedManifest(root, outputOptions.dir ?? outDir, clientPersisted.json);
+          removeClientBuildFile(clientPersisted.file);
         }
       },
     },
@@ -1041,7 +1063,9 @@ export function createServerFunctionsPlugins(
         if (id === MANIFEST_ID) {
           // After a client build in this process, its discoveries are
           // already in memory (see `builtClient`).
-          if (isBuild && mode === 'server' && !builtClient) {
+          if (isBuild && mode === 'server' && builtClient) {
+            clientPersistedReaders.add(this.environment.name);
+          } else if (isBuild && mode === 'server') {
             // Merge the client build's persisted discoveries at load time,
             // not just configResolved: in builder mode (single process,
             // `vite build` with the environments API) all environment

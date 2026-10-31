@@ -305,9 +305,9 @@ With `ssr: true` — **SSR start mode**:
   client entry enables the Chrome Performance panel tracks before it
   hydrates (see [`performanceTracks`](#optionsperformancetracks)).
 - **Build**: a plain `vite build` produces both bundles via the
-  environments/builder API — client assets (+ manifest) to `dist/client` and
-  the server bundle to `dist/server/server.js`. (`vite build --app`, or the
-  classic `vite build` + `vite build --ssr` two-step, work too.)
+  environments/builder API: client assets to `dist/client` and the server
+  bundle to `dist/server/server.js`. (`vite build --app`, or the classic
+  `vite build` + `vite build --ssr` two-step, work too.)
 - **Build ordering**: server builds read the client manifest, so with `ssr`
   enabled the plugin also orders builder-mode (environments API) app builds
   client-first via a `buildApp` hook. That covers composed
@@ -931,8 +931,11 @@ The client build also writes `.vite/solid-server-functions.json` into its
 output directory (`dist/client` in start mode), typed
 `PersistedServerFunctionManifest`: the modules containing server functions,
 every function the client references (by wire id), and the build id, with
-paths relative to the Vite root. The server build reads it back, and build
-tooling such as a prerenderer can read it once the client build finishes.
+paths relative to the Vite root. A separate `vite build --ssr` reads it back.
+When one process builds both, the server build takes the same data from
+memory and moves the file into its own output directory (`dist/server` in
+start mode), so a host that publishes the client output doesn't serve it.
+Build tooling such as a prerenderer can read it there.
 
 **`devMiddleware: false`** hands endpoint dispatch in dev to a host instead
 of the plugin's middleware. The middleware executes functions in Vite's
@@ -1270,10 +1273,13 @@ in this README are internal.
    Nitro does) may take the environments in any order.
 4. **Output.** Client files go to the `client` environment's `outDir`
    (default `dist/client`): content-hashed files under `build.assetsDir`,
-   safe to cache forever, and Vite's manifest under `.vite/`, which is not
-   for serving. The server bundle goes to the `ssr` environment's `outDir`.
-   A provider may move either directory; the plugin follows the configured
-   `outDir`.
+   safe to cache forever. Build metadata goes under `.vite/`, which is not
+   for serving. When one process builds both environments, the server reads
+   it from memory, and the plugin then removes Vite's manifest (unless
+   `build.manifest` is set) and moves `solid-server-functions.json` to the
+   server output. The server bundle goes to the `ssr` environment's
+   `outDir`. A provider may move either directory; the plugin follows the
+   configured `outDir`.
 5. **Modes.** With `ssr: true`, every request that isn't a static file goes
    to the handler. In client mode, `dist/client` is a static site with a
    prerendered `index.html`, the fallback for page navigations. Its server

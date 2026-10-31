@@ -143,13 +143,19 @@ export default defineConfig({
         },
       }
     : { test: { environment: 'jsdom' } }),
-  ...(process.env.EXTRA_CLIENT_INPUT
-    ? {
-        environments: {
-          client: { build: { rollupOptions: { input: ['src/ExtraInput.tsx'] } } },
-        },
-      }
-    : {}),
+  environments: {
+    client: {
+      build: {
+        // test/run.mjs reads the client manifest after builds. Asking for it
+        // keeps it in dist/client: otherwise the plugin removes the one it
+        // turned on once the server build has read it.
+        manifest: true,
+        ...(process.env.EXTRA_CLIENT_INPUT
+          ? { rollupOptions: { input: ['src/ExtraInput.tsx'] } }
+          : {}),
+      },
+    },
+  },
   ...(process.env.SANITIZE_FILE_NAME === 'custom' || process.env.SANITIZE_FILE_NAME === 'off'
     ? {
         build: {
