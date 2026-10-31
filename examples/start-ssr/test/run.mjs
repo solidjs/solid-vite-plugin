@@ -5810,7 +5810,7 @@ async function runNodeMode() {
       mode,
       'build',
       'entry imports the sibling server bundle relatively',
-      nodeSource.includes("from './server.js'"),
+      /from ['"]\.\/server\.js['"]/.test(nodeSource),
     );
     const specifiers = [...nodeSource.matchAll(/^import\b[^'"]*['"]([^'"]+)['"]/gm)].map(
       (m) => m[1],
@@ -6407,7 +6407,7 @@ async function runNodeMode() {
       'cf',
       'cloudflare-shaped build with start.nodeServer emits node.js pointing at the client dir',
       cfNodeSource.includes('"clientDir":"../client"') &&
-        cfNodeSource.includes("from './server.js'"),
+        /from ['"]\.\/server\.js['"]/.test(cfNodeSource),
       cfNodeSource.match(/^const SOLID_NODE_CONFIG = .*$/m)?.[0] ?? 'no node.js',
     );
   } catch (e) {
