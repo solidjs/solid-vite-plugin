@@ -80,6 +80,7 @@ import {
   withFilter,
 } from 'vite';
 import { type AssetUrlOptions, transformAssetUrls } from './asset-urls.js';
+import { removeClientBuildFile } from './build-files.js';
 import { createCssModuleClasses } from './css-module-classes.js';
 import { getEnvironmentConsumer, isRunnableEnvironment } from './environment.js';
 import { exactIds, extensionIds } from './hook-filters.js';
@@ -1604,12 +1605,18 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
   const testRuntimeConsumers = new Set<string>();
   const tsrxCss = new Map<string, string>();
 
-  // The client build's manifest, read back by SSR builds. In builder-mode
-  // (single process, e.g. SolidStart's nitro plugin) the client build runs
-  // first and generateBundle records its actual outDir — authoritative, since
-  // such setups relocate it. Two-invocation builds (`vite build --outDir
-  // dist/client` then `vite build --ssr`) run in separate processes, so the
-  // SSR process falls back to the `dist/client` convention.
+  // The client build's manifest, read back by SSR builds. In builder mode
+  // (one process, e.g. nitro) the client build runs first and its
+  // writeBundle keeps the manifest in memory, along with the file it wrote.
+  // Two-invocation builds (`vite build --outDir dist/client` then
+  // `vite build --ssr`) run in separate processes, so the SSR process reads
+  // the file from the recorded outDir or the `dist/client` convention.
+  let clientManifest: { source: string; file: string } | null = null;
+  // Server environments that read `clientManifest`. Once one has written its
+  // bundle, the file leaves the client output when start mode turned the
+  // manifest on (see onClientManifestOwned): hosts may publish that output.
+  const clientManifestReaders = new Set<string>();
+  let ownsClientManifest = false;
   function clientManifestPath(): string | null {
     for (const dir of [clientOutDir, 'dist/client']) {
       if (!dir) continue;
@@ -2551,9 +2558,12 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
           const deferBridge = !bridgeUrl && !!devServer?.httpServer;
           return devManifestCode(projectRoot, base, bridgeUrl, deferBridge);
         }
-        const manifestPath = clientManifestPath();
-        if (manifestPath) {
-          const manifest = JSON.parse(readFileSync(manifestPath, 'utf-8'));
+        if (clientManifest) clientManifestReaders.add(this.environment.name);
+        const manifestPath = clientManifest ? null : clientManifestPath();
+        const manifestSource =
+          clientManifest?.source ?? (manifestPath && readFileSync(manifestPath, 'utf-8'));
+        if (manifestSource) {
+          const manifest = JSON.parse(manifestSource);
           // Manifest records are keyed the way Vite keys entry chunks (the
           // root-relative facade path, also carried as `src`), so the
           // configured client inputs identify the genuine entries here too —
@@ -2678,6 +2688,35 @@ export default manifest;`;
           knownLazyKeys,
           warn: (message) => this.warn(message),
         });
+      }
+    },
+
+    writeBundle(outputOptions, bundle) {
+      if (!isBuild) return;
+      if (isClientBuild(this)) {
+        const setting = this.environment?.config?.build?.manifest;
+        const fileName = typeof setting === 'string' ? setting : '.vite/manifest.json';
+        const asset = setting ? bundle[fileName] : undefined;
+        clientManifest =
+          asset?.type === 'asset'
+            ? {
+                source:
+                  typeof asset.source === 'string'
+                    ? asset.source
+                    : new TextDecoder().decode(asset.source),
+                file: path.resolve(
+                  projectRoot,
+                  outputOptions.dir ?? this.environment.config.build.outDir,
+                  fileName,
+                ),
+              }
+            : null;
+      } else if (
+        ownsClientManifest &&
+        clientManifest &&
+        clientManifestReaders.has(this.environment.name)
+      ) {
+        removeClientBuildFile(clientManifest.file);
       }
     },
 
@@ -3239,6 +3278,9 @@ export default manifest;`;
         },
         onClientEntryResolved(entryId) {
           startClientEntryId = entryId;
+        },
+        onClientManifestOwned(owned) {
+          ownsClientManifest = owned;
         },
       }),
     );

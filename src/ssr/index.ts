@@ -651,6 +651,13 @@ export function startServe(
      * have to guess the entry among other configured inputs (#353).
      */
     onClientEntryResolved?: (entryId: string) => void;
+    /**
+     * Reports whether the client build's manifest is on only because this
+     * plugin turned it on (a build without `start.externalServer` and without
+     * a `build.manifest` of the app's), so the main plugin may remove it once
+     * a server build in the same process has read it.
+     */
+    onClientManifestOwned?: (owned: boolean) => void;
   } = {},
 ): Plugin[] {
   // Renamed before the stable release, without aliases: name the
@@ -1753,6 +1760,13 @@ export function startServe(
         // a typo should not hide behind the `ssr` boolean.
         renderMode = resolveRenderMode(options.renderMode);
         if (clientMode) renderMode = 'stream';
+        internal.onClientManifestOwned?.(
+          env.command === 'build' &&
+            !env.isPreview &&
+            !externalServer &&
+            !userConfig.build?.manifest &&
+            !userConfig.environments?.client?.build?.manifest,
+        );
         if (env.isPreview) {
           // Defaults only. A host that relocates an environment in
           // `configEnvironment` still wins — that hook runs after this

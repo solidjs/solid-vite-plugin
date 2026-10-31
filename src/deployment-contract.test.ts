@@ -9,7 +9,7 @@ import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promis
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { createBuilder, type Plugin } from 'vite';
+import { createBuilder, type InlineConfig, type Plugin } from 'vite';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import solidPlugin from './index.js';
 
@@ -59,7 +59,11 @@ function provider(output: string): Plugin {
   };
 }
 
-async function buildApp(output: string, options: Parameters<typeof solidPlugin>[0]) {
+async function buildApp(
+  output: string,
+  options: Parameters<typeof solidPlugin>[0],
+  config: InlineConfig = {},
+) {
   const builder = await createBuilder({
     root,
     configFile: false,
@@ -67,6 +71,7 @@ async function buildApp(output: string, options: Parameters<typeof solidPlugin>[
     cacheDir: path.join(root, '.vite'),
     logLevel: 'silent',
     plugins: [solidPlugin(options), provider(output)],
+    ...config,
   });
   await builder.buildApp();
 }
@@ -81,7 +86,8 @@ describe('deployment contract', () => {
   it('serves an SSR app through the index entry a provider builds', async () => {
     await buildApp('.ssr-output', { start: true, ssr: true });
     const publicDir = path.join(root, '.ssr-output/public');
-    expect(existsSync(path.join(publicDir, '.vite/manifest.json'))).toBe(true);
+    // The server read the manifest from memory: nothing under .vite/ is left to publish.
+    expect(existsSync(path.join(publicDir, '.vite'))).toBe(false);
     const serverEntry = path.join(root, '.ssr-output/server/server.js');
     expect(existsSync(serverEntry)).toBe(true);
 
@@ -119,5 +125,11 @@ describe('deployment contract', () => {
     const html = readFileSync(path.join(publicDir, 'index.html'), 'utf-8');
     expect(clientEntry(html, publicDir)).toEqual({ src: expect.any(String), exists: true });
     expect(existsSync(path.join(root, '.client-output/server/server.js'))).toBe(true);
+    expect(existsSync(path.join(publicDir, '.vite'))).toBe(false);
+  }, 120_000);
+
+  it("keeps Vite's manifest in the client output when the app asks for it", async () => {
+    await buildApp('.manifest-output', { start: true, ssr: true }, { build: { manifest: true } });
+    expect(existsSync(path.join(root, '.manifest-output/public/.vite/manifest.json'))).toBe(true);
   }, 120_000);
 });

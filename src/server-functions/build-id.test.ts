@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -267,6 +268,12 @@ describe('server function build id in a shared-config app build', () => {
     const stamped = client.match(/"X-Server-Function-Build"\]\s*=\s*"([0-9a-f]{16})"/)?.[1];
     expect(stamped).toMatch(/^[0-9a-f]{16}$/);
     expect(server).toContain(`buildId: ${JSON.stringify(stamped)}`);
+    // The file moves beside the server bundle, out of the client output.
+    expect(existsSync(path.join(root, 'out/public/.vite'))).toBe(false);
+    const moved = JSON.parse(
+      await readFile(path.join(root, 'out/server/.vite/solid-server-functions.json'), 'utf-8'),
+    );
+    expect(moved.buildId).toBe(stamped);
   }, 60_000);
 
   // The README configures the client through the `/client` subpath.
