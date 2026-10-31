@@ -1,6 +1,10 @@
 node_modules
 dist
 
+# Playwright (e2e/)
+test-results
+playwright-report
+
 # Local env files (examples ship committed fixtures explicitly, e.g.
 # examples/start-env/.env, which stays tracked because git ignores
 # don't apply to already-tracked files)
