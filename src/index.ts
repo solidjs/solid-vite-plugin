@@ -1584,7 +1584,6 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
   // Set in configResolved when a worker-targeted server build would carry
   // the plugin's `@solidjs/web/storage` import; emitted once from buildStart.
   let workerTargetWarning = false;
-  let clientOutDir: string | null = null;
   // The client environment's resolved build options, for the configured
   // entry input. Read off the resolved config so the SSR half of a
   // two-invocation build (`vite build --ssr`) still knows the client's
@@ -1610,7 +1609,7 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
   // writeBundle keeps the manifest in memory, along with the file it wrote.
   // Two-invocation builds (`vite build --outDir dist/client` then
   // `vite build --ssr`) run in separate processes, so the SSR process reads
-  // the file from the recorded outDir or the `dist/client` convention.
+  // the file from the `dist/client` convention.
   let clientManifest: { source: string; file: string } | null = null;
   // Server environments that read `clientManifest`. Once one has written its
   // bundle, the file leaves the client output when start mode turned the
@@ -1618,12 +1617,8 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
   const clientManifestReaders = new Set<string>();
   let ownsClientManifest = false;
   function clientManifestPath(): string | null {
-    for (const dir of [clientOutDir, 'dist/client']) {
-      if (!dir) continue;
-      const manifestPath = path.resolve(projectRoot, dir, '.vite/manifest.json');
-      if (existsSync(manifestPath)) return manifestPath;
-    }
-    return null;
+    const manifestPath = path.resolve(projectRoot, 'dist/client/.vite/manifest.json');
+    return existsSync(manifestPath) ? manifestPath : null;
   }
 
   // Asset URLs in JSX (src/asset-urls.ts): a `/name` public-directory URL
@@ -2650,9 +2645,8 @@ export default manifest;`;
       return stripped === null ? null : { code: stripped, map: null };
     },
 
-    generateBundle(outputOptions, bundle) {
+    generateBundle(_outputOptions, bundle) {
       if (!isBuild || !isClientBuild(this)) return;
-      clientOutDir = outputOptions.dir ?? null;
       // Reclassify emitted lazy facade chunks in the raw bundle (not just the
       // serialized manifest read back later) so downstream plugins inspecting
       // the bundle don't mistake them for application entries. Must precede
