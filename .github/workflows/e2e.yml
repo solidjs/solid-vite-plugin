@@ -42,5 +42,8 @@ jobs:
         working-directory: examples/css-matrix
         run: node test/bridge.mjs && node test/cache.mjs
 
+      - name: Install playwright browser
+        run: pnpm exec playwright install chromium
+
       - name: Run tests
         run: pnpm run test

@@ -3,16 +3,12 @@ packages:
   - examples/*
 
 allowBuilds:
-  cypress: true
   esbuild: true
   msw: true
 
 catalog:
   solid-js: "^2.0.0-rc.19"
   "@solidjs/web": "^2.0.0-rc.19"
-
-ignoredBuiltDependencies:
-  - cypress
 
 minimumReleaseAgeExclude:
   - '@solidjs/signals@2.0.0-beta.30 || 2.0.0-beta.31 || 2.0.0-beta.32 || 2.0.0-rc.0 || 2.0.0-rc.1 || 2.0.0-rc.2 || 2.0.0-rc.3 || 2.0.0-rc.4 || 2.0.0-rc.5 || 2.0.0-rc.6 || 2.0.0-rc.7 || 2.0.0-rc.8 || 2.0.0-rc.9 || 2.0.0-rc.10 || 2.0.0-rc.13 || 2.0.0-rc.14 || 2.0.0-rc.15 || 2.0.0-rc.16 || 2.0.0-rc.17 || 2.0.0-rc.18 || 2.0.0-rc.19'
@@ -40,6 +36,5 @@ minimumReleaseAgeExclude:
   - '@solidjs/testing-library@1.0.0-beta.2'
 
 onlyBuiltDependencies:
-  - cypress
   - esbuild
   - msw

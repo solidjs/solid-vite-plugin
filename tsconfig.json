@@ -1,6 +1,6 @@
 {
   "include": [
-    "src", "cypress"
+    "src"
   ],
   "exclude": [
     "**/*.spec.ts", "**/*.test.ts"
@@ -16,6 +16,6 @@
     "esModuleInterop": true,
     "allowSyntheticDefaultImports": true,
     "declarationDir": "dist/types",
-    "types":["cypress", "node"]
+    "types":["node"]
   }
 }
