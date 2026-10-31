@@ -8,7 +8,7 @@ import App from '../src/App.jsx';
 test('App', async () => {
   const root = page.elementLocator(render(() => <App />).baseElement);
 
-  const count = root.getByText('Counter:');
+  const count = root.getByText(/^Counter: /);
   await expect.element(count).toHaveTextContent('Counter: 0');
 
   const incrementButton = root.getByText('Increment');
