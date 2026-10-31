@@ -11,7 +11,7 @@
     "test": "node test/run.mjs && node test/boundary.mjs && node test/scan.mjs && node test/server-components-define.mjs && node test/ts-module-url.mjs && node test/dev-false.mjs"
   },
   "devDependencies": {
-    "vite": "^8.2.1",
+    "vite": "^8.3.5",
     "@solidjs/vite-plugin": "workspace:*"
   },
   "dependencies": {

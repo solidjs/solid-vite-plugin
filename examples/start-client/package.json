@@ -9,7 +9,7 @@
     "test": "node test/run.mjs && node test/host-build.mjs"
   },
   "devDependencies": {
-    "vite": "^8.2.1",
+    "vite": "^8.3.5",
     "@solidjs/vite-plugin": "workspace:*"
   },
   "dependencies": {

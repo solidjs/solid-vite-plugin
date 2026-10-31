@@ -11,9 +11,9 @@
   "devDependencies": {
     "@solidjs/testing-library": "^1.0.0-beta.2",
     "jsdom": "^26.1.0",
-    "vite": "^8.2.1",
+    "vite": "^8.3.5",
     "@solidjs/vite-plugin": "workspace:*",
-    "vitest": "^4.1.11"
+    "vitest": "^5.0.5"
   },
   "dependencies": {
     "solid-js": "catalog:",
