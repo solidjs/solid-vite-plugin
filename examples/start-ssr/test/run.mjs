@@ -187,6 +187,7 @@ import {
   existsSync,
   readdirSync,
   readFileSync,
+  statSync,
   writeFileSync,
 } from 'node:fs';
 import http from 'node:http';
@@ -5777,6 +5778,26 @@ async function runNodeMode() {
     const serverWithout = readFileSync(serverJs, 'utf-8');
 
     rmSync(distDir, { recursive: true, force: true });
+    console.log('  building (with start.nodeServer: { precompress: false })…');
+    execSync('pnpm run build', {
+      cwd: exampleDir,
+      stdio: 'pipe',
+      env: { ...env, START_NODE_SERVER: 'no-precompress' },
+    });
+    const plainVariants = readdirSync(path.join(distDir, 'client'), { recursive: true }).filter(
+      (file) => /\.(br|gz)$/.test(file),
+    );
+    record(
+      mode,
+      'build',
+      'precompress: false emits node.js without .br/.gz variants',
+      existsSync(nodeJs) &&
+        plainVariants.length === 0 &&
+        readFileSync(nodeJs, 'utf-8').includes('"precompressed":false'),
+      plainVariants.join(', '),
+    );
+
+    rmSync(distDir, { recursive: true, force: true });
     console.log('  building (with start.nodeServer)…');
     execSync('pnpm run build', {
       cwd: exampleDir,
@@ -5948,6 +5969,39 @@ async function runNodeMode() {
         headAsset.headers['cache-control'] === 'public, max-age=31536000, immutable' &&
         Number(headAsset.headers['content-length']) === Buffer.byteLength(assetBody),
       `status ${headAsset.status}, content-length ${headAsset.headers['content-length']}`,
+    );
+    const entryFile = entryAsset ? path.join(distDir, 'client', entryAsset) : '';
+    record(
+      mode,
+      'static',
+      'build writes .br and .gz beside client assets, not inside .vite',
+      !!entryAsset &&
+        existsSync(entryFile + '.br') &&
+        existsSync(entryFile + '.gz') &&
+        !existsSync(path.join(distDir, 'client/.vite/manifest.json.br')),
+    );
+    const brAsset = await rawRequest(`${origin}/${entryAsset}`, {
+      headers: { 'accept-encoding': 'gzip, deflate, br' },
+    });
+    record(
+      mode,
+      'static',
+      'asset negotiates br with Vary and the variant length',
+      brAsset.status === 200 &&
+        brAsset.headers['content-encoding'] === 'br' &&
+        brAsset.headers['vary'] === 'Accept-Encoding' &&
+        Number(brAsset.headers['content-length']) === statSync(entryFile + '.br').size,
+      `encoding ${brAsset.headers['content-encoding']}, length ${brAsset.headers['content-length']}`,
+    );
+    const page = await rawRequest(`${origin}/`, {
+      headers: { accept: 'text/html', 'accept-encoding': 'gzip, br' },
+    });
+    record(
+      mode,
+      'static',
+      'rendered pages stream uncompressed',
+      page.status === 200 && !page.headers['content-encoding'],
+      `encoding ${page.headers['content-encoding']}`,
     );
     const headRobots = await rawPath(origin, '/robots.txt', 'HEAD');
     record(

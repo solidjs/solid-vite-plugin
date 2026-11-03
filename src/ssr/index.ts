@@ -81,6 +81,7 @@ import {
   renderDevStyleTag,
 } from '../dev-manifest.js';
 import { joinBase, parseRequestTarget, sendWebResponse, webRequestFromNode } from '../http.js';
+import { precompressDir, precompressFile } from '../precompress.js';
 
 /**
  * Options for the main plugin's `start` option (`start: true` is
@@ -339,6 +340,13 @@ export interface StartOptions {
    * to the framework; `event` adds request-event fields next to
    * `nativeEvent`) and `serve({ port?, host?, static?, event? })`.
    *
+   * The build also precompresses the client build for it: a `.br` and a
+   * `.gz` beside each text file (JS, CSS, HTML, JSON, SVG and the like) of
+   * 1 KiB or more, served by `Accept-Encoding` with `Vary: Accept-Encoding`.
+   * Rendered pages and other handler responses stream uncompressed.
+   * `nodeServer: { precompress: false }` skips the extra files, for when a
+   * proxy or CDN compresses instead.
+   *
    * Applies to both start modes. In SSR mode the entry renders pages; in
    * client mode (with `serverFunctions`, which keeps `dist/server`) it
    * serves `dist/client` with an `index.html` history fallback for HTML
@@ -351,7 +359,18 @@ export interface StartOptions {
    *
    * @default false
    */
-  nodeServer?: boolean;
+  nodeServer?: boolean | NodeServerOptions;
+}
+
+/** The object form of {@link StartOptions.nodeServer}. */
+export interface NodeServerOptions {
+  /**
+   * Write `.br` and `.gz` variants of the client build's text files for the
+   * Node entry to serve.
+   *
+   * @default true
+   */
+  precompress?: boolean;
 }
 
 // Server-only start-mode request handler; also the server bundle's entry so a
@@ -422,6 +441,8 @@ interface NodeEntryConfig {
   spa: boolean;
   /** The file whose run listens (node.js even when the runtime sits beside it). */
   entry: string;
+  /** The client build has `.br` / `.gz` variants to serve. */
+  precompressed: boolean;
 }
 
 /**
@@ -723,6 +744,9 @@ export function startServe(
   const nodeEntry = !!options.nodeServer;
   const nodeEntryApplies =
     nodeEntry && !externalServer && (!clientMode || !!internal.serverFunctions);
+  const precompress =
+    nodeEntryApplies &&
+    (typeof options.nodeServer !== 'object' || options.nodeServer.precompress !== false);
   // Resolved build outDirs (absolute) of the client and ssr environments,
   // for the entry's client-directory constant. The client's generateBundle
   // overrides with the directory it actually wrote to (a host orchestrator
@@ -1999,6 +2023,7 @@ export function startServe(
               base,
               spa: clientMode,
               entry: NODE_ENTRY_FILE,
+              precompressed: precompress,
             },
             serverDirName,
           );
@@ -2013,6 +2038,13 @@ export function startServe(
             this.emitFile({ type: 'asset', fileName: NODE_ENTRY_FILE, source: runtimeSource });
           }
         },
+      },
+      async writeBundle(outputOptions) {
+        if (!isBuild || !precompress) return;
+        if (getEnvironmentConsumer(this.environment) !== 'client') return;
+        const dir = outputOptions.dir ? path.resolve(root, outputOptions.dir) : clientOutDir;
+        // The written dir holds the bundle and the copied public dir alike.
+        if (dir) await precompressDir(dir);
       },
       async resolveId(source, importer, opts) {
         if (source === HANDLER_ID) {
@@ -2361,7 +2393,9 @@ export function startServe(
                     `[@solidjs/vite-plugin] prerendering the client-mode shell failed: the handler answered ${response.status}`,
                   );
                 }
-                writeFileSync(path.join(clientOutDir!, 'index.html'), await response.text());
+                const shellFile = path.join(clientOutDir!, 'index.html');
+                writeFileSync(shellFile, await response.text());
+                if (precompress) await precompressFile(shellFile);
                 // A host may still need this service for its final server
                 // build, even when the application has no server functions.
                 // Pre-order buildApp hooks prepare (they clean output) and
