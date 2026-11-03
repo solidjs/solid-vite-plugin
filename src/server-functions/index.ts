@@ -407,7 +407,10 @@ function removeManifestRecord(
  * host for the endpoint.
  */
 export function serverFunctions(options: ServerFunctionsOptions = {}): Plugin[] {
-  return createServerFunctionsPlugins(options);
+  const plugins = createServerFunctionsPlugins(options);
+  // Vite evaluates a config file once per environment build; keep one instance's state.
+  for (const plugin of plugins) plugin.sharedDuringBuild = true;
+  return plugins;
 }
 
 /**

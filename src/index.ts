@@ -2443,10 +2443,10 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
     buildStart() {
       // `ssr.target` is a property of the `ssr` environment specifically
       // (Vite reads it as `environment.name === 'ssr'` too), and that is the
-      // one environment whose bundle carries the storage import. Each
-      // environment gets its own plugin instance under the default builder,
-      // so this runs exactly once for the server build — and not at all for
-      // the client build or a `vite build --ssr`-less client-only build.
+      // one environment whose bundle carries the storage import. buildStart
+      // runs once per environment build, so this runs once for the server
+      // build — and not at all for the client build or a `vite build
+      // --ssr`-less client-only build.
       if (!workerTargetWarning || this.environment?.name !== 'ssr') return;
       logger!.warn(
         '[@solidjs/vite-plugin] The server build targets a worker runtime (ssr.target = "webworker"). ' +
@@ -3387,6 +3387,8 @@ export default manifest;`;
     );
   }
 
+  // Vite evaluates a config file once per environment build; keep one instance's state.
+  for (const plugin of plugins) plugin.sharedDuringBuild = true;
   return plugins;
 }
 

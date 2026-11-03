@@ -128,6 +128,53 @@ describe('deployment contract', () => {
     expect(existsSync(path.join(publicDir, '.vite'))).toBe(false);
   }, 120_000);
 
+  it('reads the client manifest from memory when a config file makes a plugin per environment', async () => {
+    let evaluations = 0;
+    (globalThis as any).__solidContractConfig = () => {
+      evaluations++;
+      return {
+        plugins: [
+          solidPlugin({ start: true, ssr: true, serverFunctions: true }),
+          provider('.file-output'),
+        ],
+      };
+    };
+    const configFile = path.join(root, 'vite.config.mjs');
+    await writeFile(configFile, 'export default globalThis.__solidContractConfig();\n');
+    try {
+      const builder = await createBuilder({
+        root,
+        configFile,
+        cacheDir: path.join(root, '.vite'),
+        logLevel: 'silent',
+      });
+      await builder.buildApp();
+    } finally {
+      await rm(configFile);
+      delete (globalThis as any).__solidContractConfig;
+    }
+    expect(evaluations).toBeGreaterThan(1);
+    const publicDir = path.join(root, '.file-output/public');
+    expect(existsSync(path.join(publicDir, '.vite'))).toBe(false);
+    expect(
+      existsSync(path.join(root, '.file-output/server/.vite/solid-server-functions.json')),
+    ).toBe(true);
+
+    const serverEntry = path.join(root, '.file-output/server/server.js');
+    const script = `
+      const app = await import(${JSON.stringify(pathToFileURL(serverEntry).href)});
+      const page = await app.default.fetch(new Request('http://localhost/', { headers: { accept: 'text/html' } }));
+      console.log(JSON.stringify(await page.text()));
+    `;
+    const result = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
+      cwd: root,
+      encoding: 'utf8',
+    });
+    expect(result.stderr).toBe('');
+    const page = JSON.parse(result.stdout.trim().split('\n').pop()!);
+    expect(clientEntry(page, publicDir)).toEqual({ src: expect.any(String), exists: true });
+  }, 120_000);
+
   it("keeps Vite's manifest in the client output when the app asks for it", async () => {
     await buildApp('.manifest-output', { start: true, ssr: true }, { build: { manifest: true } });
     expect(existsSync(path.join(root, '.manifest-output/public/.vite/manifest.json'))).toBe(true);
