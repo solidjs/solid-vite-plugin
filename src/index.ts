@@ -27,7 +27,12 @@ import {
   serverFunctions,
   type ServerFunctionsOptions,
 } from './server-functions/index.js';
-import { SSR_HANDLER_ID, startServe, type StartOptions } from './ssr/index.js';
+import {
+  type NodeServerOptions,
+  SSR_HANDLER_ID,
+  startServe,
+  type StartOptions,
+} from './ssr/index.js';
 import { envPlugin } from './env.js';
 import {
   detectLocationSupport,
@@ -60,7 +65,7 @@ export type {
   PersistedServerFunctionManifest,
   ServerFunctionsFilter,
 } from './server-functions/index.js';
-export type { StartOptions };
+export type { NodeServerOptions, StartOptions };
 export type {
   StartMiddleware,
   StartRequestEvent,

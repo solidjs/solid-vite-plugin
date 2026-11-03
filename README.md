@@ -347,7 +347,14 @@ The entry serves `dist/client` statically — files under
 `build.assetsDir` as `Cache-Control: public, max-age=31536000, immutable`
 (their names are content hashes), everything else `public, max-age=0,
 must-revalidate` with `Last-Modified`; `HEAD` supported, dot-segment
-paths and `..` traversal refused — and hands every other request to
+paths and `..` traversal refused. The build also writes a `.br` and a
+`.gz` beside every client text file of 1 KiB or more (JS, CSS, HTML,
+JSON, SVG and the like), and the entry serves the best one the request's
+`Accept-Encoding` allows with `Content-Encoding`, the variant's
+`Content-Length` and `Vary: Accept-Encoding`; set
+`nodeServer: { precompress: false }` when a proxy or CDN compresses
+instead. Rendered pages and every other handler response stream
+uncompressed. The entry hands every other request to
 `handleRequest` with the raw Node request as `nativeEvent`, so
 `getRequestEvent().nativeEvent` is the `IncomingMessage` (client IP:
 `event.nativeEvent.socket.remoteAddress`; behind a proxy read the

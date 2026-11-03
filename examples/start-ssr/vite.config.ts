@@ -82,7 +82,8 @@ import solidPlugin from '@solidjs/vite-plugin';
 //   which the solid plugin's post-order hook must still wrap; `off` is
 //   `false`, the opt-out the plugin leaves alone (#391).
 // - START_NODE_SERVER=1 (node mode) sets `start.nodeServer`: the build emits the
-//   ready-to-run Node server entry dist/server/node.js beside server.js.
+//   ready-to-run Node server entry dist/server/node.js beside server.js;
+//   `no-precompress` sets `nodeServer: { precompress: false }` instead.
 // - SOLID_PERF_TRACKS (perf-tracks mode) sets `performanceTracks`: `0` opts
 //   out, a JSON object is the options form (`{"minMs":2}`); unset leaves
 //   the default (on under dev serve), which the dev mode asserts.
@@ -212,7 +213,14 @@ export default defineConfig({
               // runs double as coverage for the default-on wiring.
               ...(process.env.SSR_DEVTOOLS === '0' ? { devtools: false } : {}),
               // START_NODE_SERVER=1 (node mode): emit the Node server entry.
-              ...(process.env.START_NODE_SERVER ? { nodeServer: true } : {}),
+              ...(process.env.START_NODE_SERVER
+                ? {
+                    nodeServer:
+                      process.env.START_NODE_SERVER === 'no-precompress'
+                        ? { precompress: false }
+                        : true,
+                  }
+                : {}),
               // SSR_MIDDLEWARE=1 (middleware/preview modes): a fetch-style
               // chain fronting every dispatch path — page SSR, /_server,
               // preview — with getRequestEvent() live inside it.

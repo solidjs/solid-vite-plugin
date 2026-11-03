@@ -12,6 +12,7 @@ import { pipeline } from 'node:stream/promises';
 import { fileURLToPath } from 'node:url';
 import { handleRequest } from './server.js';
 import { parseRequestTarget, sendWebResponse, webRequestFromNode } from '../http.js';
+import { acceptedEncodings, PRECOMPRESSIBLE_EXTENSIONS } from './encoding.js';
 
 // Baked in at build time by the plugin (the generated header above this
 // module's code).
@@ -26,9 +27,11 @@ declare const SOLID_NODE_CONFIG: {
   spa: boolean;
   /** The program file whose run listens: node.js, beside this file. */
   entry: string;
+  /** The build wrote `.br` / `.gz` variants beside the client files. */
+  precompressed: boolean;
 };
 
-const { clientDir, assetsDir, base, spa, entry } = SOLID_NODE_CONFIG;
+const { clientDir, assetsDir, base, spa, entry, precompressed } = SOLID_NODE_CONFIG;
 const here = path.dirname(fileURLToPath(import.meta.url));
 const clientRoot = path.resolve(here, clientDir);
 const assetsRoot = assetsDir ? path.join(clientRoot, assetsDir) + path.sep : null;
@@ -64,21 +67,38 @@ function isReadRequest(req: IncomingMessage): boolean {
   return req.method === 'GET' || req.method === 'HEAD';
 }
 
+async function statFile(file: string) {
+  try {
+    const stats = await stat(file);
+    return stats.isFile() ? stats : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The best precompressed sibling of `file` the request accepts, if one was built. */
+async function findVariant(req: IncomingMessage, file: string) {
+  for (const encoding of acceptedEncodings(req.headers['accept-encoding'])) {
+    const variant = file + encoding.suffix;
+    const stats = await statFile(variant);
+    if (stats) return { encoding, file: variant, size: stats.size };
+  }
+  return null;
+}
+
 /** Sends a regular file from the client build; false when it does not exist. */
 async function sendFile(req: IncomingMessage, res: ServerResponse, file: string): Promise<boolean> {
-  let stats;
-  try {
-    stats = await stat(file);
-  } catch {
-    return false;
-  }
-  if (!stats.isFile()) return false;
+  const stats = await statFile(file);
+  if (!stats) return false;
+  const extension = path.extname(file).toLowerCase();
+  const compressible = precompressed && PRECOMPRESSIBLE_EXTENSIONS.has(extension);
+  const variant = compressible ? await findVariant(req, file) : null;
   res.statusCode = 200;
-  res.setHeader(
-    'Content-Type',
-    MIME[path.extname(file).toLowerCase()] ?? 'application/octet-stream',
-  );
-  res.setHeader('Content-Length', stats.size);
+  res.setHeader('Content-Type', MIME[extension] ?? 'application/octet-stream');
+  // Set even on identity responses: a shared cache must not reuse them for br/gzip clients.
+  if (compressible) res.setHeader('Vary', 'Accept-Encoding');
+  if (variant) res.setHeader('Content-Encoding', variant.encoding.name);
+  res.setHeader('Content-Length', variant ? variant.size : stats.size);
   if (assetsRoot && file.startsWith(assetsRoot)) {
     // Hashed file names: cache forever.
     res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
@@ -91,7 +111,7 @@ async function sendFile(req: IncomingMessage, res: ServerResponse, file: string)
     return true;
   }
   // pipeline destroys the read stream if the client goes away mid-file.
-  await pipeline(createReadStream(file), res).catch(() => res.destroy());
+  await pipeline(createReadStream(variant ? variant.file : file), res).catch(() => res.destroy());
   return true;
 }
 
