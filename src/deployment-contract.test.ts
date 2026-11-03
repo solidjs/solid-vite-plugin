@@ -4,7 +4,7 @@
 // entry from a separate Node process, as a host would. The dev half (point
 // 6) runs in examples/start-ssr's `external` and `detect` modes.
 import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -131,5 +131,90 @@ describe('deployment contract', () => {
   it("keeps Vite's manifest in the client output when the app asks for it", async () => {
     await buildApp('.manifest-output', { start: true, ssr: true }, { build: { manifest: true } });
     expect(existsSync(path.join(root, '.manifest-output/public/.vite/manifest.json'))).toBe(true);
+  }, 120_000);
+
+  // #525: a config file gives each environment its own instance; Cloudflare rebuilds the client.
+  it('links the built assets of a lazy page when each environment has its own plugin instance', async () => {
+    await writeFile(
+      path.join(root, 'src/LazyApp.tsx'),
+      [
+        "import { lazy } from 'solid-js';",
+        "const Page = lazy(() => import('./Page'));",
+        'export default function LazyApp() {',
+        '  return <Page />;',
+        '}',
+      ].join('\n'),
+    );
+    await writeFile(
+      path.join(root, 'src/Page.tsx'),
+      'import \'./page.css\';\nexport default function Page() {\n  return <h1 class="page">page</h1>;\n}\n',
+    );
+    await writeFile(path.join(root, 'src/page.css'), '.page { color: rgb(1, 2, 3); }\n');
+    const rebuildingProvider: Plugin = {
+      name: 'rebuilding-provider',
+      configEnvironment(name) {
+        if (name === 'client') return { build: { outDir: '.rebuild-output/public' } };
+        if (name === 'ssr') return { build: { outDir: '.rebuild-output/server' } };
+      },
+      buildApp: {
+        order: 'post',
+        async handler(builder) {
+          await builder.build(builder.environments.ssr!);
+          await builder.build(builder.environments.client!);
+        },
+      },
+    };
+    const config: InlineConfig = {
+      root,
+      configFile: false,
+      cacheDir: path.join(root, '.vite'),
+      logLevel: 'silent',
+    };
+    // Fresh instances on every resolve, as reloading a config file gives.
+    let instances = 0;
+    Object.defineProperty(config, 'plugins', {
+      enumerable: true,
+      get: () => {
+        instances++;
+        return [solidPlugin({ ssr: true, start: { app: 'src/LazyApp.tsx' } }), rebuildingProvider];
+      },
+    });
+    const builder = await createBuilder(config);
+    await builder.buildApp();
+    expect(instances).toBeGreaterThan(1);
+
+    const serverEntry = path.join(root, '.rebuild-output/server/server.js');
+    const script = `
+      const app = await import(${JSON.stringify(pathToFileURL(serverEntry).href)});
+      const page = await app.default.fetch(new Request('http://localhost/', { headers: { accept: 'text/html' } }));
+      console.log(JSON.stringify(await page.text()));
+    `;
+    const result = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
+      cwd: root,
+      encoding: 'utf8',
+    });
+    expect(result.stderr).toBe('');
+    const html: string = JSON.parse(result.stdout.trim().split('\n').pop()!);
+    const publicDir = path.join(root, '.rebuild-output/public');
+    const stylesheets = [...html.matchAll(/<link rel="stylesheet" href="([^"]+)"/g)].map(
+      (m) => m[1],
+    );
+    const preloads = [...html.matchAll(/<link rel="modulepreload" href="([^"]+)"/g)].map(
+      (m) => m[1],
+    );
+    expect(stylesheets.length).toBeGreaterThan(0);
+    expect(preloads.length).toBeGreaterThan(0);
+    // Every URL points at a file the final client build wrote, not a source path.
+    for (const url of [...stylesheets, ...preloads]) {
+      expect(url).toMatch(/^\/assets\//);
+      expect(existsSync(path.join(publicDir, url))).toBe(true);
+    }
+    expect(readFileSync(path.join(publicDir, stylesheets[0]), 'utf-8')).toContain('.page');
+    expect(clientEntry(html, publicDir)).toEqual({ src: expect.any(String), exists: true });
+    // The rebuild wrote the same files instead of a second copy of the app.
+    const entries = readdirSync(path.join(publicDir, 'assets')).filter((file) =>
+      file.startsWith('virtual_solid-ssr-entry-client-'),
+    );
+    expect(entries).toHaveLength(1);
   }, 120_000);
 });

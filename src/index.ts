@@ -1589,6 +1589,8 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
   // two-invocation build (`vite build --ssr`) still knows the client's
   // entries when it bakes the client manifest in.
   let clientBuildConfig: any = null;
+  // Set when the config has a `builder`: one resolve configures every environment.
+  let isAppBuild = false;
   // The client entry start mode injects into the client build's input
   // (reported by startServe): the one input that IS the application entry,
   // as opposed to further inputs other plugins add (e.g. filesystem-routing's
@@ -1609,7 +1611,9 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
   // writeBundle keeps the manifest in memory, along with the file it wrote.
   // Two-invocation builds (`vite build --outDir dist/client` then
   // `vite build --ssr`) run in separate processes, so the SSR process reads
-  // the file from the `dist/client` convention.
+  // the file from the `dist/client` convention. An app build whose builder
+  // gives each environment its own plugin instance (#525) reads it from the
+  // client environment's configured outDir first.
   let clientManifest: { source: string; file: string } | null = null;
   // Server environments that read `clientManifest`. Once one has written its
   // bundle, the file leaves the client output when start mode turned the
@@ -1617,8 +1621,14 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
   const clientManifestReaders = new Set<string>();
   let ownsClientManifest = false;
   function clientManifestPath(): string | null {
-    const manifestPath = path.resolve(projectRoot, 'dist/client/.vite/manifest.json');
-    return existsSync(manifestPath) ? manifestPath : null;
+    const setting = clientBuildConfig?.manifest;
+    const fileName = typeof setting === 'string' ? setting : '.vite/manifest.json';
+    for (const dir of [isAppBuild && clientBuildConfig?.outDir, 'dist/client']) {
+      if (!dir) continue;
+      const manifestPath = path.resolve(projectRoot, dir, fileName);
+      if (existsSync(manifestPath)) return manifestPath;
+    }
+    return null;
   }
 
   // Asset URLs in JSX (src/asset-urls.ts): a `/name` public-directory URL
@@ -2352,6 +2362,7 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
       renderBuiltUrl = !!config.experimental?.renderBuiltUrl;
       projectRoot = config.root;
       clientBuildConfig = (config as any).environments?.client?.build ?? config.build;
+      isAppBuild = !!config.builder;
       filter = createFilter(options.include, options.exclude, { resolve: projectRoot });
       styleFilter = createStyleFilter(projectRoot);
       // `components: 'external'` is the acknowledgement that a composing
@@ -2441,6 +2452,11 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
     },
 
     buildStart() {
+      // A host may rebuild the client with this instance (#525): emit lazy chunks again.
+      if (isBuild && isClientBuild(this)) {
+        emittedLazyChunks.clear();
+        emittedLazyChunkRefs.length = 0;
+      }
       // `ssr.target` is a property of the `ssr` environment specifically
       // (Vite reads it as `environment.name === 'ssr'` too), and that is the
       // one environment whose bundle carries the storage import. Each
