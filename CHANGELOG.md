@@ -1,5 +1,13 @@
 # Changelog
 
+## 3.0.0-next.56
+
+### Patch Changes
+
+- 18c7144: Production SSR links a route's built CSS and chunks again when the host gives each environment its own plugin instance (#525). Vite's default builder resolves the config again for every environment, so the server build's instance never saw the client build and looked for the manifest only in `dist/client`. With `@cloudflare/vite-plugin` 2.0, which writes the client to `.cloudflare/output/...`, it found nothing and baked in the development resolver, which returns source paths and no CSS. The server build now reads the manifest from the client environment's configured `outDir` first. A client build also no longer remembers lazy chunks from an earlier build by the same instance, so the client rebuild that Cloudflare runs after the worker writes the same files instead of a second copy of the app.
+- 3cb10dd: `start.nodeServer` now precompresses the client build: the build writes a `.br` and a `.gz` beside each text file of 1 KiB or more, and `dist/server/node.js` serves the best one the request's `Accept-Encoding` allows, with `Content-Encoding`, the variant's `Content-Length` and `Vary: Accept-Encoding`. Rendered pages still stream uncompressed. `nodeServer: { precompress: false }` turns it off.
+- 6de699a: Share one plugin instance across environment builds when the plugin comes from a config file. Vite's default builder evaluates the config file again for each environment, so the server build ran a fresh plugin instance that never saw the client build's manifest. It read `dist/client/.vite/manifest.json` from disk or fell back to the dev manifest (no client entry script or CSS on pages built for a provider that moves the output), and left `.vite/manifest.json` and `.vite/solid-server-functions.json` in the published client output. The plugins from `solidPlugin()` and the standalone `serverFunctions()` now set `sharedDuringBuild`, so Vite reuses one instance of them across environment builds, as `sharedPlugins: true` would.
+
 ## 3.0.0-next.55
 
 ### Patch Changes
