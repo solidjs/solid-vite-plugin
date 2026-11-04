@@ -272,6 +272,14 @@ to require it or `start: { devtools: false }` to disable automatic integration.
 The package is an optional peer and the toolbar is not included in production
 builds.
 
+During `vite dev` the plugin also connects the toolbar to the dev server. The
+toolbar then lists the errors the server runtime reports through
+`configureServerErrors` (renders, server functions and requests), beside the
+app's own hook. It opens files in the editor through
+`/__solid/devtools/open-in-editor`, which resolves paths against the Vite root.
+Server errors are heard when the server environment runs in the dev server's
+process, as Vite's default Node runner does.
+
 Generated entries wrap the app automatically. With custom server and client
 entries, place the development boundary around the app in the shared document
 or root:

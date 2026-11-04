@@ -66,8 +66,10 @@ import { exactIds } from '../hook-filters.js';
 import {
   DEVTOOLS_MOUNT_ID,
   DEVTOOLS_PACKAGE,
+  devtoolsConnectCode,
   devtoolsMountModuleCode,
 } from '../devtools/index.js';
+import { solidDevtoolsServer } from '../devtools/server.js';
 import { DIAGNOSTICS_CLIENT_ID, detectDiagnosticsPackage } from '../diagnostics/index.js';
 import {
   PERFORMANCE_TRACKS_CLIENT_ID,
@@ -1092,6 +1094,7 @@ export function startServe(
         `import { render } from '@solidjs/web';`,
         ...errorBoundaryImport(),
         ...(toolbar ? [`import { DevToolbar } from ${JSON.stringify(DEVTOOLS_PACKAGE)};`] : []),
+        ...(toolbar ? devtoolsConnectCode() : []),
         `import App from ${JSON.stringify(app)};`,
         ``,
         `render(() => ${
@@ -1109,6 +1112,7 @@ export function startServe(
       ...clientSetupImport,
       `import { hydrate } from '@solidjs/web';`,
       ...(toolbar ? [`import { DevToolbar } from ${JSON.stringify(DEVTOOLS_PACKAGE)};`] : []),
+      ...(toolbar ? devtoolsConnectCode() : []),
       ...(serverComponents
         ? [`import { installServerComponents } from '@solidjs/web/frames';`]
         : []),
@@ -2458,5 +2462,7 @@ export function startServe(
       ),
     },
   });
+  // The dev server side of the toolbar: server errors, versions, open in editor.
+  if (options.devtools !== false) plugins.push(solidDevtoolsServer());
   return plugins;
 }
