@@ -95,3 +95,17 @@ it('types the server-function handler options, so a typo fails', () => {
   `);
   expect(errors.join('\n')).toContain("'evnet' does not exist");
 });
+
+it('accepts Babel options and rejects a wrong plugins type', () => {
+  const errors = diagnostics(`
+    import type { TransformOptions } from '@babel/core';
+    import type { BabelOptions } from '@solidjs/vite-plugin';
+    declare const babel: TransformOptions;
+    export const typed: BabelOptions = babel;
+    export const literal: BabelOptions = { plugins: [['x', {}]], sourceMaps: true };
+    export const roundTrip: TransformOptions = literal;
+    export const wrong: BabelOptions = { plugins: 1 };
+  `);
+  expect(errors).toHaveLength(1);
+  expect(errors[0]).toContain("Type 'number' is not assignable");
+});

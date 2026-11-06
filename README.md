@@ -1093,7 +1093,14 @@ transform) is native in both modes.
 
 `"babel"` is the escape hatch: if the native output ever differs from what
 you expect, set `compiler: 'babel'` and file an issue — the behavioral diff
-between the two modes is the bug report. Platforms without a prebuilt native
+between the two modes is the bug report. Babel is not installed with the
+plugin, so add its packages first:
+
+```bash
+$ npm install -D @babel/core @solidjs/babel-plugin
+```
+
+Platforms without a prebuilt native
 binary (for example StackBlitz WebContainers) automatically fall back to the
 `@solidjs/compiler-wasm32-wasi` build, so no configuration is needed
 there.
@@ -1135,10 +1142,12 @@ for stable client/server function IDs. TSRX's host-defined
 
 #### options.babel
 
-- Type: Babel.TransformOptions
+- Type: `BabelOptions` (accepts Babel's `TransformOptions`)
 - Default: {}
 
 Pass any additional [babel transform options](https://babeljs.io/docs/en/options). Those will be merged with the transformations required by Solid.
+Install `@babel/core` in the project to use this option, and `@types/babel__core`
+if you want Babel's own types for the options you write.
 With the native compiler these options normally run before JSX lowering; for
 `.tsrx` only, they run after native TSRX lowering as described above.
 
@@ -1497,7 +1506,7 @@ Every `vite-plugin-solid` option except `hot` keeps its name, but some behave di
 | `dev: true` | Remove it. Development builds under `vite dev` are still the default, and `true` now also forces them in `vite build`. |
 | `dev: false` | Serves the production builds of `solid-js` and `@solidjs/web` under `vite dev`, and HMR falls back to full reloads. |
 | `solid: { moduleName: 'solid-js/web' }` | Remove it. Both compilers default to `@solidjs/web`. |
-| `babel` | Still applied, but JSX is compiled by the native `@solidjs/compiler`, and your Babel options run in their own pass before it. `compiler: 'babel'` switches the JSX transform back to Babel (`@solidjs/babel-plugin`). |
+| `babel` | Still applied, but JSX is compiled by the native `@solidjs/compiler`, and your Babel options run in their own pass before it. Install `@babel/core` to use it. `compiler: 'babel'` switches the JSX transform back to Babel and also needs `@solidjs/babel-plugin`. |
 | `include` / `exclude` | Relative globs resolve against the Vite root instead of `process.cwd()`. |
 | `ssr: false` | Modules Vite loads on the server (for example through `ssrLoadModule` to prerender a page) compile to SSR output instead of DOM output. |
 
