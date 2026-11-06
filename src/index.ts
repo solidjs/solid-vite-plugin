@@ -101,19 +101,40 @@ import { crawlFrameworkPkgs } from 'vitefu';
  */
 const LAZY_PLACEHOLDER_PREFIX = '__SOLID_LAZY_MODULE__:';
 
-/**
- * Babel and @solidjs/babel-plugin load on first use: the default native
- * compiler never calls them, and importing them up front was about half of
- * this plugin's own import time.
- */
-let babelLoad:
-  Promise<{ transformAsync: typeof babel.transformAsync; solid: babel.PluginItem }> | undefined;
-function loadBabel() {
-  babelLoad ??= Promise.all([import('@babel/core'), import('@solidjs/babel-plugin')]).then(
-    ([core, plugin]) => ({ transformAsync: core.transformAsync, solid: plugin.default }),
-  );
-  return babelLoad;
+/** Optional peers, loaded on first use: the default native compiler never needs Babel. */
+function optionalPeers<T>(load: () => Promise<T>, packages: string[], feature: string) {
+  let loaded: Promise<T> | undefined;
+  return () =>
+    // Not retried: Node remembers a missing package until the process exits.
+    (loaded ??= load().catch((error) => {
+      const missing =
+        error?.code === 'ERR_MODULE_NOT_FOUND' &&
+        packages.some((pkg) => String(error.message).includes(`'${pkg}'`));
+      if (!missing) throw error;
+      const named = packages.map((pkg) => `\`${pkg}\``).join(' and ');
+      throw new Error(
+        `[@solidjs/vite-plugin] ${feature} needs ${named}: install ${packages.length > 1 ? 'them' : 'it'} in the project, then restart the Vite process.`,
+        { cause: error },
+      );
+    }));
 }
+
+const loadBabelCore = optionalPeers(
+  () => import('@babel/core'),
+  ['@babel/core'],
+  'the `babel` option',
+);
+const loadBabelJsx = optionalPeers(
+  async () => {
+    const [core, plugin] = await Promise.all([
+      import('@babel/core'),
+      import('@solidjs/babel-plugin'),
+    ]);
+    return { transformAsync: core.transformAsync, solid: plugin.default as babel.PluginItem };
+  },
+  ['@babel/core', '@solidjs/babel-plugin'],
+  '`compiler: "babel"`',
+);
 
 /**
  * The HMR runtime: the dev-only `solid-js/refresh` core entry. Refresh
@@ -388,6 +409,13 @@ async function loadNativeCompiler() {
   }
 }
 
+/** Babel's `TransformOptions`, typed without `@babel/core`, which is an optional peer. */
+export interface BabelOptions {
+  plugins?: any[] | null;
+  presets?: any[] | null;
+  [option: string]: any;
+}
+
 /** Configuration options for @solidjs/vite-plugin. */
 export interface Options {
   /**
@@ -599,7 +627,8 @@ export interface Options {
    * `@solidjs/compiler`; `"babel"` is the escape hatch running
    * `@solidjs/babel-plugin` instead — if native output ever differs from your
    * expectations, set `compiler: "babel"` and file an issue (the behavioral
-   * diff between the modes is the bug report). Platforms without a prebuilt
+   * diff between the modes is the bug report; it needs `@babel/core` and
+   * `@solidjs/babel-plugin` installed in the project). Platforms without a prebuilt
    * native binary (e.g. StackBlitz WebContainers) automatically use the wasm
    * fallback; the compiler package itself is required in every mode.
    *
@@ -634,14 +663,15 @@ export interface Options {
    * (native lazy/refresh/JSX passes). Supplying custom babel options
    * reintroduces a Babel support pass ahead of the native JSX transform to
    * host them. For `.tsrx` only, native TSRX lowering runs first and the
-   * support pass receives the generated ordinary JavaScript.
+   * support pass receives the generated ordinary JavaScript. Install
+   * `@babel/core` in the project to use this option.
    *
    * @default {}
    */
   babel?:
-    | babel.TransformOptions
-    | ((source: string, id: string, ssr: boolean) => babel.TransformOptions)
-    | ((source: string, id: string, ssr: boolean) => Promise<babel.TransformOptions>);
+    | BabelOptions
+    | ((source: string, id: string, ssr: boolean) => BabelOptions)
+    | ((source: string, id: string, ssr: boolean) => Promise<BabelOptions>);
   /**
    * Solid JSX compiler options, for whichever compiler runs:
    * `@solidjs/compiler` by default, `@solidjs/babel-plugin` with
@@ -1788,7 +1818,7 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
         projectRoot,
       );
       const babelUserOptions = await getBabelUserOptions(options, source, id, false);
-      const { transformAsync, solid } = await loadBabel();
+      const { transformAsync, solid } = await loadBabelJsx();
       const babelOptions = mergeAndConcat(babelUserOptions, {
         root: projectRoot,
         // Keep .tsrx: the Babel plugin uses it to select its TSRX parser.
@@ -3007,14 +3037,14 @@ export default manifest;`;
             // This pass sees native-lowered ordinary JavaScript, so do not
             // route it back through Babel's TSRX parser.
             supportOptions.filename = generatedFilename;
-            const { transformAsync } = await loadBabel();
+            const { transformAsync } = await loadBabelCore();
             const supportResult = await transformAsync(code, supportOptions);
             if (!supportResult) return undefined;
             code = supportResult.code || '';
             maps.push(supportResult.map);
           }
         } else {
-          const { transformAsync, solid } = await loadBabel();
+          const { transformAsync, solid } = await loadBabelJsx();
           const babelOptions = mergeAndConcat(babelUserOptions, {
             ...babelBaseOptions,
             plugins: [[solid, solidOptions]],
@@ -3148,7 +3178,7 @@ export default manifest;`;
             babelUserOptions,
             babelBaseOptions,
           ) as babel.TransformOptions;
-          const { transformAsync } = await loadBabel();
+          const { transformAsync } = await loadBabelCore();
           const supportResult = await transformAsync(code, supportOptions);
           if (!supportResult) {
             return undefined;
@@ -3182,7 +3212,7 @@ export default manifest;`;
       // sole preset pre-rename): user plugins still run before it, user
       // presets still run after — babel runs plugins before presets and
       // presets in reverse order, so the pass order is unchanged.
-      const { transformAsync, solid } = await loadBabel();
+      const { transformAsync, solid } = await loadBabelJsx();
       const babelOptions = mergeAndConcat(babelUserOptions, {
         ...babelBaseOptions,
         plugins: [[solid, solidOptions]],
