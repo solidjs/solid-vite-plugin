@@ -1,5 +1,15 @@
 # Changelog
 
+## 3.0.0-next.57
+
+### Minor Changes
+
+- a3c76c2: Connect the start-mode development toolbar to the dev server. Errors the server runtime reports through `configureServerErrors` reach the toolbar, and the app's own hook is still called. The toolbar also gets the installed versions of `solid-js`, `@solidjs/web`, the plugin and Vite, and an endpoint that opens files in the editor.
+
+### Patch Changes
+
+- 75a5876: `@babel/core` and `@solidjs/babel-plugin` are now optional peer dependencies, and `@types/babel__core` is no longer a dependency, so a project on the default native compiler installs no Babel packages. Projects using `compiler: 'babel'` must install `@babel/core` and `@solidjs/babel-plugin`, and projects passing the `babel` option under the native compiler must install `@babel/core`; without them the plugin throws an error naming the option and the packages on the first transform. The `babel` option is now typed by the exported `BabelOptions` interface, which accepts Babel's `TransformOptions` without the plugin's declarations importing `@babel/core`.
+
 ## 3.0.0-next.56
 
 ### Patch Changes
