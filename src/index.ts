@@ -270,10 +270,10 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin {
   // by the crawl in test mode. They are inlined with solid-js (see
   // `test.server.deps` below).
   const testRuntimeConsumers = new Set<string>();
-  // True when a DOM test run inlines the Solid runtime. The `ssr`
-  // environment then does not get the `browser` condition (see
-  // `configEnvironment` below).
+  // True when a DOM test run inlines the Solid runtime. Node then does not
+  // get the `browser` condition (see `configResolved` below).
   let domTestRuntimeInlined = false;
+  let ssrBrowserAdded = false;
 
   return {
     name: 'solid',
@@ -285,6 +285,7 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin {
       projectRoot = userConfig.root;
       isTestMode = userConfig.mode === 'test';
       domTestRuntimeInlined = false;
+      ssrBrowserAdded = false;
 
       // Leave the user's `resolve.alias` as it is. Turning an object into an
       // array changes how Vite merges it with aliases from later plugins:
@@ -488,18 +489,12 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin {
           config.resolve.conditions = [...defaultServerConditions];
         }
       }
-      // Vitest passes the `ssr` environment's conditions to Node as
-      // `--conditions` for the packages it leaves external. With `browser`
-      // there, Node-only packages fail to load. For example, `msw/node`
-      // imports `@mswjs/interceptors/ClientRequest`, whose `browser`
-      // export is `null` (#125). DOM tests run in the `client` environment,
-      // and the Solid runtime is inlined in that case, so the `ssr`
-      // environment does not need `browser`.
       const addBrowser =
         isTestMode &&
         !opts.isSsrTargetWebworker &&
         !options.ssr &&
-        !(domTestRuntimeInlined && name === 'ssr');
+        !config.resolve.conditions.includes('browser');
+      if (name === 'ssr') ssrBrowserAdded = addBrowser;
       config.resolve.conditions = [
         'solid',
         // A server build with `ssr.target: 'webworker'` starts from Vite's
@@ -533,6 +528,17 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin {
         config.command === 'serve' &&
         config.mode !== 'production' &&
         options.hot !== false;
+
+      // Vitest sends only this copy to Node; `browser` there breaks `msw/node` (#125, #534).
+      const ssrResolve = config.ssr?.resolve;
+      if (
+        domTestRuntimeInlined &&
+        ssrBrowserAdded &&
+        ssrResolve?.conditions &&
+        ssrResolve !== config.environments?.ssr?.resolve
+      ) {
+        ssrResolve.conditions = ssrResolve.conditions.filter((c) => c !== 'browser');
+      }
     },
 
     resolveId(id) {
