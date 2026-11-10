@@ -24,3 +24,44 @@ describe('test config', () => {
     expect(test?.server).toBeUndefined();
   });
 });
+
+describe('test conditions', () => {
+  async function conditions(test: Record<string, unknown>, extra: Record<string, unknown> = {}) {
+    const { resolveConfig } = await import('vite');
+    const resolved = await resolveConfig(
+      {
+        mode: 'test',
+        configFile: false,
+        logLevel: 'silent',
+        plugins: [solidPlugin()],
+        test,
+        ...extra,
+      } as any,
+      'serve',
+    );
+    return {
+      ssr: resolved.environments.ssr.resolve.conditions,
+      node: resolved.ssr.resolve!.conditions!,
+    };
+  }
+
+  it('keeps browser on the ssr environment but not in the Node conditions for DOM tests', async () => {
+    const { ssr, node } = await conditions({ environment: 'happy-dom' });
+    expect(ssr).toContain('browser');
+    expect(node).not.toContain('browser');
+  });
+
+  it('keeps a browser condition the user set on the ssr environment', async () => {
+    const { node } = await conditions(
+      { environment: 'jsdom' },
+      { environments: { ssr: { resolve: { conditions: ['browser', 'node', 'import'] } } } },
+    );
+    expect(node).toContain('browser');
+  });
+
+  it('keeps browser in the Node conditions for the node environment', async () => {
+    const { ssr, node } = await conditions({ environment: 'node' });
+    expect(ssr).toContain('browser');
+    expect(node).toContain('browser');
+  });
+});
