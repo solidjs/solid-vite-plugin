@@ -205,6 +205,54 @@ export const devStylePatch = `(function(){var P=${JSON.stringify(
   NULL_BYTE_PLACEHOLDER,
 )};var handle=function(el){var v=el.isConnected&&el.getAttribute("data-vite-dev-id");if(!v)return;if(v.indexOf(P)===0){v="\\0"+v.slice(P.length);el.setAttribute("data-vite-dev-id",v)}var all=document.querySelectorAll("style[data-vite-dev-id]");for(var i=0;i<all.length;i++){var o=all[i];if(o!==el&&o.getAttribute("data-vite-dev-id")===v){var oa=o.hasAttribute("data-asset"),ea=el.hasAttribute("data-asset");var ssr=oa&&ea?(o.compareDocumentPosition(el)&4?el:o):oa?o:ea?el:null;if(ssr)ssr.remove();break}}};var scan=function(n){if(n.nodeType!==1)return;if(n.tagName==="STYLE")handle(n);else if(n.querySelectorAll)n.querySelectorAll("style[data-vite-dev-id]").forEach(handle)};var onMuts=function(muts){for(var i=0;i<muts.length;i++)muts[i].addedNodes.forEach(scan)};var headPhase=function(){scan(document.documentElement);new MutationObserver(onMuts).observe(document.head,{childList:true})};scan(document.documentElement);if(document.readyState==="loading"){var mo=new MutationObserver(onMuts);mo.observe(document.documentElement,{childList:true,subtree:true});document.addEventListener("DOMContentLoaded",function(){mo.disconnect();headPhase()})}else headPhase()})();`;
 
+type FetchModule = DevEnvironment['fetchModule'];
+
+const walkFetchers = new WeakMap<DevEnvironment, FetchModule>();
+
+function unwrapId(id: string): string {
+  return id.startsWith('/@id/') ? id.slice(5).replace('__x00__', '\0') : id;
+}
+
+function invalidationStamp(mod: EnvironmentModuleNode | undefined): number {
+  return mod ? Math.max(mod.lastHMRTimestamp, mod.lastInvalidationTimestamp) : 0;
+}
+
+// Re-sends a module invalidated since the runner got it, even if the walk re-transformed it (#537).
+function trackRunnerFetches(env: DevEnvironment): FetchModule {
+  const installed = walkFetchers.get(env);
+  if (installed) return installed;
+  const fetchModule = env.fetchModule.bind(env);
+  const served = new WeakMap<EnvironmentModuleNode, number>();
+  const lookup = (id: string, importer?: string) =>
+    (importer && id[0] !== '.' && id[0] !== '/') || id.startsWith('data:')
+      ? undefined
+      : env.moduleGraph.getModuleByUrl(unwrapId(id)).catch(() => undefined);
+  const record = (result: Awaited<ReturnType<FetchModule>>, before: number) => {
+    if (!('code' in result) || !result.id) return;
+    const mod = env.moduleGraph.getModuleById(result.id);
+    if (!mod) return;
+    // Code matching the stored result is current, whatever was invalidated mid-fetch.
+    const current = mod.transformResult?.code === result.code;
+    served.set(mod, current ? invalidationStamp(mod) : before);
+  };
+  env.fetchModule = async (id, importer, options) => {
+    const mod = await lookup(id, importer);
+    const stamp = invalidationStamp(mod);
+    const result = await fetchModule(id, importer, options);
+    if (!('cache' in result)) {
+      record(result, stamp);
+      return result;
+    }
+    const servedStamp = mod && served.get(mod);
+    if (servedStamp === undefined || servedStamp === invalidationStamp(mod)) return result;
+    const fresh = await fetchModule(id, importer, { ...options, cached: false });
+    record(fresh, stamp);
+    return 'code' in fresh ? { ...fresh, invalidate: true } : fresh;
+  };
+  walkFetchers.set(env, fetchModule);
+  return fetchModule;
+}
+
 async function getModuleNode(
   env: DevEnvironment,
   file: string,
@@ -215,7 +263,7 @@ async function getModuleNode(
     // context, so dep strings that are placeholder-wrapped virtual URLs
     // (`/@id/__x00__…`) or importer-relative specifiers land on the right
     // module id — a raw moduleGraph/transformRequest lookup would miss them.
-    const resolved = await env.fetchModule(file, importer);
+    const resolved = await trackRunnerFetches(env)(file, importer);
     if (!('id' in resolved)) return;
     return env.moduleGraph.getModuleById(resolved.id);
   } catch {
@@ -396,6 +444,10 @@ export function createDevAssetResolver(
   const resolved = new Map<string, ResolvedAssets>();
   const pending = new Map<string, Promise<ResolvedAssets | null>>();
   const { root, base } = server.config;
+  // Installed before any server runner's first fetch, so every module it evaluates is tracked.
+  for (const env of Object.values(server.environments ?? {})) {
+    if (env.config.consumer === 'server') trackRunnerFetches(env);
+  }
   let generation = 0;
   const invalidate = () => {
     generation++;
