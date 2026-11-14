@@ -5,7 +5,11 @@ import { fileURLToPath } from 'node:url';
 import { transformAsync, transformDirectives } from '@solidjs/compiler';
 import { createServer, type ViteDevServer } from 'vite';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import solidPlugin, { type Frontend, type FrontendContext } from './index.js';
+import solidPlugin, {
+  type Frontend,
+  type FrontendContext,
+  type FrontendHotContext,
+} from './index.js';
 
 let root: string;
 
@@ -40,7 +44,12 @@ const fe: Frontend = {
     const map = { ...JSON.parse(result.map!), sources: [context.id] };
     return { code: result.code, map, css: '.fe { color: red; }' };
   },
+  hotUpdate(context) {
+    hotCalls.push(context);
+    return context.modules.filter((m) => m.id?.includes('?dep'));
+  },
 };
+const hotCalls: FrontendHotContext[] = [];
 
 beforeAll(async () => {
   root = await realpath(await mkdtemp(path.join(tmpdir(), 'solid-frontends-')));
@@ -85,12 +94,16 @@ describe('frontends', () => {
     const context = calls.find((c) => c.id.endsWith('App.fe') && !c.ssr);
     expect(context?.solid.generate).toBe('dom');
     expect(context?.solid.hydratable).toBe(true);
+    // a dev client transform: the refresh pass runs on the output
+    expect(context?.hot).toBe(true);
   });
 
   it('compiles it for the server in a server environment', async () => {
     const result = await server.environments.ssr.transformRequest('/src/App.fe');
     expect(result?.code).toContain('ssrHydrationKey');
-    expect(calls.find((c) => c.id.endsWith('App.fe') && c.ssr)?.solid.generate).toBe('ssr');
+    const context = calls.find((c) => c.id.endsWith('App.fe') && c.ssr);
+    expect(context?.solid.generate).toBe('ssr');
+    expect(context?.hot).toBe(false);
   });
 
   it('serves its stylesheet as a CSS module the module imports', async () => {
@@ -131,6 +144,28 @@ describe('frontends', () => {
     expect([...(node?.importedModules ?? [])].some((m) => m.file?.endsWith('shared.d.fe'))).toBe(
       true,
     );
+  });
+
+  it('lets the front end choose the modules a change updates', async () => {
+    const client = server.environments.client;
+    await client.transformRequest('/src/App.fe');
+    await client.transformRequest('/src/App.fe?dep');
+    const file = path.join(root, 'src/App.fe');
+    const modules = [...(client.moduleGraph.getModulesByFile(file) ?? [])];
+    const plugin = server.config.plugins.find((p) => p.name === 'solid')!;
+    const hook = plugin.hotUpdate as unknown as (
+      this: unknown,
+      ...a: unknown[]
+    ) => Promise<typeof modules>;
+    const updated = await hook.call(
+      { environment: client },
+      { file, modules, read: () => '', timestamp: 0, type: 'update', server },
+    );
+    expect(hotCalls.at(-1)?.file).toBe(file);
+    expect(updated.map((m) => m.id)).toEqual([
+      `${file}?dep`,
+      expect.stringContaining('solid-tsrx-css'),
+    ]);
   });
 
   it("refuses an extension Solid's compiler already owns", () => {

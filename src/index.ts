@@ -74,7 +74,7 @@ export type {
 } from './request-event.js';
 export type { DevAssetResolver } from './dev-manifest.js';
 import path from 'path';
-import type { FilterPattern, Logger, Plugin, ViteDevServer } from 'vite';
+import type { EnvironmentModuleNode, FilterPattern, Logger, Plugin, ViteDevServer } from 'vite';
 import {
   createFilter,
   defaultClientConditions,
@@ -330,6 +330,26 @@ export interface Frontend {
     source: string,
     context: FrontendContext,
   ): FrontendResult | null | Promise<FrontendResult | null>;
+  /**
+   * A module of this extension changed under the dev server's client
+   * environment. Returns the modules Vite should update, as Vite's
+   * `hotUpdate` does (the CSS module the plugin serves is added after), or
+   * nothing to leave Vite's list as it is.
+   */
+  hotUpdate?(
+    context: FrontendHotContext,
+  ): EnvironmentModuleNode[] | void | Promise<EnvironmentModuleNode[] | void>;
+}
+
+export interface FrontendHotContext {
+  /** The changed file's path. */
+  file: string;
+  /** The modules Vite would update: every module of the file, and those that watch it. */
+  modules: EnvironmentModuleNode[];
+  /** Reads the changed file. */
+  read: () => string | Promise<string>;
+  /** Vite's resolved project root. */
+  root: string;
 }
 
 export interface FrontendContext {
@@ -355,6 +375,13 @@ export interface FrontendContext {
    * declarations, say): a change to it recompiles this module.
    */
   addWatchFile(file: string): void;
+  /**
+   * Whether this transform serves a dev client with hot updates on (the
+   * refresh pass runs on the output): a front end whose modules the refresh
+   * pass cannot swap may add its own `import.meta.hot` handling. Unset
+   * elsewhere.
+   */
+  hot?: boolean;
 }
 
 export interface FrontendResult {
@@ -1384,6 +1411,11 @@ function lazyFrontend(pkg: string, extension: string): Frontend {
         throw error;
       });
       return frontend.compile(source, context);
+    },
+    // nothing compiled yet means nothing on the page to update
+    async hotUpdate(context) {
+      const frontend = await loaded?.catch(() => undefined);
+      return frontend?.hotUpdate?.(context);
     },
   };
 }
@@ -2515,6 +2547,16 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
         this.environment.hot.send({ type: 'custom', event: DEV_MANIFEST_INVALIDATE_EVENT });
       }
       if (isLoweredModule(file) && this.environment.name === 'client') {
+        const frontend = frontendFor(file);
+        if (frontend?.hotUpdate) {
+          try {
+            const picked = await frontend.hotUpdate({ file, modules, read, root: projectRoot });
+            if (picked) modules = picked;
+          } catch (error) {
+            // Vite's own list still updates the page, as it would without the hook
+            logger?.warn(`[@solidjs/vite-plugin] ${file}: the front end's hotUpdate failed: ${error}`);
+          }
+        }
         updateTsrxCss(tsrxCss, file, await compileLoweredCss(await read(), file));
         const cssModule = this.environment.moduleGraph.getModuleById(resolvedTsrxCssModuleId(file));
         if (cssModule) {
@@ -2522,6 +2564,7 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
           if (!modules.includes(cssModule)) modules = [...modules, cssModule];
           return modules;
         }
+        return modules;
       }
 
       // solid-refresh only injects HMR boundaries into client modules, so
@@ -3012,6 +3055,7 @@ export default manifest;`;
               projectRoot,
             ),
             addWatchFile: (file) => this.addWatchFile(file),
+            hot: needRefresh,
           });
           if (!result) return null;
           code = result.code;
