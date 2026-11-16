@@ -176,7 +176,7 @@ const RESOLVED_VIRTUAL_MANIFEST_BRIDGE_ID = '\0' + VIRTUAL_MANIFEST_BRIDGE_ID;
 // base-prefixed root-relative URLs, `/@fs/` for root-external keys — for the
 // degraded paths that can't reach the plugin-side resolver (no registry and
 // no bridge, or a resolveSync call before the bridge cache warms). Keep the
-// two in sync.
+// two in sync; only the plugin-side one can add the client HMR `?t=` (#540).
 const devManifestCode = (
   root: string,
   base: string,

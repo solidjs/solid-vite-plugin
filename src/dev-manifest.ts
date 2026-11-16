@@ -364,7 +364,8 @@ export function normalizeModuleKey(key: string): string {
  * root-external keys (`../…`, e.g. sibling workspace packages) can't be
  * expressed as root-relative URLs at all — they get Vite's `/@fs/` form on
  * the resolved absolute path instead. Mirrored by the generated fallback in
- * `devManifestCode` (src/index.ts) — keep the two in sync.
+ * `devManifestCode` (src/index.ts) — keep the two in sync, except that the
+ * fallback can't see the client module graph and so adds no HMR timestamp.
  */
 export function devModuleUrl(
   root: string,
