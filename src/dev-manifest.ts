@@ -366,16 +366,30 @@ export function normalizeModuleKey(key: string): string {
  * the resolved absolute path instead. Mirrored by the generated fallback in
  * `devManifestCode` (src/index.ts) — keep the two in sync.
  */
-export function devModuleUrl(root: string, base: string, key: string): string {
+export function devModuleUrl(
+  root: string,
+  base: string,
+  key: string,
+  clientGraph?: Pick<DevEnvironment['moduleGraph'], 'urlToModuleMap'>,
+): string {
   key = normalizeModuleKey(key);
   const queryIndex = key.indexOf('?');
   const file = queryIndex === -1 ? key : key.slice(0, queryIndex);
-  const query = queryIndex === -1 ? '' : key.slice(queryIndex);
-  if (!file.startsWith('..')) return joinBase(base, '/' + key);
-  const absolute = path.resolve(root, file).split(path.sep).join('/');
-  // Vite's fs URLs collapse the leading slash: /@fs/Users/… (and keep the
-  // drive letter on Windows: /@fs/C:/…).
-  return joinBase(base, '/@fs/' + absolute.replace(/^\//, '') + query);
+  let query = queryIndex === -1 ? '' : key.slice(queryIndex);
+  let url: string;
+  if (!file.startsWith('..')) {
+    url = '/' + file;
+  } else {
+    const absolute = path.resolve(root, file).split(path.sep).join('/');
+    // Vite's fs URLs collapse the leading slash: /@fs/Users/… (and keep the
+    // drive letter on Windows: /@fs/C:/…).
+    url = '/@fs/' + absolute.replace(/^\//, '');
+  }
+  // Vite's client import analysis adds `?t=` to imports of a module it has
+  // invalidated; without it the preload loads a second module instance (#540).
+  const timestamp = clientGraph?.urlToModuleMap.get(url + query)?.lastHMRTimestamp;
+  if (timestamp) query = `?t=${timestamp}` + (query ? '&' + query.slice(1) : '');
+  return joinBase(base, url + query);
 }
 
 export function createDevAssetResolver(
@@ -396,6 +410,8 @@ export function createDevAssetResolver(
   const resolved = new Map<string, ResolvedAssets>();
   const pending = new Map<string, Promise<ResolvedAssets | null>>();
   const { root, base } = server.config;
+  const moduleUrl = (key: string) =>
+    devModuleUrl(root, base, key, server.environments?.client?.moduleGraph);
   let generation = 0;
   const invalidate = () => {
     generation++;
@@ -404,11 +420,20 @@ export function createDevAssetResolver(
   };
   server.watcher.on('all', invalidate);
 
+  const cachedAssets = (key: string): ResolvedAssets | undefined => {
+    let cached = resolved.get(key);
+    if (!cached) return;
+    const js = moduleUrl(key);
+    // HMR timestamps can change without a watcher event (`hot.invalidate()`).
+    if (cached.js[0] !== js) resolved.set(key, (cached = { js: [js], css: cached.css }));
+    return cached;
+  };
+
   const resolve = function resolveDevAssets(
     key: string,
   ): ResolvedAssets | Promise<ResolvedAssets | null> {
     key = normalizeModuleKey(key);
-    const cached = resolved.get(key);
+    const cached = cachedAssets(key);
     if (cached) return cached;
     let walk = pending.get(key);
     if (!walk) {
@@ -416,7 +441,7 @@ export function createDevAssetResolver(
       walk = (async (): Promise<ResolvedAssets> => {
         // The module's dev URL doubles as its client entry: modulepreload
         // hint and hydration module-map value.
-        const js = [devModuleUrl(root, base, key)];
+        const js = [moduleUrl(key)];
         const css = await collectDevStyles(server, [key], filter);
         return { js, css };
       })().then(
@@ -440,6 +465,6 @@ export function createDevAssetResolver(
     invalidate,
     resolve,
     resolveSync: (key: string) =>
-      resolved.get(normalizeModuleKey(key)) ?? { js: [devModuleUrl(root, base, key)], css: [] },
+      cachedAssets(normalizeModuleKey(key)) ?? { js: [moduleUrl(key)], css: [] },
   };
 }
