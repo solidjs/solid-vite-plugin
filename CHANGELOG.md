@@ -1,5 +1,18 @@
 # Changelog
 
+## 3.0.1
+
+### Patch Changes
+
+- 7ef54c4: `ssr: true` no longer builds the client environment first when its only input is one a server environment shares (inherited from the top-level `build` config). Hosts that set the client's real input after their server builds, such as Astro with a legacy adapter entry (`virtual:astro:legacy-ssr-entry`), keep their own build order instead of failing on a client build of the server entry.
+- 79b7e13: A front end can now take part in hot updates. `Frontend.hotUpdate` gets the
+  changed file and the modules Vite would update, and returns the modules to
+  update instead (the plugin's CSS module for the file is still added after).
+  `FrontendContext.hot` tells `compile` that the transform serves a dev client
+  with refresh on, so a front end whose output the refresh pass cannot swap can
+  add its own `import.meta.hot` handling. ReactiveScript's `.rx` front end uses
+  both to swap a dependency's components without reloading the page.
+
 ## 3.0.0
 
 ### Minor Changes
