@@ -5,6 +5,7 @@ import { existsSync, readFileSync, realpathSync } from 'fs';
 import { mergeAndConcat } from 'merge-anything';
 import { createRequire } from 'module';
 import { pathToFileURL } from 'url';
+import { isDeepStrictEqual } from 'util';
 import {
   createDevAssetResolver,
   registerDevAssetResolver,
@@ -3401,10 +3402,17 @@ export default manifest;`;
           const client = builder.environments.client;
           if (!client || client.isBuilt) return;
           const clientBuild = client.config.build;
+          const clientInput = clientBuild.rollupOptions?.input;
           const hasInput =
-            !!clientBuild.rollupOptions?.input ||
-            existsSync(path.resolve(builder.config.root, 'index.html'));
+            !!clientInput || existsSync(path.resolve(builder.config.root, 'index.html'));
           if (!clientBuild.manifest || !hasInput) return;
+          // A client input that a server environment shares came from the
+          // top-level `build` config, not from a client entry: the host owns
+          // the client's real input and sets it once its server builds have
+          // found the islands (Astro: `virtual:astro:legacy-ssr-entry` until
+          // then). Building it now would build the server entry for the
+          // browser, so leave the order to the host.
+          if (clientInput && sharesServerInput(builder.environments, clientInput)) return;
           await builder.build(client);
           clientBuiltFirst = true;
         },
@@ -3474,3 +3482,18 @@ export type ViteManifest = Record<
   resolve?: undefined;
   resolveSync?: undefined;
 };
+
+function sharesServerInput(
+  environments: Record<
+    string,
+    { name: string; config: { consumer?: string; build: { rollupOptions?: { input?: unknown } } } }
+  >,
+  clientInput: unknown,
+): boolean {
+  return Object.values(environments).some(
+    (environment) =>
+      environment.name !== 'client' &&
+      getEnvironmentConsumer(environment) === 'server' &&
+      isDeepStrictEqual(environment.config.build.rollupOptions?.input, clientInput),
+  );
+}
