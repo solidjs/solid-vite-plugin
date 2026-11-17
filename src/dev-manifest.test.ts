@@ -1,120 +1,87 @@
-import { mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import {
-  createServer,
-  createServerModuleRunner,
-  type EnvironmentModuleNode,
-  type ViteDevServer,
-} from 'vite';
-import type { ModuleRunner } from 'vite/module-runner';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { createDevAssetResolver } from './dev-manifest.js';
+import { createServer, type ViteDevServer } from 'vite';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { createDevAssetResolver, devModuleUrl } from './dev-manifest.js';
 
-declare global {
-  var __evals: Record<string, number>;
-}
-
-let root: string;
-let server: ViteDevServer;
-let runner: ModuleRunner;
-let resolver: ReturnType<typeof createDevAssetResolver>;
-
-const track = (name: string) =>
-  `globalThis.__evals[${JSON.stringify(name)}] = (globalThis.__evals[${JSON.stringify(name)}] ?? 0) + 1;\n`;
-
-async function edit(file: string, code: string) {
-  await writeFile(path.join(root, file), code);
-  // Vite's watcher path: onFileChange, then the HMR invalidation of the module and its importers.
-  const env = server.environments.ssr;
-  const changedFile = path.join(root, file);
-  env.moduleGraph.onFileChange(changedFile);
-  const seen = new Set<EnvironmentModuleNode>();
-  for (const mod of env.moduleGraph.getModulesByFile(changedFile)!) {
-    env.moduleGraph.invalidateModule(mod, seen, Date.now(), true);
-  }
-  resolver.invalidate();
-}
-
-beforeEach(async () => {
-  globalThis.__evals = {};
-  root = await realpath(await mkdtemp(path.join(tmpdir(), 'solid-dev-manifest-')));
-  await writeFile(path.join(root, 'page.css'), '.page { color: red }\n');
-  await writeFile(
-    path.join(root, 'ctx.js'),
-    track('ctx') + 'export const ctx = { id: Math.random() };\n',
-  );
-  await writeFile(path.join(root, 'child.js'), track('child') + "export const v = 'v0';\n");
-  await writeFile(
-    path.join(root, 'page.js'),
-    track('page') +
-      "import './page.css';\nimport { ctx } from './ctx.js';\nexport { v } from './child.js';\nexport { ctx };\n",
-  );
-  await writeFile(
-    path.join(root, 'layout.js'),
-    track('layout') + "export { ctx } from './ctx.js';\n",
-  );
-  server = await createServer({
-    root,
-    configFile: false,
-    logLevel: 'silent',
-    server: { middlewareMode: true, ws: false, watch: null },
-    plugins: [
-      {
-        // A slow transform widens the window in which the walk and the runner request the same module.
-        name: 'slow-ctx',
-        async transform(_code, id) {
-          if (id.endsWith('/ctx.js')) await new Promise((r) => setTimeout(r, 50));
-        },
-      },
-    ],
+describe('devModuleUrl', () => {
+  const graph = (entries: Record<string, number>) => ({
+    urlToModuleMap: new Map(
+      Object.entries(entries).map(([url, lastHMRTimestamp]) => [url, { lastHMRTimestamp }] as any),
+    ),
   });
-  resolver = createDevAssetResolver(server);
-  // Without HMR the runner relies on fetchModule's `cached` handshake alone, like workerd's.
-  runner = createServerModuleRunner(server.environments.ssr, { hmr: false });
+
+  it('adds the client HMR timestamp like Vite import analysis', () => {
+    const clientGraph = graph({ '/src/Page.tsx': 1794695609762, '/src/Fresh.tsx': 0 });
+    expect(devModuleUrl('/root', '/', 'src/Page.tsx', clientGraph)).toBe(
+      '/src/Page.tsx?t=1794695609762',
+    );
+    expect(devModuleUrl('/root', '/app/', '/src/Page.tsx', clientGraph)).toBe(
+      '/app/src/Page.tsx?t=1794695609762',
+    );
+    expect(devModuleUrl('/root', '/', 'src/Fresh.tsx', clientGraph)).toBe('/src/Fresh.tsx');
+    expect(devModuleUrl('/root', '/', 'src/Page.tsx')).toBe('/src/Page.tsx');
+  });
+
+  it('puts the timestamp first in an existing query', () => {
+    const clientGraph = graph({ '/src/Page.tsx?raw-ish': 1794695609762 });
+    expect(devModuleUrl('/root', '/', 'src/Page.tsx?raw-ish', clientGraph)).toBe(
+      '/src/Page.tsx?t=1794695609762&raw-ish',
+    );
+  });
+
+  it('looks up root-external keys by their /@fs/ URL', () => {
+    const clientGraph = graph({ '/@fs/pkg/src/Page.tsx': 1794695609762 });
+    expect(devModuleUrl('/root/app', '/', '../../pkg/src/Page.tsx', clientGraph)).toBe(
+      '/@fs/pkg/src/Page.tsx?t=1794695609762',
+    );
+  });
 });
 
-afterEach(async () => {
-  await runner.close();
-  await server.close();
-  await rm(root, { recursive: true, force: true });
-});
+describe('createDevAssetResolver', () => {
+  let root: string;
+  let server: ViteDevServer;
 
-describe('dev asset resolver style walk (#537)', () => {
-  it('inlines the CSS a lazy module imports', async () => {
-    const assets = await resolver.resolve('page.js');
-    expect(assets?.css.map((css) => typeof css === 'object' && css.id)).toEqual([
-      path.join(root, 'page.css'),
-    ]);
+  beforeAll(async () => {
+    root = await realpath(await mkdtemp(path.join(tmpdir(), 'solid-dev-manifest-')));
+    await mkdir(path.join(root, 'src'));
+    await writeFile(
+      path.join(root, 'src/App.js'),
+      'export const load = () => import("./Page.js");\n',
+    );
+    await writeFile(path.join(root, 'src/Page.js'), 'export default 1;\n');
+    server = await createServer({
+      root,
+      configFile: false,
+      logLevel: 'silent',
+      server: { middlewareMode: true, ws: false },
+    });
   });
 
-  it('does not leave the runner on stale code after an edit', async () => {
-    expect((await runner.import('/page.js')).v).toBe('v0');
-    await edit('child.js', track('child') + "export const v = 'v1';\n");
-    await resolver.resolve('page.js');
-    expect((await runner.import('/page.js')).v).toBe('v1');
-    expect(globalThis.__evals).toEqual({ ctx: 1, child: 2, page: 2 });
+  afterAll(async () => {
+    await server?.close();
+    if (root) await rm(root, { recursive: true, force: true });
   });
 
-  it('evaluates each module once when the walk races the first render', async () => {
-    const [, layout, page] = await Promise.all([
-      resolver.resolve('page.js'),
-      runner.import('/layout.js'),
-      runner.import('/page.js'),
-    ]);
-    expect(page.ctx).toBe(layout.ctx);
-    expect((await runner.import('/page.js')).ctx).toBe(layout.ctx);
-    expect(globalThis.__evals).toEqual({ ctx: 1, child: 1, page: 1, layout: 1 });
-  });
+  it('matches the URL the client import graph uses after an HMR invalidation (#540)', async () => {
+    const resolver = createDevAssetResolver(server);
+    const client = server.environments.client;
+    await client.transformRequest('/src/App.js');
+    const page = await client.moduleGraph.getModuleByUrl('/src/Page.js');
+    expect(page).toBeTruthy();
+    expect((await resolver.resolve('src/Page.js'))!.js).toEqual(['/src/Page.js']);
 
-  it('evaluates each module once when the walk races a render after an edit', async () => {
-    const before = (await runner.import('/layout.js')).ctx;
-    await runner.import('/page.js');
-    await edit('child.js', track('child') + "export const v = 'v1';\n");
-    const [, page] = await Promise.all([resolver.resolve('page.js'), runner.import('/page.js')]);
-    expect(page.v).toBe('v1');
-    expect(page.ctx).toBe(before);
-    expect((await runner.import('/page.js')).v).toBe('v1');
-    expect(globalThis.__evals).toEqual({ ctx: 1, child: 2, page: 2, layout: 1 });
+    const timestamp = Date.now();
+    client.moduleGraph.invalidateModule(page!, new Set(), timestamp, true);
+    client.moduleGraph.invalidateModule(
+      client.moduleGraph.getModuleById(path.join(root, 'src/App.js'))!,
+    );
+    const app = await client.transformRequest('/src/App.js');
+    expect(app!.code).toContain(`"/src/Page.js?t=${timestamp}"`);
+
+    // The cached entry from before the invalidation must not keep the stale URL.
+    expect((await resolver.resolve('src/Page.js'))!.js).toEqual([`/src/Page.js?t=${timestamp}`]);
+    expect(resolver.resolveSync('src/Page.js').js).toEqual([`/src/Page.js?t=${timestamp}`]);
   });
 });
