@@ -1,5 +1,5 @@
 <p>
-  <img width="100%" src="https://raw.githubusercontent.com/solidjs/solid-vite-plugin/master/banner.png" alt="Solid Vite Plugin">
+  <img width="100%" src="https://assets.solidjs.com/banner?project=Vite%20Plugin&type=core&version=2.0" alt="Solid Vite Plugin">
 </p>
 
 # ⚡ @solidjs/vite-plugin
