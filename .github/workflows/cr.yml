@@ -3,7 +3,7 @@ name: ⚡️ Continuous Releases
 on:
   push:
     branches:
-      - main
+      - 2.x
   merge_group:
   pull_request:
 
