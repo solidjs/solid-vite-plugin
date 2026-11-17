@@ -264,7 +264,7 @@ Install `@solidjs/start-devtools` as a development dependency to add the
 development toolbar with runtime errors and server function calls:
 
 ```sh
-pnpm add -D @solidjs/start-devtools@next
+pnpm add -D @solidjs/start-devtools
 ```
 
 Start mode detects the package automatically. Set `start: { devtools: true }`
@@ -698,8 +698,8 @@ other. The mode applies to generated and authored entries alike — an
 authored `render()` returning a `renderToStream` result is awaited the same
 way (and in production its client-entry reference is still rewritten).
 `httpStatus()` / `httpHeader()` declarations survive either mode: the
-runtime freezes the response head when the awaited render completes
-(`@solidjs/web` 2.0.0-rc.7+), just as streaming freezes it at shell flush.
+runtime freezes the response head when the awaited render completes,
+just as streaming freezes it at shell flush.
 Server mode only — in client mode the served shell has no boundaries to
 settle, so the option is a documented no-op there. A nonce set during the
 client-mode shell prerender is ignored (and the build warns): baking one
@@ -1420,8 +1420,8 @@ Put `solid` before `import` so Vite picks it first. Keep `import` for tools that
     "build": "vite build && tsc -p tsconfig.build.json && cp src/*.css dist/source/"
   },
   "peerDependencies": {
-    "@solidjs/web": "^2.0.0-rc.14",
-    "solid-js": "^2.0.0-rc.14"
+    "@solidjs/web": "^2.0.0",
+    "solid-js": "^2.0.0"
   }
 }
 ```
