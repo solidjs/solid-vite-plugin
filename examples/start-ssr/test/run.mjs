@@ -647,7 +647,7 @@ async function runLazyAssetChecks(mode, origin, { dev, basePrefix = '' } = {}) {
       page.html.includes('SLASH-LAZY-CONTENT'),
     `status ${page.status}`,
   );
-  const preloads = [...page.html.matchAll(/<link rel="modulepreload" href="([^"]+)">/g)].map(
+  const preloads = [...page.html.matchAll(/<link rel="modulepreload" href="([^"]+)"[^>]*>/g)].map(
     (m) => m[1],
   );
   const queryHref = preloads.find((href) => href.includes('QueryLazy'));
@@ -1729,7 +1729,7 @@ async function runProdMode() {
       mode,
       'prod',
       'clientOnly chunk modulepreload hint in SSR head',
-      !!widgetFile && html.includes(`<link rel="modulepreload" href="/${widgetFile}">`),
+      !!widgetFile && new RegExp(`<link rel="modulepreload" href="/${widgetFile.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"[^>]*>`).test(html),
     );
     record(
       mode,
