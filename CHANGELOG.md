@@ -1,5 +1,698 @@
 # Changelog
 
+## 3.0.0
+
+### Minor Changes
+
+- 8459560: New `start.devtools` option: a development toolbar with runtime errors and a
+  server function inspector, backed by the new optional-peer package
+  `@solidjs/start-devtools`. By default the toolbar turns on in `vite dev`
+  whenever the package resolves (install it as a dev dependency) and stays off
+  otherwise; `start: { devtools: true }` makes the package required (a missing
+  install becomes an error) and `start: { devtools: false }` opts out entirely.
+  Generated client entries wrap the app in the toolbar's `DevToolbar` component,
+  authored client entries get an injected mount import instead, and either way
+  the wiring is dev-serve-only codegen — production builds and previews contain
+  none of it. The package itself is resolved from the app graph first and from
+  the plugin's own location as a fallback, and the virtual toolbar modules
+  delegate their imports to that captured resolution, so pnpm-isolated installs
+  work without the package being hoisted to the app root.
+- a3c76c2: Connect the start-mode development toolbar to the dev server. Errors the server runtime reports through `configureServerErrors` reach the toolbar, and the app's own hook is still called. The toolbar also gets the installed versions of `solid-js`, `@solidjs/web`, the plugin and Vite, and an endpoint that opens files in the editor.
+- da12802: New `diagnostics` option (dev serve only): injects a client module that installs the in-page bridge from the app's own `@solidjs/diagnostics` and serves a `/__solid/diagnostics` endpoint on the dev server. Out-of-process consumers (agents, tests, curl) drive capture sessions (`begin`/`end`), `whyDidRun`, and cost queries over the Vite WebSocket. Works for plain index.html apps (transformIndexHtml injection) and start mode (generated/custom client entry injection). `@solidjs/diagnostics` is a type-only dependency of the plugin; the runtime bridge always comes from the app's installed copy.
+- 91aea47: BREAKING: requires Vite 6+. The `vite` peer dependency is now
+  `^6.0.0 || ^7.0.0 || ^8.0.0` and the legacy pre-environment-API code paths
+  are gone: the plugin now always configures `resolve.conditions` and SSR
+  `noExternal`/`external` per environment through `configEnvironment` (instead
+  of the old top-level `resolve.conditions` / `ssr` config placement), and the
+  start-mode SSR object form no longer needs a Vite-version guard. The `vite-3`,
+  `vite-4` and `vite-5` examples were removed. If you are on Vite 3–5, stay on
+  an earlier release of this plugin or upgrade Vite.
+- 1702a19: BREAKING: start-mode middleware is event-first, `(event, next) => Response | Promise<Response>`, with the request at `event.request`. The plugin composes the chain itself. `next()` takes no arguments — assign `event.request` before calling it to substitute the request downstream; `next(request)` throws a migration error. Per-request render inputs live on the event, set before `next()` (the render runs inside it): `event.nonce` (a string or `{ script, style }`) and `event.renderMode` (`'stream'` | `'async'`). `handleRequest(request, { nonce, renderMode })` is seeded onto the event before the chain and wins over a middleware write, then the event field, then static `start.renderMode`, then `'stream'`. Invalid host options reject the call before the chain. Generated entries pass `event.nonce` to `renderToStream`; authored entries must forward the `context.nonce` the handler passes them. The injected client-entry script, redirect fallback, dev head, dev styles, and (when there is a style nonce) a `<meta property="csp-nonce">` carry it too. The `start.renderMode` module form, which only shipped in 3.0.0-next prereleases, is removed — a path is a config error pointing at `event.renderMode` in middleware. The static `'stream'` | `'async'` shorthand stays. A nonce set while prerendering the client-mode shell is not baked into `dist/client/index.html` (the build warns). In dev, changing `event.nonce` or `event.renderMode` after the render has read them warns.
+- 540f72e: Add an opt-in `compiler: "native"` JSX transform path powered by `@dom-expressions/jsx-compiler`.
+- 24747b7: `options.event`: the public wrapper→event extension seam on the generated handlers. Fields passed as `handleRequest(request, { event })` (and `handleServerFunctionRequest(request, { event })` on the standalone server-function handler, threaded through its `createEvent` option) spread into the request event at creation, so hosts and custom server entries can extend what `getRequestEvent()` answers with — no new convention beyond `createRequestEvent`'s own init parameter. The conventional field is `nativeEvent`, the platform's raw request object: the plugin's own dev, preview, and server-function dev middlewares now pass `event: { nativeEvent: req }` (the Node `IncomingMessage`), so `getRequestEvent().nativeEvent` reads the same under `vite dev`/`vite preview` as behind a production Node entry that passes it. The event shape itself is unchanged (`{ request, locals, response }` plus whatever the wrapper spreads in); nothing is attached to the `Request`, and no client-address helper is added — on bare Node read `event.nativeEvent.socket.remoteAddress`, behind a trusted proxy read the forwarding headers off `event.request`.
+- 2f0384a: Route path-addressed server function calls (solidjs/solid#3076). A call's address is now `<endpoint>/<id>` with arguments in the query, so the dev middleware and the generated request-dispatch gate match the endpoint by mount prefix instead of exact pathname, and the dev middleware's module-preload id comes from the path segment. The retired `X-Server-Function-Id` header and `?id=` forms remain as transitional fallbacks for the RC window only — they will be dropped before the stable release.
+- 4bddb00: add `serverFunctions: { components: true }` (experimental): server components ride server functions with zero extra plugin config — the dev middleware and production handler serve component responses automatically, and SSR start mode's generated entries emit the document wiring (render plugin, bootstrap script, client `installServerComponents()` call)
+- da12802: Move to the renamed Solid 2.0 compiler packages: the native JSX/directives/lazy/refresh compiler is now `@solidjs/compiler` (was `@dom-expressions/compiler`) and the Babel escape hatch is `@solidjs/babel-plugin` (was `babel-preset-solid` — now a plugin rather than a preset, hosted in `plugins` with the same pass order: user plugins run before it, user presets after). Both backends now bake in the Solid defaults (`moduleName: "@solidjs/web"`, the control-flow `builtIns`, `contextToCustomElements`, `wrapConditionals`), so the plugin only passes the posture it actually decides (`generate`/`hydratable`/`dev`/`serverComponents`) plus user `solid` options, which override the built-in defaults exactly as before.
+- 22858a3: `start.node`: the build emits a ready-to-run Node server. With `start: { node: true }` the ssr build writes `dist/server/node.js` beside `server.js` — `node dist/server/node.js` (env `PORT`, default 3000, and `HOST`) serves the client build statically (files under `build.assetsDir` as `Cache-Control: public, max-age=31536000, immutable`, everything else `public, max-age=0, must-revalidate` with `Last-Modified`; a reasonable MIME table, `HEAD`, dot-segment paths and `..` traversal refused) and hands every other request to `handleRequest` with the raw Node request as `nativeEvent`, so `getRequestEvent().nativeEvent` answers the same as under `vite dev` and `vite preview`. The node<->web bridge is the plugin's own `src/http.ts` — the code the dev and preview middlewares already run (HTTP/2 pseudo-headers, `https:` on TLS sockets, client disconnects as the request's `AbortSignal`, HEAD short-circuit, `set-cookie` split, backpressure that also settles on close) — shipped as a separate build artifact of the package (`dist/node-entry.mjs`) that the plugin reads at build time and emits under a small generated header carrying the emit-time constants (client dir relative to the server dir, `assetsDir`, `base`, the mode). The file is ESM with no dependency beyond `node:*` and `./server.js`, listens only when run directly, and exports `listener` (the `(req, res)` function, mountable into `http.createServer`, Express, Fastify), `createListener({ static?, event? })` — `static: false` leaves files and the client-mode `index.html` fallback to a framework such as `express.static` or a CDN and keeps only the bridge; `event: (req) => fields` merges extra request-event fields over `{ nativeEvent: req }` — and `serve({ port?, host?, static?, event? })`.
+
+  Why: the fullstack templates shipped a hand-written `server.js` whose bulk was this generic Node bridge, copied into every scaffold and baked into the CLI, so bridge fixes never reached users — and it looked custom-made. Node is the one mainstream runtime without a fetch-shaped server API (Workers, Deno, Bun, Netlify, Nitro consume the server bundle's `{ fetch }` directly), so the gap is Node-only and belongs in the build output. It is a `start.*` option, not `ssr.*` (`ssr` stays boolean-only), and applies to both start modes: SSR mode renders pages; client mode with `serverFunctions` (which keeps `dist/server`) serves the static client with an `index.html` history fallback for HTML navigations plus the endpoint. `node.js` is an emitted asset, never a second build input — `server.js` and its `handleRequest` / `{ fetch }` contracts are unchanged, and nothing changes without the option. Where no server bundle exists (client mode without `serverFunctions`, or `start.external`) the build warns and emits nothing. Compression/proxy stance unchanged: plain HTTP, put a reverse proxy or CDN in front. Follow-ups this unlocks: the templates drop `server.js` and point their `start` script at `node dist/server/node.js`; create-solid drops its baked `SERVER_JS` constant.
+
+- 0985ce8: `start.renderMode: 'stream' | 'async'` (default `'stream'`), plus a per-request form and a runtime override — the fix for streaming SSR leaving `<Loading>` fallbacks unresolved for clients that never run JavaScript (solidjs/solid#3280). `'async'` makes the generated handler adopt the `renderToStream` result's thenable, which resolves with the complete HTML once every boundary has settled: nothing has flushed, so each boundary's content is spliced in place of its placeholder — no fallback markup, no swap templates or scripts — while hydration data still serializes and JavaScript clients hydrate as before. The string then takes `createSSRResponse`'s string path: the response head commits, the document gets the doctype and client-entry injection, and a `Location` written mid-render becomes a real 3xx instead of the post-flush script redirect. The tradeoffs are inherent and documented: time-to-first-byte waits for the slowest boundary and the whole page buffers in memory; `deferStream` is moot (everything defers). The per-request form follows the `middleware`/`setup` convention — `renderMode: './src/render-mode.ts'`, a module default-exporting `(event) => 'stream' | 'async' | Promise<...>` run inside the request scope after the middleware chain — for policies like "complete documents for crawler user agents or `?nojs`, streaming for everyone else". Hosts driving the handler directly pass `handleRequest(request, { renderMode })`; precedence is that runtime option, then the module function, then the static config, and an invalid value from any source is rejected with an actionable error (unknown literals and missing module paths fail at config time). Works identically for authored entries; stream mode is unchanged. Requires `solid-js` / `@solidjs/web` `^2.0.0-rc.7`, which freezes the response head when the awaited render completes so `httpStatus` / `httpHeader` declarations reach the response (solidjs/solid#3292).
+
+### Patch Changes
+
+- dea55b3: Base-path and lazy-asset URL handling fixed across the start mode surfaces (#298, #299, #300). Vite's base middleware strips the configured `base` from `req.url` before post middlewares run, but the built handler compares the request pathname against the base-prefixed server-function endpoint and hands the URL to application code — so under a non-root `base`, `vite preview` never dispatched `/base/_server` (requests fell through to page rendering) and dev page SSR saw base-stripped URLs that production would never send. The plugin's node adapters (the preview middleware, the start-mode dev SSR middleware, and the server-function dev middleware when the stripped endpoint form matched) now restore the base before constructing the web `Request`, so the handler sees production-shaped URLs on every surface. The dev asset resolver's lazy module URLs get the same treatment: they were emitted as `"/" + key`, which Vite rejects outside a non-root base and which mis-normalizes for root-external modules — they are now base-prefixed, and keys outside the Vite root (`../…`, e.g. sibling workspace packages) resolve to `/@fs/` URLs; the generated `virtual:solid-manifest` dev fallback mirrors the same logic. Finally, module query strings survive the lazy asset lookup: `resolveLazyModuleUrls` and the SSR `$$moduleUrl` injection kept only the queryless path while Rollup keys the facade chunk (and the Vite manifest entry) by the queried module id, so `lazy(() => import('./Panel.tsx?variant=a'))` missed its production manifest entry and could load different plugin output in dev — the query is now part of the asset key end to end, matching the manifest and the dev URL.
+- 73751ca: Only attach a request body in the dev middlewares' Node-to-web bridging when the incoming request actually carries one (Content-Length/Transfer-Encoding, or the h2 END_STREAM flag). An unconditionally attached empty stream made bodyless POSTs — zero-argument scripted server function calls, synthetic dispatches — parse as a present-but-unusable body, which @solidjs/web 2.0.0-rc.5 rejects as malformed (400) instead of ignoring.
+- 3e5d8ff: Boundary guard no longer aborts Vite's dependency scan. The dep scanner
+  (`vite:dep-scan`) crawls the raw import graph from the plugin's injected
+  scan entries before any directive transform runs, so it walks straight
+  through `'use server'` modules into genuinely server-only code — and the
+  `server-only` marker's client-graph guard treated that as a violation,
+  failing the whole scan on every cold `vite dev` start ("Failed to run
+  dependency scan. Skipping dependency pre-bundling.") for any app whose
+  server functions reach `server-only` code. The graph is legal once
+  transforms split it, so the guard now stands down on scanner resolves
+  (the `scan` flag Vite sets on plugin-container resolve options, both the
+  esbuild scanner in v6/7 and the rolldown one in v8) while still claiming
+  the specifier — the scanner must not chase `server-only`/`client-only` as
+  missing bare dependencies, which would abort the scan all the same. Real
+  dev and build module graphs resolve without the flag and stay fully
+  guarded: a client-side import of a `server-only` module is still a build
+  error naming the importer.
+- f0412e6: The `server-only`/`client-only` boundary guard no longer crashes when
+  `this.environment` isn't available on resolve hooks, and now detects the
+  target environment through the same `getEnvironmentConsumer` helper used
+  by the rest of the plugin, falling back to the resolve hook's `ssr` flag
+  when the environment is absent.
+- e180576: The dev-manifest bridge resolver no longer caches failed lookups. The convergence cache introduced for the nested-lazy render-pass fix stored the `null` a bridge failure resolves to, so one transient miss (dev server briefly unreachable, non-OK response) silently stripped that module's client assets — and its hydration preload entry — for the rest of the dev session. Only successful answers are cached now; failures keep logging loudly and stay retryable, while in-flight dedupe still hands retries of the same render pass a stable promise, so convergence is unaffected.
+- b2b9979: update to solid 2.0.0-beta.21 and @dom-expressions/compiler 0.50.0-next.24
+- 97d7ee8: update to solid 2.0.0-beta.22 and @dom-expressions/compiler 0.50.0-next.25
+- 4d68f9c: update to solid 2.0.0-beta.24 and @dom-expressions/compiler 0.50.0-next.29
+- 2ca6a9e: update to solid 2.0.0-beta.25
+- 178b9dc: update to solid 2.0.0-beta.26 and @dom-expressions/compiler 0.50.0-next.31
+- cdb19bf: update to solid 2.0.0-beta.28 and @dom-expressions/compiler 0.50.0-next.33
+- 6662c0f: update to solid 2.0.0-beta.29 and @dom-expressions/compiler 0.50.0-next.34 (the single-flight handler wiring imports `frameTransformFlightResult` from `@solidjs/web`, which first ships in that solid release)
+- d6fcfb9: update to solid 2.0.0-beta.30 and @dom-expressions/compiler 0.50.0-next.35 (the compiler's module-URL pass now also annotates `clientOnly(() => import("x"))` calls — third argument, options slot padded with `void 0` — so the server half can emit early modulepreload hints for browser-only modules; `resolveLazyModuleUrls` already resolves the placeholder position-independently)
+- 906ef2a: update to solid 2.0.0-beta.32 and @dom-expressions/compiler 0.50.0-next.40 — `commitEventResponse` now ships in `@solidjs/web`, so the SSR start-mode handler imports it by name and the namespace-import fallback for pre-.40 runtimes is deleted; the solid floor moves to beta.32 accordingly
+- fc5050f: update to solid 2.0.0-rc.0 — the solid-js/@solidjs/web peer ranges and the babel-preset-solid dependency move from `>=2.0.0-beta.32 <2.0.0-experimental.0` to `^2.0.0-rc.0`, admitting the rc line (which the old experimental-capped upper bound excluded, since `experimental` sorts before `rc`), still flooring above the hazardous 2.0.0-experimental.* publishes, and auto-graduating to stable 2.x
+- 36428cb: Reclassify emitted lazy facade chunks as dynamic entries in the raw output bundle so downstream plugins do not mistake them for application entries.
+- 528a7bb: Move the `solid:client-build-first` buildApp hook from `pre` to normal
+  order, and make its post-order `/complete` companion defer to any other
+  plugin that declares a non-pre `buildApp` hook of its own.
+
+  Pre-order `buildApp` hooks are where host plugins do destructive
+  preparation: nitro v3's `nitro:prepare` rm -rf's the output directory from
+  a pre-order hook. Sorted at `pre`, our client build could run before that
+  cleanup (hook order within `pre` follows plugin registration), so the
+  client bundle and manifest it had just emitted were wiped, the subsequent
+  server build baked in the manifest-less fallback, and the production build
+  served 500s with no client assets — the `solid({ ssr })` + `nitro()`
+  composition was broken out of the box.
+
+  Normal order still satisfies the hook's original purpose (client before
+  any server-first orchestrator): config-level `builder.buildApp`
+  orchestrators (@cloudflare/vite-plugin builds workers before the client)
+  are invoked by Vite only after all pre- and normal-order plugin hooks, and
+  hook-based orchestrators (nitro's `nitro:main`, cloudflare's companion
+  hook) declare post order. The `/complete` hook now also treats another
+  plugin's non-pre `buildApp` hook as a claim on the app build even before
+  it runs, instead of preempting a post-order orchestrator's staged build
+  (nitro prerenders and copies public assets before its final server bundle,
+  and knows which environments to skip). Plain `builder: {}` setups keep the
+  reinstated build-everything fallback, unchanged.
+
+  Covered by a new `examples/start-ssr` e2e mode (builder-prepare) that builds against a
+  nitro-shaped host: a pre-order output-wiping hook plus a post-order
+  ssr-building orchestrator that skips already-built environments.
+
+- c8615ed: Apply the request CSP nonce to start mode's generated client-entry script.
+- c41d013: Chunk and asset names derived from file names no longer carry runs of dots. A catch-all route module such as `[...404].tsx` built to `_...404_-<hash>.js`, and hosts, CDNs or middleware that reject any URL containing `..` refused that chunk, so the lazy route failed to hydrate. Builds now run the configured `output.sanitizeFileName` (or the bundler default) and then collapse every run of dots in the last segment of the name to one: the chunk becomes `_.404_-<hash>.js`. Directories are left alone: with `preserveModules` they are part of the name. The server build is named the same way, so the asset URLs it writes into server-rendered markup keep pointing at the files the client build wrote. A custom `sanitizeFileName` still runs, with the collapse applied after it, whether it comes from the config or from another plugin's `outputOptions` hook; `sanitizeFileName: false` is left alone. Fixes #391.
+- 9f5b744: Use the resolved client and server build directories when prerendering client-mode shells and serving preview requests. Preserve the SSR service for host build orchestrators such as Nitro, including client mode without server functions, while standalone client builds still produce only static output.
+- 7127c8b: Resolve the client build manifest from the client environment's actual output directory in builder-mode builds instead of assuming `dist/client`. Frameworks that relocate the client outDir (e.g. SolidStart's nitro plugin building to `.solid-start/client`) previously got the dev-shaped fallback manifest in their SSR bundle, breaking production asset resolution.
+- 18c7144: Production SSR links a route's built CSS and chunks again when the host gives each environment its own plugin instance (#525). Vite's default builder resolves the config again for every environment, so the server build's instance never saw the client build and looked for the manifest only in `dist/client`. With `@cloudflare/vite-plugin` 2.0, which writes the client to `.cloudflare/output/...`, it found nothing and baked in the development resolver, which returns source paths and no CSS. The server build now reads the manifest from the client environment's configured `outDir` first. A client build also no longer remembers lazy chunks from an earlier build by the same instance, so the client rebuild that Cloudflare runs after the worker writes the same files instead of a second copy of the app.
+- eb47535: Client start mode now strips the shell-end marker script along with the `<HydrationScript />` bootstrap. `@solidjs/web` 2.0.0-rc.15 (solidjs/solid#4002) closes every shell that rendered `<HydrationScript />` with `<script>_$HY.s[id]=1,…</script>`, and a Document shared with SSR mode carries `<HydrationScript />`. Once the plugin stripped the bootstrap, that marker threw `_$HY is not defined` in client-mode shells, in dev and in the prerendered `index.html`. Shells from earlier `@solidjs/web` versions have no marker and are unchanged.
+- 7700379: Update @dom-expressions/compiler to 0.50.0-next.37: the directive DCE now removes an import declaration whose surviving specifiers are all type-only after pruning (solid-start #2273), instead of leaving a bare server-module edge in the client bundle.
+- 7b2a3ba: Follow the native compiler package rename: `@dom-expressions/jsx-compiler` is
+  now `@dom-expressions/compiler` (the binary is growing beyond the JSX
+  transform, so the name no longer singles out one pass). No option or behavior
+  changes — `jsx: "native"` works exactly as before.
+- fbb5239: Unlock the @dom-expressions/compiler dependency from the exact 0.50.0-next.40 pin to the `^0.50.0-next.43` range — floors at next.43, auto-graduates to later next.N and stable 0.50.0, matching how babel-preset-solid is ranged. Absorbs the .41–.43 compiler fixes: dedicated `<!>` insertion markers for components boxed by static text (solidjs/solid#3004, content no longer lands after the trailing text), `$key` on intrinsic server JSX compiling to a `_key` attribute so the frame morph matches keyed elements by key instead of position, `transformLazy` annotating the module-URL placeholder in `lazy()`'s third argument for solid-js 2.0's `{ export }` options bag (solidjs/solid#3011), HTML-escaping of static template-literal parts in attribute/style values, innerHTML/textContent holes no longer taking the `_$scope` id reservation (solidjs/solid#3015), and the Rust 1.95 / Oxc 0.144 toolchain upgrade with the WASI linking fix.
+- 9dabc25: In builds, inline CSS module class names used directly in JSX attributes (`class={styles.button}`, template literals of them, named imports), so they compile into the element's template instead of a reactive effect. The stylesheet is kept even when every use was inlined.
+- ff493b9: Production builds now dedupe `solid-js`, `@solidjs/web` and `@solidjs/signals` the same way dev does. A dependency with its own nested copy of Solid no longer adds a second runtime to the bundle, which broke context lookups (#112).
+- cb5c5ee: Document the deployment contract provider plugins can rely on from 3.0: the `client` and `ssr` environments, the `ssr` environment's `index` handler entry with its `{ fetch }` and `handleRequest` exports, client-first build order, output locations, client-mode output, and the dev handover. A test builds an app through a stand-in provider that relies on it.
+- 23965a2: The dev asset resolver now caches per module key and answers synchronously once a key's assets are known (in-flight walks are deduped; any watcher event drops the cache so dev CSS stays fresh). Server-side `lazy()` re-requests a module's assets on every retry of a suspended render pass — the router's nested outlets re-create the component per retry — and an always-async resolver suspends every retry on a brand-new promise, so the pass never converges: any nested route hung `vite dev`, or overflowed the render stack (one resume closure nests per cycle) and the escaped rejection killed the dev server. The build manifest never looped because it answers synchronously; dev now matches it after the first resolution. The HTTP bridge resolver for isolated SSR runners (nitro dev worker, workerd) gets the same convergence cache.
+- 2436bf5: Wire the Start development error boundary into server rendering and support direct `@solidjs/start-devtools` imports in apps with custom server and client entries.
+- 3c33a9a: Dev SSR CSS collection and a client-side asset manifest:
+
+  - In dev, `virtual:solid-manifest` now exports an asset resolver
+    `{ resolve, resolveSync }` instead of a stub object. When server-side
+    `lazy()` resolves a module, `resolve` walks Vite's SSR module graph and
+    returns its transitively imported CSS as inline-style descriptors, so dev
+    SSR streams fully styled markup (no FOUC) as `<style data-vite-dev-id>`
+    tags that Vite's HMR client adopts; `resolveSync` answers with the dev js
+    URL so islands keep a synchronous client-loadable `moduleUrl`. Requires
+    `solid-js` ≥ 2.0.0-beta.18. A `devStylePatch` export (inline script for the
+    document `<head>`) reconciles SSR'd style tags with Vite's client:
+    it rewrites virtual-module ids to their null-byte form and removes the
+    SSR'd twin when a late-streamed style arrives after Vite's client has
+    seeded its registry — recommended for any streaming-SSR document in dev.
+  - Build-side hooks (lazy facade-chunk emission, manifest classification)
+    now detect the client build through the per-environment `consumer` config
+    when available. Builder-mode builds that run the client and ssr
+    environments in one Vite process (e.g. SolidStart's nitro plugin) were
+    misclassified by the process-wide `--ssr` flag, so dynamically imported
+    modules folded into shared chunks lost their manifest entries and their
+    CSS/preloads were dropped from SSR output.
+
+- 9f0ec40: Dev servers now resolve the `development` export condition for externalized server deps. Externalized SSR imports are resolved with `resolve.externalConditions` (default `['node', 'module-sync']`), so packages selecting their dev build through the `development` condition — @solidjs/web's server-functions runtime among them — loaded their production copy under `vite dev`: thrown server errors reached the client sanitized to "Internal Server Error" instead of carrying the real message, and dev-only diagnostics vanished. The plugin now prepends `development` to each server environment's `externalConditions` whenever it injects dev mode, matching the treatment `resolve.conditions` already got.
+- be766d6: `dev: false` now serves Solid's production builds under `vite dev`, as documented (#62). The plugin already dropped its own `development` condition, but Vite's default `development|production` condition resolves to `development` in any non-production mode, so the client still pre-bundled `solid.dev.js` / `web.dev.js` and SSR loaded `server.dev.js`. With `dev: false` the plugin now rewrites that condition to `production` under `vite dev`; vitest runs and `vite build` keep Vite's default resolution. Vite conditions apply per environment, so other packages that ship a `development` export also get their production builds in that case. It also stops emitting HMR refresh wrappers and pre-bundling `solid-js/refresh`, because the production refresh runtime is an inert stub that only warns; edits fall back to a full reload. The diagnostics bridge also stays off with `dev: false` unless `observe` is on, since its channels exist only in the dev and observe builds.
+- 2a081c3: Under `vite dev`, a server-function call that arrives before any page has loaded the server handler no longer loads the function's module ahead of `start.serverSetup`. The dev middleware imported the module first and the handler (which runs the server setup module first) second, so the module and everything it imports could load before instrumentation started. It now loads the handler first.
+- 83f7bb5: Two pieces hoisted from SolidStart so any host gets them plugin-side:
+
+  - Dev-manifest HTTP bridge for isolated SSR runners. The dev asset resolver
+    lives in the Vite process and is normally reached through a
+    process-global registry; hosts that evaluate server modules in an
+    isolated module runner (nitro's dev worker, workerd via
+    @cloudflare/vite-plugin) can't see it, which broke lazy-route CSS and
+    hydration preloads in dev. With `ssr` enabled the dev server now serves
+    `GET /@solidjs/vite-plugin/dev-manifest?key=<module key>` (ResolvedAssets
+    JSON, `null` for unresolvable keys), and the dev flavor of
+    `virtual:solid-manifest` transparently falls back to fetching it when the
+    registry has no entry for the root — the endpoint URL is baked in at
+    module generation time from the live server's resolved origin, so
+    isolated runners need zero host code. In-process consumers still
+    short-circuit on the registry hit and never touch HTTP. Misses log loudly
+    on both sides (registry miss / empty resolution on the serve side,
+    non-OK responses and network failures on the fetch side) and resolve to
+    `null`, keeping the runtime's own no-assets warning as the final
+    catch-all.
+  - Always-on `server-only` / `client-only` boundary marker modules:
+    importing `server-only` from a module bundled for the client fails the
+    build with an error naming the importer (and vice versa for
+    `client-only`); the allowed environment resolves the marker to an empty
+    module. Ambient type declarations ship at
+    `@solidjs/vite-plugin/boundary-modules`. The bare specifiers are claimed
+    even when React's same-named npm packages are installed; the errors are
+    prefixed `[@solidjs/vite-plugin]`.
+
+- 81555d8: Invalidate the dev manifest's CSS cache in isolated SSR runners after file changes. Subsequent server responses include the updated styles before hydration. Responses started before invalidation cannot restore old cache entries or remove newer pending requests.
+- 00d6746: Lazy-route CSS no longer goes missing from dev SSR when a host imports `virtual:solid-manifest` before the dev server is listening (#414). Nitro's isolated runner does this at startup: the manifest had no origin to bake into the bridge URL yet, so it fell back to js-only resolution for the rest of the session. The bridge URL is now looked up on first use, without making the manifest import wait for the port, and a lookup made before the server listened is retried once it does.
+- eecd5b6: Two dev fixes for the server function manifest, which the generated handler imports when another plugin owns the SSR environment (for example `@cloudflare/vite-plugin`):
+
+  - The manifest no longer waits a fixed second on each load (#427). It reloads each time a new server function module is transformed, so startup, restarts and the first call to a new function each waited 1,000 ms. The debounce is only needed for builds, so dev now returns the current list. Each new module still invalidates the manifest before anything can call it.
+  - A deleted `"use server"` file, or one that no longer declares server functions, is now removed from the manifest. Before, the manifest kept importing it, and every request failed with `Failed to load url` until the dev server restarted.
+
+- 16245b6: Dev middleware recognizes the scripted transport's data address. Scripted server-function calls now go to `<endpoint>/data/<id>` (solidjs/solid#3094), and the middleware's module-preload step assumed exactly one path segment after the mount — a cold function only client code references would never be evaluated in the SSR environment for a data-addressed call, answering 404 under `vite dev`. Dispatch itself was unaffected (mount matching is prefix-based). The id now parses from behind the literal `data` segment too; a function id spelled `data` still parses at the bare address, since an id occupies exactly one segment.
+- a2bd979: The start-mode dev middleware dispatches every request through the `start.middleware` chain — all methods and accept types, matching production and preview — instead of only HTML-accepting GETs. API routes (GET/POST exports served by a middleware like filesystem-routing's `createAPIHandler`) and no-JS form POSTs now work under `vite dev`. Non-page requests the chain does not handle fall back to Vite's own pipeline (its 404) rather than getting a page rendered at them, and without a configured middleware nothing changes: non-page requests never leave Vite's pipeline.
+- 884571b: Under `vite dev`, pages now answer HEAD requests, and GET requests with `Accept: */*` or no Accept, the way production does. Before, these got Vite's 404. The page-request test now matches Vite's own HTML fallback.
+- 2ad3c9a: Dev lazy-module asset URLs now carry Vite's `?t=` HMR timestamp, so after an edit the hydration preload and the app's own `import()` load one module instance instead of two (#540).
+- b0887c0: Start mode dev: a stylesheet shared by the entry graph and a lazy component now keeps its first position in `<head>`, as in production. The dev shell renders it twice. The dev style patch used to drop the earlier copy, so the stylesheet moved after the lazy component's own styles and equal-specificity overrides in the lazy component lost. When both copies are server-rendered, the patch now drops the later one.
+- 7b20a0f: SSR start mode: dev responses now inline the entry graph's CSS, fixing the
+  flash of unstyled content. The dev middleware walks the SSR module graph
+  from the root entry (the app + document for generated entries, the authored
+  server entry otherwise), compiles each transitively imported stylesheet
+  through the client environment, and SSRs them as
+  `<style data-asset data-vite-dev-id>` tags in `<head>` — the same shape the
+  lazy-asset system emits, so Vite's client adopts them on startup (CSS HMR
+  updates the adopted tag in place) and the dev style patch dedupes any
+  late-injected twin. Previously entry CSS only arrived when the client entry
+  JS executed, so server-painted markup flashed unstyled in dev; production
+  was always fine (manifest-driven `<link rel="stylesheet">`).
+- a810d09: Dev servers now inline `solid-js` and `@solidjs/web` into every server environment instead of externalizing them. `resolve.externalConditions` only governs the imports Vite's module runner resolves itself; an externalized package's own imports are resolved by Node with Node's conditions, never `development`. Since solid 2.0.0-rc.7 both core packages ship a `dist/server.dev.*` behind that condition, so under `vite dev` the framework split in two: the app's `solid-js` was the runner's dev copy while `@solidjs/web`'s `import "solid-js"` landed on Node's production copy. `renderToStream` installed the asset resolver on one `sharedConfig` and `lazy()` read the other — every dev SSR page with a `lazy()` component failed with `lazy() called with moduleUrl "…" but no asset manifest is set` — and every other module-level singleton (owner tracking, request events, hydration keys) was divided the same way. With the two packages in `resolve.noExternal` every resolution, theirs included, goes through the environment's conditions and a single dev build is loaded end to end. Applies whenever the plugin injects dev mode into a server environment; vitest projects (which manage their own inlining) and hosts that set `noExternal: true` are left as they are.
+- a3cc782: Fix `vite dev` breaking after a mid-session dependency re-optimization when the development toolbar is installed. The generated entries' `@solidjs/start-devtools` import reused the id captured when the toolbar was detected; in the client environment that id is the optimizer's pre-bundled URL, stamped with the browserHash of the pass that produced it. Any dependency discovered after the initial scan re-optimizes — the toolbar's chunks are re-emitted under new names and the hash moves on — and the frozen id kept the entry on the previous pass: its lazy chunks answered `504 Outdated Optimize Dep` and the stale bundle brought a second `solid-js` instance into the page (hydration key misses, `REACTIVITY_HALTED`). The import is now resolved afresh on every request, so it always follows the current optimizer pass.
+
+  The most common trigger is also removed: the agent diagnostics bridge (`@solidjs/diagnostics/browser` and `/protocol`) reaches the page through a virtual module the dependency scanner never crawls, so its first load discovered the two imports and forced exactly that re-optimize + reload. The diagnostics plugin now pre-bundles them up front whenever the surface is enabled.
+
+- 473afd2: Start devtools are no longer enabled when `@solidjs/start-devtools` is not installed. Detection falls back to resolving the package from the plugin's own file (for pnpm-isolated installs where it is only a dependency of the plugin), but the package is declared an optional peer dependency of the plugin, so when it is absent Vite answers that resolution with its `__vite-optional-peer-dep:` stub instead of `null`. The plugin took the stub as a successful resolution, wrapped the generated client entry in `DevToolbar`, and the browser failed with `The requested module '/@id/__vite-optional-peer-dep:@solidjs/start-devtools:@solidjs/vite-plugin' does not provide an export named 'DevToolbar'`. The stub is now treated as "not installed".
+- dfabe22: Auto-enable the agent diagnostics surface (dev serve only) when `@solidjs/diagnostics` is installed in the app — installing the dev dependency is now the whole setup. The `diagnostics` option becomes an override: `true` forces it on (erroring if the package is missing), `false` opts out entirely, omitted auto-detects. Start mode's generated/authored client entries follow the same detection for the bridge import.
+- f463de5: Diagnostics auto-detection now requires the app to declare `@solidjs/diagnostics` in its own package.json (presence in ancestor node_modules surprise-enabled the surface for monorepo fixture apps), and the surface never activates in test mode (vitest browser mode runs a dev serve and was getting the bridge injected into test pages).
+- 5c50681: Announce the diagnostics surface in the dev-server startup block when `diagnostics: true` is set: two extra lines after Vite's URLs naming the `/__solid/diagnostics` endpoint (with its method vocabulary) and the agent skill documents shipped in node_modules. Startup output is the one channel agents reliably read even in projects with no AGENTS.md, making this the discovery path for existing apps and ports. Dev-serve only.
+- e4538d8: Correct the README on why `start.serverSetup` cannot be a static import (the whole graph loads before any module runs, and an async module does not hold back the imports after it) and on what the env leak scan skips.
+- 3a7ff44: Document shell edits now trigger a full page reload instead of being silently absorbed (solidjs/solid#3151). Two sides: the resolved `start.document` / `src/Document.*` module declines HMR in its client compile (it hydrates the whole `document`, so no component swap can ever apply — self-accept + invalidate makes Vite reload instead), and server-environment updates for files with no client-graph counterpart (client-mode documents, authored entry-server, middleware) send a browser full-reload rather than staying suppressed — the suppression exists to protect client HMR from full-reload races, but a server-only file has no client update to race with.
+- fb9f447: Drop the retired `X-Server-Function-Id` header and `?id=` addressing fallback from the dev middleware's module-preload path. Addressing is path-only (`<endpoint>/<id>` and `<endpoint>/data/<id>`), matching the runtime's removal of its own transitional shims during the RC.
+- 030fc89: Drop the `_$SC` bootstrap head-open splice. The runtime's serialized server-component references now self-bootstrap the registry (each hydration script's first reference carries it as an idempotent expression), so nothing needs to precede the data scripts — and the splice actively broke hydration: a script ahead of the authored `<head>` elements claims as the first walked child and drifts every positional claim after it (metas claimed as title, title as link), silently in production. Requires @dom-expressions/runtime 0.50.0-next.37 / @solidjs/web 2.0.0-beta.31.
+- 824f72c: allow vite 8 in peerDeps
+- 314a961: Ship the plugin as ESM only, which makes the package about 1 MB smaller unpacked. Vite is ESM-only already, and on the supported Node versions (22.12 and later) `require('@solidjs/vite-plugin')` loads the ESM build with the same exports (Node 22.12 prints a one-time experimental warning; 22.13 and later don't).
+- 8386fb4: Let provider-owned SSR environments serve start-mode development requests without
+  calling `ssrLoadModule`. Entry CSS and server functions are transported through
+  the generated handler so isolated runtimes retain SSR styles and HMR support.
+
+  Add `ssr.external` for integrations that also own the server build wiring.
+
+- 6dbb7e8: Start mode's generated request handler now default-exports a Fetchable
+  `{ fetch(request) }` object alongside its named `handleRequest` export.
+  Deployment integrations that follow the web-standard Fetchable convention
+  can consume the virtual handler or built server entry without a wrapper.
+  The `fetch` method intentionally ignores provider arguments after the request
+  instead of forwarding them as Solid handler options.
+
+  The normal `ssr` environment now exposes that handler as its `index` service
+  entry. Provider Vite plugins can adopt the same environment for development
+  and production without `start.external`, a custom source entry, or explicit
+  Rollup input. Standalone builds continue to emit `dist/server/server.js`.
+
+- c7b8d84: Docs: the Quickstart points at the Solid 2 templates, the install commands include the required `@solidjs/web` peer, and the HMR note no longer describes itself as early work from version 1.1.0.
+- 1c51f54: Replace vite's `isRunnableDevEnvironment` with a duck-typed `runner`-presence check. Vite's helper is an `instanceof` test against the caller's own `vite` module, so when the plugin resolves to a different physical vite copy than the dev server's (workspace/`link:` installs), every environment failed the check and the SSR/dev middlewares silently stood down — serving markup without hydration wiring.
+- d1b2ed0: The generated SSR handler no longer crashes the server process when a client aborts a streaming response mid-flight. Enqueueing into a closed `ReadableStream` controller throws, and a streamed fragment can land seconds after the shell — an abort (page reload, navigation away) during that window took down the whole Node process with `ERR_INVALID_STATE`. Writes are now dropped once the stream closes or is cancelled.
+- 7fa5aa3: Avoid overriding environments configured in Vitest workspaces and projects with the `jsdom` default (forward-port of #323 by @carloitaben, fixes #205). A root config that defines `test.projects` (or the pre-Vitest-4 `test.workspace`) runs no tests itself, so it no longer gets `test.environment: 'jsdom'` injected — which made Vitest probe for (and prompt to install) jsdom at startup even when every project runs under node or in browser mode. Each project keeps controlling its own environment.
+- 2416468: Add a `frontends` option: other languages that lower to Solid can claim a file extension and compile its modules themselves (`frontends: { ".x": x() }`). A front end's `compile(source, { id, moduleId, ssr, root, solid, addWatchFile })` returns `{ code, map, css }`, given the compiler options this plugin would use for a JSX module in that environment; the result then takes the lowered `.tsrx` route (lazy and refresh passes, server functions keyed by the module's real path, `css` as a CSS module, dep scanning). Server functions in a front end's modules need `@solidjs/compiler` with secondary passes that accept any extension. `.rx` (ReactiveScript) is built in: with `@reactivescript/compiler` installed in the project, `.rx` modules compile with no option.
+- 970bc19: `handleRequest(request, { nonce })` accepts the `{ script, style }` form of `@solidjs/web`'s `CSPNonce` and uses its `script` value for the scripts the handler writes: the injected client-entry tag and the post-flush redirect fallback. A pair used to throw `TypeError: value.replace is not a function`. A value outside `CSPNonce` (anything but a string or a `{ script, style }` object with both keys, each a non-empty string or `false`) now rejects the call up front with an error naming the option, before the middleware chain runs; an empty value (`undefined`, `null` or `''`) still means no nonce. The option is now declared in the `virtual:solid-ssr-handler` types.
+- b6af42f: SSR start mode closes the middleware early-return gap with the runtime's `commitEventResponse`: a middleware that answers without calling `next()` (an API handler) bypasses `createSSRResponse`, so its request-scope stub writes — cookies appended to `event.response.headers`, status — never reached the wire. The generated handler now applies `commitEventResponse(response, event)` unconditionally at the handler edge, strictly after the outermost middleware returns: headers stay mutable through the whole unwind, committed page responses pass through untouched (the fold is idempotent), and the inner per-path folds (`applyResponseStub` on raw `entry.render` Responses and server-function responses) collapse into the one edge fold.
+
+  Until the next `@solidjs/web` repin ships `commitEventResponse` (TODO(.40-repin) in the codegen), the handler resolves it off a namespace import with a local fallback that preserves the previous partial fold semantics — a named import of a missing export would be fatal in ESM — so generated modules keep working against pre-.40 runtimes and upgrade to the runtime's fold (protocol-header denylist, committed-stub loudness) automatically at the repin.
+
+- 4fb1af3: Honor the host's `resolve.noExternal` patterns when adding vitefu's externals to the SSR environment. The plugin already refused to re-externalize anything `noExternal` inlines, but it compared literal names only, while Vite treats string entries as picomatch patterns and RegExp entries as tests (`createFilter(undefined, noExternal, { resolve: false })`). Since 3.0.0-next.41 the crawl also reaches the packages that consume the Solid runtime, and their non-Solid dependencies land in `ssr.external` — so a host that inlines its packages by pattern (TanStack Start's `@tanstack/start**`, whose `@tanstack/start-server-core` resolves its `#tanstack-*` imports only when Vite processes it) saw them re-externalized, and `vite dev` failed with `ERR_PACKAGE_IMPORT_NOT_DEFINED: Package import specifier "#tanstack-router-entry" is not defined`. The externals are now filtered with the same matcher Vite uses, and a single string or RegExp `noExternal` value is kept instead of being dropped.
+- b06c37e: Use Vite hook filters on the plugin's `transform`, `resolveId` and `load` hooks, so under Rolldown the JavaScript side only runs for modules a hook can act on. In a 2,100-module start-mode build, this cut build time by about 8% with identical output.
+- 98fd955: Three extension points for composing the plugin with host environments
+  (e.g. @cloudflare/vite-plugin) without giving up the start-mode option forms:
+
+  - New `serverFunctions.devMiddleware` option (default `true`): set `false`
+    to keep the plugin's dev middleware off the endpoint so a host's server
+    environment owns dispatch in dev — functions then run where the bindings
+    live (e.g. workerd), exactly like production. Compilation and the
+    manifest/handler virtual modules keep working; the host loads
+    `virtual:solid-server-function-handler` itself and calls its
+    `handleServerFunctionRequest(request)` export (and should side-effect
+    import `virtual:solid-server-function-manifest` in its server entry to
+    cover functions referenced only by client code, since the middleware's
+    on-demand loading is off too).
+  - Client-before-server build ordering in builder-mode (environments API)
+    app builds, absorbed into the plugin: with `ssr` enabled, a pre-order
+    `buildApp` hook (Vite 7.1+) builds the client environment (manifest and
+    all) before any other orchestrator runs, so setups whose orchestrator
+    builds server environments first — @cloudflare/vite-plugin builds workers
+    before the client — no longer need a hand-written ordering plugin for the
+    server bundle to bake real hashed assets. A post-order hook reinstates
+    Vite's build-everything fallback when no other orchestrator built
+    anything, so plain `builder: {}` setups (start mode included) behave exactly
+    as before, just explicitly client-first.
+  - New `serverFunctions.configure` option: path to a server-only module
+    (resolved against the Vite root) that the generated
+    `virtual:solid-server-function-handler` module side-effect imports before
+    any dispatch. The guaranteed pre-dispatch home for server-side runtime
+    registration — e.g. `configureServerFunctionsServer({ collectFlightData })`
+    for a router's single-flight collector — effective on both dispatch
+    surfaces (dev middleware and production handler, where it bundles into
+    the handler chunk), immune to the dev-restart race where app-graph
+    registration only loads with the first page render, and hot-invalidating
+    the handler when edited in dev.
+
+- 5543386: Fixes the dev server crashing on every request under https/HTTP/2. Vite serves `server.https` through an HTTP/2 server (with HTTP/1 fallback), and the plugin's Node→web request bridge copied the h2 pseudo-headers (`:path`, `:method`, `:authority`, `:scheme`) into `Headers`, which throws `TypeError: ":path" is an invalid header name` — so start-mode SSR and server functions 500'd on every request over `vite dev` with https. Pseudo-headers are now skipped and the host derives from `Host` or the h2 `:authority`. Alongside it, three more bridge hardenings (techniques referenced from srvx's Node adapter, h3js/srvx): `request.url` now says `https:` on TLS sockets instead of always `http:` (secure-cookie logic, absolute redirects, and origin checks in app code saw the wrong protocol), client disconnects now fire the request's `AbortSignal` so handlers can cancel streamed renders and in-flight work, and HEAD requests end immediately with the response body cancelled instead of pumping the whole (possibly endless) stream into Node's discarded HEAD writes.
+- e9b2a39: Read the file hash from the second id segment. Server-function ids are now identity-keyed `<name>-<hash>[-<ordinal>]` (solidjs/solid#3109) instead of positional `<hash>-<ordinal>`, so the dev middleware's id-to-module lookup takes the hash from `split('-')[1]` rather than the first segment.
+- c16985a: Provide the deployment secret to server builds (solidjs/solid#3239): the generated server-function handler module now leads with `globalThis.__SOLID_SECRET__ ??= "<random-per-build>"`, giving the runtime's encrypted no-JS flash cookie a key with zero configuration. One value is generated per plugin instance, so a production build bakes a single secret into the emitted server chunk (shared by every instance of that deployment) and a dev session holds one for its lifetime. Server output only — the handler module is already hard-gated against client graphs — and an explicit `configureServerFunctionsServer({ secret })` still outranks it.
+- d30f051: Only inject the `@testing-library/jest-dom` Vitest setup file when the package resolves from the project root (forward-port of #364 by @brenelz, fixes #231). Previously the check ran from the plugin's own location, so with pnpm a transitive jest-dom (for example via Storybook) made Vitest fail with `Failed to load url .../@testing-library/jest-dom/vitest`. The probe now walks `node_modules` up from the Vite root the way Vitest resolves bare `setupFiles` — deliberately ignoring `NODE_PATH`, which pnpm's bin shims (`pnpm vitest`) point at the hoisted virtual store where every transitive dependency is reachable.
+- ed9b798: Allow `@testing-library/jest-dom` v7 in the optional peer dependency range (ports #287 from `main`). The Solid 2.0 templates pin `@testing-library/jest-dom@^7.0.0`, and npm 7+ enforces peer ranges, so a clean `npm install` of a freshly created project failed with `ERESOLVE` against the `^6.*` range (solidjs/solid#3341). v7 keeps the `@testing-library/jest-dom/vitest` subpath the plugin auto-injects into `test.setupFiles`, so only the range changes.
+- 0d50833: Resolve static asset URLs in JSX: a relative `src`, `srcset`, `poster` or `href` on `<img>`, `<source>`, `<video>`, `<image>` and `<use>` becomes an import of the asset, and a `/` URL naming a public-directory file follows `base`, relative bases (Electron builds) included. The compiler used to put them in the template as written, so relative URLs resolved against the page and public URLs ignored `base`.
+- 0d45ea0: Load Babel and `@solidjs/babel-plugin` on first use instead of at import. The default native compiler never calls them, so importing the plugin takes about half as long (roughly 100 ms down to 50 ms).
+- 1914c40: Reclassify emitted lazy facade chunks even when their importers are eliminated from the final bundle. Emitted chunk references are now retained so lazy facades can be identified without relying on a surviving `dynamicImports` edge.
+- 583d731: Reclassify emitted lazy facade chunks by assigning `isEntry = false` instead of deleting the property. Under rolldown-vite (Vite 8), bundle chunks in `generateBundle` are proxies whose set trap syncs assignments back to the native bundle, while a delete is swallowed by the proxy's read cache — so the reclassification silently no-oped and downstream plugins (e.g. TanStack Start's manifest plugin) still saw every lazy facade chunk as an application entry, failing builds with "multiple entries detected".
+- f718828: Lazy-load the native JSX compiler so environments without native addon support can still use the default Babel compiler.
+- 5250437: Harden SSR asset resolution for `lazy()` modules.
+
+  - Every dynamically imported project module in SSR-mode client builds is now emitted as an explicit facade chunk (`preserveSignature: "exports-only"`), so it always gets a manifest entry keyed by its source path and a stable `default` export — even when `manualChunks` or dual static/dynamic imports would otherwise fold it facade-less into a shared chunk. This also covers `import.meta.glob` targets that never pass through the `lazy()` moduleUrl transform.
+  - Emitted facade chunks are reclassified from `isEntry` to `isDynamicEntry` in the virtual manifest so the runtime's entry-asset detection can't pick a lazy facade instead of the real client entry.
+  - SSR transforms now append a `$$moduleUrl` export carrying the module's client-manifest key. Server-side `lazy()` (solid-js ≥ 2.0.0-beta.17) reads it off the resolved module when the callsite has no static import specifier — enabling asset resolution and hydration preloading for glob-based lazy routes. Client builds are untouched.
+
+- ec428e1: A hand-written `lazy()` moduleUrl with a leading slash (`lazy(() => import("./Page"), undefined, "/src/Page.tsx")`) now resolves like the project-relative key `src/Page.tsx` (#390). In dev the asset resolver built a protocol-relative `//src/Page.tsx` URL, so the preload failed and hydration fell back to a client render; in production the `virtual:solid-manifest` lookup missed, no client assets or root module map were emitted, and hydration threw "was not preloaded before hydration". The dev resolver (in-process, HTTP bridge, and the generated fallback) now strips the leading slash before building the URL and walking the module graph, and the baked build manifest answers slash-prefixed lookups through non-enumerable aliases, so `for…in`, `Object.keys`, and JSON consumers see the manifest unchanged.
+- 4414f54: Only run the `lazy()` module-URL transform on non-JSX modules that mention `solid-js`. Any `.js` file containing the text "lazy" was parsed as an ES module, so a CommonJS dependency with a top-level `return` (or Flow syntax) failed `vite build`. The compiler only rewrites `lazy` imported from `solid-js`, so other files are left untouched.
+- 40c6865: Housekeeping: add the MIT LICENSE file the `license` field has always declared but the repo never carried (#219), and document `virtual:solid-manifest` in the README — what it exports in dev (the live asset resolver) versus SSR builds (the baked client manifest with `_base`), and its role as the seam for frameworks doing their own asset gating (e.g. the TanStack Start integration).
+- 38434e1: Fix the start-mode handler booting the wrong chunk when the client build has several configured inputs (#353, a regression of 3.0.0-next.40 / #347). With filesystem-routing's `fileRoutes({ routers: { client }, buildInputs: 'client' })` every route module is a `build.rollupOptions.input`, and since #347 those records rightly keep `isEntry` in `virtual:solid-manifest`. The generated handler resolved the client entry by scanning for the first `isEntry` record, so a route key sorting ahead of the plugin's own `virtual:solid-ssr-entry-client.tsx` won: the document's `<script type="module">` pointed at the route chunk (the page never hydrated) and `<head>` linked that route's CSS while the entry graph's global stylesheet was never linked. The manifest module now names the client entry explicitly — `_entry` carries its key (the entry start mode injects, or the single configured input outside start mode) and its record is serialized first — and the handler reads `_entry` before falling back to the `isEntry` scan for hand-rolled manifests. `@solidjs/web`'s `registerEntryAssets`, which links the entry graph's stylesheets and modulepreloads by the first `isEntry` record, therefore agrees on the same chunk. Other configured inputs keep `isEntry`; they are genuine entries, just not the one the document boots.
+- efdaf56: The Start handler now settles failures that escape the middleware chain instead of letting them reject to the host. A thrown `Response`, or the `Response` a thrown `respond()` envelope carries, becomes the response in dev and production, so `throw redirect()` works from middleware. In a production build any other failure (a middleware throw, a `start.setup` or `start.renderMode` module failure) is reported once to the `configureServerErrors` hook as `{ kind: 'render', handling: 'failed' }` with the request event, or logged with `console.error` without a hook, and answered with a bodyless 500. That 500 keeps the headers and cookies written to the request event while the response head is still open, that is, unless `next()` already returned a rendered page. In dev those failures still reject, so the dev server sees the original error. An invalid `renderMode` passed to `handleRequest` still rejects the call. A client-mode build now fails when prerendering the shell answers a non-2xx status, instead of writing that response to `index.html`.
+- e372cc0: The native `@dom-expressions/compiler` is now the default JSX compiler (`compiler: 'native'`). `compiler: 'babel'` remains available as an escape hatch that switches ONLY the JSX transform back to `babel-preset-solid` — if native output differs from your expectations, set it and file an issue (the behavioral diff between the modes is the bug report). Platforms without a prebuilt native binary (e.g. StackBlitz WebContainers) automatically use the compiler's wasm32-wasi fallback; the compiler package is required in every mode.
+
+  The `lazy()` module-URL pass and the solid-refresh HMR pass now run through native compiler passes (`transformLazy` / `transformRefresh`) in every mode, ahead of whichever JSX backend is selected, with sourcemaps chained across all passes. The plugin's own `lazy-module-url` Babel plugin is deleted (the placeholder format and its bundler-side resolution are unchanged), and supplying custom `babel` options in native mode reintroduces a Babel support pass hosting just those options.
+
+  HMR wrappers in all modes now import the refresh runtime from the dev-only `solid-js/refresh` core entry, and the `solid-refresh` package dependency is removed entirely — this also fixes solid-refresh#85 (stale registrations resurrected after full-tree disposal on Solid 2.0) for what was previously the Babel path. Requires the solid-js release that ships the `solid-js/refresh` entry (landing with this release train).
+
+- 11b87a1: Custom `extensions` work with the native compiler again. The native compiler picks its parser dialect from the file extension, so the transform builds a borrowed-extension filename (`foo.mdx` → `foo.mdx.jsx`, or `.tsx` when the extension is registered as TypeScript) for exactly this case — but only the lazy and refresh passes used it; the JSX transform itself still received the raw id, and `@dom-expressions/compiler` rejected it with "Unknown file extension" (#297). `compiler: 'babel'` was unaffected because that path names the parser plugins explicitly. The JSX transform now receives the same borrowed filename as the other native passes.
+- 4b9c1ea: The server-function `"use server"` directive transform now uses the native `transformDirectives` pass from `@dom-expressions/compiler` (Rust/Oxc) instead of the in-tree Babel implementation. Output is byte-compatible — same runtime ABI, `xxhash32(relative path)-<count>` function IDs, and manifest behavior — but the transform is faster and now reports invalid closure captures as compile-time errors: a server function referencing a binding from an intermediate enclosing scope (an enclosing function's local or parameter, a loop variable) fails the build naming the variable and its location instead of silently breaking at runtime. JSX compilation is unchanged (Babel by default, native opt-in); only the directive transform is native-always.
+
+  Note: this requires `@dom-expressions/compiler` 0.50.0-next.23 or later — earlier releases do not include `transformDirectives`. The dependency is pinned accordingly.
+
+- 9a96d74: The published package no longer includes type declarations for the plugin's own Cypress tests (`dist/types/cypress`).
+- 711c918: The plugin no longer sets `test.environment: 'jsdom'` for Vitest. Set the
+  environment yourself (`jsdom` or `happy-dom` for DOM component tests); Vitest's
+  own default is `node`. The default also applied to Node-only suites that loaded
+  the plugin through a shared config, which then ran under jsdom and failed in
+  ways that were hard to trace. The client test posture (browser conditions, DOM
+  codegen) is unchanged, and `environment: 'node'` still selects the server
+  posture.
+- ca4d221: `start.env`: the generated `virtual:env/server` module no longer contains
+  top-level await, removing the esnext-target deploy requirement. Boot
+  validation used to conditionally `await` each validator result (Standard
+  Schema allows `validate()` to return a Promise), which put a TLA in the
+  server env chunk whenever the schema had `server` keys — and any
+  downstream bundler with a non-esnext target refuses a TLA chunk outright
+  (Nitro's node-server preset is the one that bites in practice), forcing
+  deployments to override the build target to `esnext`. Boot validation is
+  now fully synchronous with identical semantics: same `process.env` read at
+  module init, same per-key report, same fail-loud-at-boot before any
+  importer's body runs, same frozen `env` export — and synchronous init is
+  the only shape that can keep the "validated before first use" guarantee,
+  since user server modules read `env.KEY` at their own top level (deferring
+  the await to request entry cannot cover module-init consumers). The
+  tradeoff is explicit: async validators (e.g. `z.string().refine(async
+...)`) are no longer supported for `server` keys — they are rejected at
+  config/build time with the fix in the message (they could only ever have
+  failed at deploy boot otherwise), and boot backstops with the same report
+  for schemas whose async-ness only surfaces on real values. `client` keys
+  keep async support: their values are baked at build time, where the plugin
+  awaits. The start-env suite now asserts every built server chunk
+  transforms under esbuild target es2020 (which rejects TLA at parse time —
+  exactly the check a downstream bundler applies) so this cannot regress.
+- da7c347: Node floor and a signals dedupe. `engines.node` is now `>=22.12.0` (was `^20.19.0 || >=22.12.0`), matching the `solid-js`, `@solidjs/web` and `@solidjs/signals` 2.0 runtime packages, which have been ESM-only with that floor since rc.8; the README says the same. Under `serve`, `@solidjs/signals` joins `solid-js` and `@solidjs/web` in `resolve.dedupe` when the app root can reach a copy of it (`node_modules/@solidjs/signals`, walking up — an npm-style hoist or a direct dependency): `@solidjs/diagnostics/browser` and `solid-js/attribution` import the signals core directly, so a nested/duplicated install yielded a second engine beside the one `solid-js` loads. The entry is gated on the root copy because `resolve.dedupe` resolves the listed package from the root and Vite's Node-side resolver (`fetchModule` for externalized SSR imports, and the externalize decision) has no importer fallback when that misses — under pnpm's isolated layout, where signals exists only as `solid-js`'s transitive dependency, an unconditional entry turned `import "@solidjs/signals"` from the inlined `solid-js` into `ERR_MODULE_NOT_FOUND` once anything externalized it (vitefu does, when a semi-framework package such as `@solidjs/diagnostics` lists it under `dependencies`). With no root copy there is nothing to dedupe to, so the gate loses nothing. Signals does not join `optimizeDeps.include`: the optimizer already reaches it through `solid-js`, and an include entry that doesn't resolve from the root warns on every start.
+- f3fb6f2: `start.node` with `start.instrument`: `dist/server/node.js` no longer loads `node:http` before the instrument module runs, so OpenTelemetry's HTTP instrumentation now records a server span for each request. The entry awaits `./server.js` first and loads its runtime from `node-runtime.js` afterwards.
+- 3cb10dd: `start.nodeServer` now precompresses the client build: the build writes a `.br` and a `.gz` beside each text file of 1 KiB or more, and `dist/server/node.js` serves the best one the request's `Accept-Encoding` allows, with `Content-Encoding`, the variant's `Content-Length` and `Vary: Accept-Encoding`. Rendered pages still stream uncompressed. `nodeServer: { precompress: false }` turns it off.
+- 6732a5f: The generated start-mode server handler no longer imports `scriptNonce`/`styleNonce` from `@solidjs/web`. It projects each destination of a `{ script, style }` nonce with a local helper instead. Those helpers are internal to `@solidjs/web` (solidjs/solid#4016), and its single-script surfaces now take the full `CSPNonce` themselves. The handler works with `@solidjs/web` versions both before and after that change.
+- b173c94: New `observe` option: resolve Solid's observe builds for production observability. `observe: true` adds the `observe` export condition to every environment — client and server, inlined and externalized (`resolve.externalConditions`), inlining the core runtime and its consumers for server builds the way the dev posture already does so one build is loaded end to end — and turns on the compiler's `componentNames` option, so component owner labels (`<Home>`) survive minification in diagnostics and attribution paths. `componentNames` is also enabled under the dev posture, where `lazy()` and HMR wrappers otherwise hide the tag name. Requires `@solidjs/compiler` / `@solidjs/babel-plugin` ≥ 2.0.0-rc.8 (the release that adds the option).
+- 95019de: Docs: correct the `dev` option contract (left unset it means development builds under `vite dev` only, `true` also forces them in `vite build`), add a README section for `diagnostics`, and remove the README entry for `options.typescript`, which the plugin does not accept.
+- 75a5876: `@babel/core` and `@solidjs/babel-plugin` are now optional peer dependencies, and `@types/babel__core` is no longer a dependency, so a project on the default native compiler installs no Babel packages. Projects using `compiler: 'babel'` must install `@babel/core` and `@solidjs/babel-plugin`, and projects passing the `babel` option under the native compiler must install `@babel/core`; without them the plugin throws an error naming the option and the packages on the first transform. The `babel` option is now typed by the exported `BabelOptions` interface, which accepts Babel's `TransformOptions` without the plugin's declarations importing `@babel/core`.
+- d6eb3e9: Chrome Performance panel tracks on by default under `vite dev`. New `performanceTracks` option (`boolean | PerformanceTracksOptions`, default `true`): the plugin injects a client module that calls `@solidjs/web/performance-tracks`' `enablePerformanceTracks()` ahead of the app's entry — a `<head>` module script for `index.html` apps, the first import of the (generated or authored) client entry in start mode — so hydration and the first interaction land on the timeline without the app enabling the tracks itself. An object passes the adapter's options through (`minMs`, `rich`, `attribution`, serialized into the module); `false` opts out. Dev serve only: never on `vite build` (`dev: true` and `observe` builds included), preview, or in test mode. The dev server already writes its `Server-Timing` metrics, which the tracks read back. Skipped with a startup warning if the installed `@solidjs/web` lacks the `./performance-tracks` subpath.
+- 5ec1370: The package is renamed from `vite-plugin-solid` to `@solidjs/vite-plugin` (#156). Migration is the dependency name and the import specifier — `npm install -D @solidjs/vite-plugin`, `import solid from '@solidjs/vite-plugin'` — everything else is unchanged. A final `vite-plugin-solid` release re-exports this package (default and named exports, subpath type declarations included) so existing setups keep working, but new installs should use the new name. User-facing strings follow: config-time errors and dev-overlay messages are now prefixed `[@solidjs/vite-plugin]`, the ambient type subpaths are `@solidjs/vite-plugin/virtual-solid-manifest` and `@solidjs/vite-plugin/boundary-modules`, and the dev-manifest bridge endpoint is `/@solidjs/vite-plugin/dev-manifest`.
+- 4deb52e: Keep build metadata out of the client output when one process builds both environments. The server build reads Vite's manifest and the server-function data from memory, then the plugin removes the manifest it turned on (set `build.manifest` to keep it) and moves `.vite/solid-server-functions.json` to the server output, so hosts like Nitro that publish the client output no longer serve them.
+- 7c10d3b: Add a generic production error boundary to generated Start entries. It returns a 500 response for uncaught SSR errors and provides a fallback for uncaught client errors. Set `start.errorBoundary` to `false` when application middleware owns error handling.
+- 1f5f6ca: Never strip `isEntry` from a genuine configured entry when reclassifying emitted lazy facade chunks. The normalization used to demote every chunk that is a dynamic-import target, which misfires once the real client entry absorbs a module that is also imported dynamically: with Solid 2, `@solidjs/web/frames/client` lazily imports the serialization decoder, so a static import of `@solidjs/web/serialization/decode` anywhere in the client graph merges the decoder into the entry chunk and the entry ends up listing itself under `dynamicImports`. Demoting it left the bundle and `manifest.json` with no entry at all ("No entry file found" in downstream manifest capture such as TanStack Start's). Chunks whose facade matches a configured `build.rollupOptions.input` (or the default `index.html` / the start-mode client entry) now keep `isEntry` in the raw bundle and in `virtual:solid-manifest`, a chunk's dynamic import of itself is ignored, emitted `lazy()` facades are still reclassified, and a demotion the plugin cannot attribute to one of its own emitted chunks is reported with a warning describing the graph shape. The virtual manifest also repairs `isDynamicEntry` on lazy facades, which rolldown drops when syncing `generateBundle` mutations back.
+- 51f9a7d: Rename the types entry `@solidjs/vite-plugin/virtual-solid-manifest` to `@solidjs/vite-plugin/virtual-modules` (it declares every virtual module the plugin serves) and `css.filter` to `css.devInline` (it picks which module graphs dev SSR crawls for the CSS it inlines). Remove `serverFunctions.manifest`: the module id is always `virtual:solid-server-function-manifest`. The old option names fail at config time with a message naming the replacement.
+- e35b1e3: Add the `StartServerRenderSetup` and `StartServerRenderContext` types (a `start.serverRenderSetup` module's default export, and the context an authored server entry's `render` receives), and type the options of `handleServerFunctionRequest` and `handleRequest`'s `serverFunctions` with the runtime's `HandleServerFunctionOptions`, so a misspelled option no longer type-checks. The README now documents the client build's `.vite/solid-server-functions.json` (`PersistedServerFunctionManifest`), and option docs that still mentioned solid-refresh or `@solidjs/babel-plugin` are corrected.
+- e01a6b3: Compile modules whose id has the extension after the query, such as unplugin-icons' `~icons/mdi/folder?width=2em.tsx`. These were left to Vite's default JSX transform, which produced React code (#206). Custom `extensions` are now also matched when the query contains a dot.
+- e40e2c4: Follow-ups to riding Solid 2.0.0-rc.10. The server-function dev middleware reads the id out of the runtime's third address shape, `<endpoint>/live/<id>` (a `live` loop's connection), the way it already did for `<endpoint>/data/<id>` — mirroring the runtime's `parseServerFunctionAddress`, one kind segment at most — so a live function whose module nothing has imported server-side yet is loaded on demand and the first call resolves instead of the runtime answering `404 Unknown server function`. `vite preview` passes `text/event-stream` responses and everything under the server-function mount through its compression middleware as `content-encoding: identity`, as it already did for `text/html`: the middleware compresses from a ≥1KiB first write and then holds small writes in zlib's buffer, which would leave a live event stream's events (and the streaming codec's chunks) undelivered while the connection stays open. Under `serve`, `solid-js/attribution` and `@solidjs/web/performance-tracks` join `optimizeDeps.include`, so a consumer the dependency scanner never crawls (a linked package, a `solid`-condition package vitefu excluded) importing one mid-session no longer triggers a late discovery → re-optimize → a second `@solidjs/signals` core beside the one `solid-js` was bundled with.
+- e71df25: `refresh: false` now disables HMR, replacing `refresh: { disabled: true }`, and the deprecated `hot` option is removed. `refresh` takes `true`, `false` or `{ granular }`. The old spellings fail at config time with a message naming the replacement.
+- 74fb28b: `start.env` now rejects `server` schema keys that carry the public env prefix at config time. Vite bakes every `VITE_`-prefixed variable (or whatever `envPrefix` selects) into the browser's `import.meta.env` regardless of which side of the schema declares it, so `server: { VITE_API_SECRET: ... }` silently shipped the secret to every client through Vite's own channel — the build-time leak scan does flag server values that land in client chunks as literals, but dev has no scan at all, and short or colliding values can evade the literal match. The prefix rule was previously enforced one-way (client keys must have it); the reverse guard now fails fast with a rename message, mirroring the existing client-side guard.
+- 65d6b51: Remove the unreleased `virtual:solid-manifest/client` module (and the `ClientAssetMap` type export). Its purpose was a route-CSS acquire/release lifecycle, which the head-management design has since ruled out: ambient, bundler-injected CSS is never lifecycle-managed — only head-registry-mounted stylesheets follow their owner — so the module had no remaining consumer. The server-side `virtual:solid-manifest` (SSR asset streaming) is untouched.
+- bbace11: Rename `start.errorBoundary` to `start.productionErrorBoundary`, since the boundary is only added in production builds. The old key fails at config time with a message naming the replacement.
+- 6379826: The generated server entry passes the request's `signal` to `renderToStream`, so a render still pending when the client disconnects is disposed (#467).
+- d5741c5: Keep a request target that starts with `//` as the request path. The Node-to-web bridge resolved `req.url` against the host as a relative URL, so `GET //evil.example/api/x` produced a `request.url` of `http://evil.example/api/x`, letting a client choose the origin seen by origin checks and absolute redirects. The node entry's static file lookup and the dev and preview middlewares parse the path the same way now.
+- 398044f: SSR start mode adopts the runtime's response-head lifecycle, gains fetch-style middleware, and serves `vite preview` (requires `@solidjs/web` > 2.0.0-beta.31 for `createRequestEvent` / `createSSRResponse` / `composeMiddleware`):
+
+  - Every dispatch runs under a stub-backed request event (`createRequestEvent`) and page responses go through `createSSRResponse`: `httpStatus()` / `httpHeader()` writes land on the wire at shell flush, a pre-flush `Location` becomes a real 3xx redirect, and a post-flush one (streamed responses) falls back to a nonce-aware `<script>window.location=...</script>` tail. Raw `Response` results and server-function responses get uncommitted stub headers merged (set-cookie appended) so cookie/header writes made before they were produced still land.
+  - `ssr.middleware`: a server-only module default-exporting one `(request, next) => Response | Promise<Response>` function or an array, composed in order. The chain fronts every dispatch path — page SSR, the server-function endpoint, dev, external-dev, production, preview — and runs inside the request-event scope, so `getRequestEvent()` works exactly as in app code; the endpoint shares the chain's event, so `locals` decoration is visible to server functions. Nothing hits the wire until the outermost middleware returns (post-`next()` header mutation works on streamed responses), and error middleware is a plain `try { await next() } catch`.
+  - `vite build && vite preview` now works with no server file: `configurePreviewServer` serves `dist/client` statically through Vite's preview statics and dispatches everything else through the built handler — middleware and lifecycle included, HTML opted out of preview compression so streaming stays observable.
+  - With `serverFunctions` enabled, the runnable-dev endpoint middleware now dispatches through the SSR handler (after pre-loading the referenced module), so one middleware chain and one request event front pages and server functions identically on every surface.
+
+- 4134665: Require solid-js / @solidjs/web 2.0.0-rc.10 (peer floor) and compile with @solidjs/compiler / @solidjs/babel-plugin rc.10 — runtime and compiler move in lockstep. rc.10 is the release the `sourceNames` work rides on: the compilers rename `componentNames` to `sourceNames` (`@solidjs/compiler` rejects the old option, so a mismatched pair fails loudly), add the `bindings` kind whose trailing `{ name }` / tag arguments on `effect`/`insert`/`spread` only the rc.10 `@solidjs/web` reads, ship the standalone `transformSourceNames` pass behind `sourceNames.primitives`, and default their own `sourceNames` to `dev`. The plugin keeps passing its resolved value explicitly (`false` when every JSX kind is off), so its posture table — not the compilers' default — decides, and `solid.sourceNames: false` stays an opt-out under `vite dev`.
+- 2e79544: Require solid-js / @solidjs/web 2.0.0-rc.9 (peer floor) and compile with @solidjs/compiler / @solidjs/babel-plugin rc.9 — runtime and compiler move in lockstep. The rc.9 compilers emit output only the rc.9 runtime understands, so this floor is a hard requirement, not policy: native elements with several spread sources compile to the runtimes' array form (`spread(el, [a, b], …)` on the client, `ssrElement(tag, [a, b], …)` on the server — no `mergeProps()` proxy, no memo, no hydration id; #3418/#3419/#3423) which only rc.9's `@solidjs/web` accepts; delegated event handlers move off Solid 1's `$$<type>` element key onto `_$$<type>` in both compiled output and the runtime's document delegate, so an rc.8 runtime would never fire an rc.9-compiled `onClick` (and vice versa); and under `componentNames` — which the plugin already turns on for its dev and observe postures — SSR output keeps `createComponent(Comp, props, "Comp")` so the server runtime's observe/dev tier labels the owner and a server finding's `ownerPath` reads `<App> › <Page>` like the client's. Nothing in the plugin itself had to change for rc.9: the new `observe` / `development` export conditions on `@solidjs/web`'s server-functions and frames client entries (and `observe` on every server entry) are picked up by the condition lists the plugin already installs, and the new `solid-js/internal` subpath is covered by the existing `solid-js` inlining.
+- 97e37f1: Build the package with Rolldown instead of Rollup and Babel. The published bundle no longer carries source comments (its sourcemap still embeds the commented sources), which makes `dist/esm/index.mjs` about 40% smaller.
+- 60ba309: Resolve relative filter globs against the Vite root instead of `process.cwd()`.
+
+  The server-functions plugin's default include glob
+  (`src/**/*.{jsx,tsx,ts,js,mjs,cjs}`) is relative, and `createFilter` resolved
+  it against the invocation directory — so running `vite` from anywhere other
+  than the project root silently skipped server-function compilation entirely
+  (no transform, no registration). Both filters (the main plugin's
+  `include`/`exclude` and `serverFunctions.filter`) are now created in
+  `configResolved` with patterns resolved against `config.root`; user-provided
+  relative patterns become root-relative too, and absolute patterns are
+  unaffected.
+
+- 3b913f5: Inject the server-component bootstrap at the top of `<head>`, before the hydration data script. It was appended at `</head>`, but the generated document renders `<HydrationScript />` inside `<head>`, so the bootstrap always landed _after_ the payload it has to precede. The render plugin serializes a server component's placeholder as `self._$SC.r(id)`, so any document whose hydration payload carried a frame reference threw `Cannot read properties of undefined (reading 'r')` on boot — which aborted hydration, leaving the whole page inert: no client state, no interactivity, and no navigation, on an otherwise perfectly server-rendered document. The `examples/start-ssr` app's own payload happens not to carry such a reference, so its "no page errors" check never caught this; the document assertion now verifies the ordering rather than mere presence.
+- c3a47d5: The dependency scanner settings now reach every environment, not just `client` (#387). Vite seeds only the `client` environment from the top-level `optimizeDeps`, so an `ssr` (or other server) environment with discovery turned back on — as `@cloudflare/vite-plugin` does for workerd SSR — scanned Solid TSX with Rolldown's default React automatic runtime. The scan failed on an unresolvable `react/jsx-dev-runtime` and pre-bundling was skipped for that environment, which showed up as duplicate Solid instances in the app. `configEnvironment` now gives non-client environments the classic scanner JSX runtime (unless the app set its own per-environment `transform.jsx`), the `.tsrx` extension, and the tsrx scan plugin.
+- bde3e2b: More precise dead-code elimination after the `"use server"` client rewrite:
+
+  - The shake is now scoped to bindings orphaned by the rewrite (names
+    referenced from the replaced function bodies, cascading through removed
+    declarations). Code that was already unreferenced before the transform —
+    e.g. `const t = startTimer()` written for its side effect — is no longer
+    deleted from client output.
+  - Destructuring patterns are now shaken: `const { db } = createClient()`
+    used only inside a server function is removed from the client build along
+    with its now-unused imports, closing a server-code-leak hole. Array
+    pattern elements become holes (or truncate the tail), rest elements and
+    nested patterns cascade, and a declarator whose pattern empties is dropped
+    entirely.
+  - Modules containing a direct `eval(...)` call skip the shake (reference
+    counts are unreliable there); the directive rewrite itself still applies,
+    and a warning is logged in development mode.
+
+- 94f1878: Fix `vite dev` failing in dependency optimization for apps using a Solid library that ships build-time code in the same package (#375). Since the semi-framework classification landed (any package with `solid-js` / `@solidjs/web` in `dependencies` or `peerDependencies` is `ssr.noExternal` so it shares the app's runtime copy), vitefu's crawl also deep-included every CJS dependency of such a package into the browser's `optimizeDeps.include`, exactly as it does for framework packages. For `@yak/solid` that is `@swc/core`, and rolldown failed on its native `.node` binding (`UNLOADABLE_DEPENDENCY … stream did not contain valid UTF-8`) before the dev server served a page. Sharing the runtime needs nothing pre-bundled, so include chains that pass through a semi-framework package are dropped; a browser-side CJS dependency of one is discovered and optimized on first use, as before the package was classified. Framework packages (a `solid` export condition) keep vitefu's full treatment.
+- 2e7b63c: `sendWebResponse` no longer hangs forever when a client disconnects during backpressure. The write loop's `'drain'` wait had no other way to settle, but a response whose client already went away never emits `'drain'` — so every streamed SSR response aborted mid-stream (closed tab, slow mobile client) parked the promise chain, the body reader, and the Response object permanently, accumulating leaks over a start mode dev/preview session. The backpressure wait now also settles on `'close'`/`'error'` and the loop bails out early once the response is destroyed, letting the existing close handler's reader cancellation finish cleanup.
+- 53bb865: With `serverFunctions: { components: true }`, stylesheets that a `'use server'` module reaches (directly or through the components it imports) now reach the production client build, so the SSR document links them. The client compile replaces a server module with references, so its imports never joined the client graph: dev looked right, since its CSS crawl walks the SSR graph, but production rendered server components unstyled (#456). The client build now walks what the module imports and imports those stylesheets from its client module. Script modules on the way are only loaded, never imported, so no server code reaches the client bundle, and compile-time CSS plugins such as StyleX still see them. Builds without `components` are unchanged.
+- c3d465a: `serverFunctions.components` now enables the SSR behavior-claims transform: ref and event-handler positions on intrinsic elements compile to guarded claim holes instead of dropping, so client behavior declared in server component markup survives serialization and morphs. SSR-only by construction (the dom generate ignores the flag); apps without the flag compile byte-for-byte as before. Compiler floor moves to `@dom-expressions/compiler@0.50.0-next.44`, which ships the `serverComponents` transform option and its types.
+- 9548326: The build now defines `__SOLID_SERVER_COMPONENTS__` so libraries can drop server-component-only client code (#396). The value is `"true"` when `serverFunctions.components` is set (including `'external'`) and `"false"` otherwise, and it is always defined — an absent identifier cannot be eliminated. It is set on Vite's `define` (build, and dev source via `/@vite/env`) and on every environment's `optimizeDeps.rolldownOptions.transform.define`, because the optimizer ignores top-level `define` and only the `client` environment inherits top-level `optimizeDeps`. A user-provided `define` value wins, and so does a value already set on that environment's optimizer.
+- cf13314: `serverFunctions.components` now also accepts `'external'`: identical to `true`, but declares that a composing host (e.g. the Astro adapter or TanStack Start's Solid integration) owns the document wiring — render plugin + client-side `installServerComponents()` call — itself, so the without-SSR-start-mode warning is skipped instead of printing on every host build. The remaining warning text is also updated: it listed "the bootstrap script" as a required app-side piece, but head bootstrap injection was removed (serialized references self-bootstrap the registry), and it now points hosts at `components: 'external'`.
+- c0fa77c: Install `frameTransformFlightResult` alongside `frameTransformResult` in the generated server-function handler module when `serverComponents` is on: mutations whose single-flight payload includes invalidated server-component markup answer with the frame stream as carrier (regions + envelope in one response). Only active when a router registers a `collectFlightData` hook.
+
+  `frameTransformDirectResult` is now installed in the handler module too (previously only in the generated SSR entry): flight collection makes direct in-process calls during handler dispatch, and the transform brands their results with the call address the client matches showing boundaries against. Without it, a mutation dispatched before the SSR entry loads (dev restart with an open page) would silently degrade in-place morphs to minted boundaries.
+
+- 62d9a89: Send non-client server environments their own full-reload signal during hot
+  updates. Environment-runner based servers now re-evaluate changed modules
+  instead of serving stale SSR output, while client HMR remains unaffected.
+- 3b0e262: Production builds now stamp server function calls with a build id (solidjs/solid#4215). The client build adds an `X-Server-Function-Build` header to every non-GET call, and the server build configures the runtime with the same id, read from the client build's `.vite/solid-server-functions.json`. A tab still running the previous deploy now gets a 409 (`unknownFunction: true`) for a function whose id survived the deploy, instead of running it with arguments of another shape. The app's own `prepareRequest` hook keeps working: the plugin wraps `configureServerFunctionsClient` so the build's stamp runs first and the app's hook runs after it. Dev is unchanged, a server built without a client build checks nothing, and a custom `runtime` is left alone.
+- 9fbbef6: The persisted server-function manifest (`dist/client/.vite/solid-server-functions.json`) now records every server function the client build can reach, by wire id, alongside the module list: `{ modules: string[], functions: Array<{ id, name, module }> }`. Build tooling that needs the client-reachable set — a static-site prerenderer verifying that each reachable function was captured at build time, for example — reads it from here instead of re-deriving it from compiled output. The previous array shape is still accepted when read (the type is exported as `PersistedServerFunctionManifest`).
+- cfddf51: Server-function skew protection now holds when a host builds the app in one process and relocates the client output (nitro): once the same plugin instance built the client, the server build uses that build's id and discoveries from memory instead of reading `.vite/solid-server-functions.json`, which could be stale. Calls are also stamped when the app configures the client through `@solidjs/web/server-functions/client`; its `prepareRequest` used to drop the stamp.
+- d6be37a: The server build now reads the client build's `.vite/solid-server-functions.json` from where the client build wrote it in the same process, then from the client environment's configured `outDir`, and only then from `dist/client`. With a custom client `outDir` (a single `vite build`, or `environments.client.build.outDir` set), client-only server functions now register and the build id check runs. Setting `serverFunctions.runtime` to the default runtime no longer turns the build id check off.
+- 2a714d4: With `serverFunctions` on, the dev server now pre-bundles the server-function client runtime even without `components` (`@solidjs/web/server-functions`, or `runtime.client` when it names a package), so a cold cache no longer re-optimizes and reloads on the first `"use server"` module. In Vitest browser mode that reload showed up as "Vite unexpectedly reloaded a test".
+- 3954804: With `serverFunctions` on, the dev server now also pre-bundles `@solidjs/web/server-functions/client` (#428):
+
+  - `@solidjs/web/frames`, used with `components: true`, imports the client runtime by that subpath.
+  - `@solidjs/web/server-functions/rich-args` imports it by that subpath too.
+
+  When the app listed `@solidjs/web` in `optimizeDeps.exclude`, both loaded a second copy of the client from node_modules. Server components that mounted after boot resolved to `undefined`, and `enableRichArguments()` configured a client that compiled server functions did not use.
+
+  A custom `runtime.client` is unchanged.
+
+- c3c49e8: `"use server"` server function compilation (experimental), hoisted from
+  SolidStart 2.0 alpha's directive compiler. Enable it through the new
+  `serverFunctions` option on the main plugin, or compose the standalone
+  `serverFunctions(options)` export for full control over plugin ordering
+  (e.g. relative to a file-system router). To support emitting the transform
+  sub-plugins, `solid()` now returns `Plugin[]` instead of a single `Plugin` —
+  transparent at the Vite config level, where plugin arrays flatten.
+
+  - Both directive forms are supported: function-level (first statement of a
+    function body) and module-level (every export becomes a server function).
+    Server builds register the original function via `registerServerReference`
+    and reference it with `createServerReference`; client builds compile to
+    ID-only references with the function bodies — and everything only they
+    used, including module-level server-only code — removed.
+  - The runtime is bring-your-own: compiled output imports the two reference
+    functions from the module specifiers in `options.runtime.{server,client}`,
+    so SolidStart's runtime, or a minimal custom one (see the
+    `examples/server-functions` fixture built on `@solidjs/web/serialization`), can
+    satisfy the ABI. Works identically under the Babel and native compiler
+    backends since the transform runs as its own pre-pass (server functions
+    live in plain `.ts`/`.js` files the JSX pass never sees).
+  - A virtual manifest module (default `virtual:solid-server-function-manifest`)
+    imports every module containing server functions; import it for side
+    effects in the server entry so registrations exist before dispatch. Server
+    functions referenced only from client-side code (e.g. event handlers,
+    which the SSR JSX compile drops) are discovered by the client transform
+    and fed into the server manifest — across the classic two-invocation build
+    via `dist/client/.vite/solid-server-functions.json`.
+  - Divergences from the SolidStart source: function IDs hash the
+    project-relative path (reproducible across machines while still agreeing
+    between the client and server builds) and modules without the directive
+    substring skip the Babel parse entirely.
+
+- bd2ed3f: Server functions now default their runtime to `@solidjs/web/server-functions`
+  (requires the solid release that ships that subpath): the `runtime` option is
+  optional and `serverFunctions: true` enables the compiler with the defaults.
+  The package's export conditions resolve the client or server half per
+  environment, so one specifier serves both builds — compiled output imports
+  `registerServerReference` / `createServerReference` from it and the HTTP endpoint
+  is one call to its `handleServerFunctionRequest` (see the reworked
+  `examples/server-functions` fixture, which also round-trips the `respond()`
+  helper). Custom runtimes still plug in through `runtime.{server,client}`.
+- 84a681d: In dev, the server function manifest is now invalidated in every Vite environment, not just `client` and `ssr`. A host that imports the generated handler from a server environment of its own, such as Void's `void_worker` or a Cloudflare worker, kept a stale manifest before. A server function that only the client referenced then failed with "not part of the deployment" until the dev server restarted.
+- d275824: The exported `serverFunctions()` now takes only its options. The second parameter it used to declare was internal wiring for the main plugin's `serverFunctions` option (dev middleware, SSR handler, TSRX ordering), which the standalone export should never set; it moved to an internal factory, so it is no longer part of the public types.
+- b92affb: Rename `serverFunctions.configure` to `serverFunctions.serverSetup`: it is a server-only module that runs once before any server-function call is handled, the same role `start.serverSetup` plays for the whole server. The old key fails at config time with a message naming the replacement.
+- ec7543f: Doc examples for `serverFunctions.configure` import `configureServerFunctionsServer` from the type-correct `@solidjs/web/server-functions/server` subpath (the base subpath's types are the client surface and don't declare it).
+- 25f0506: Built-in server functions: `serverFunctions: true` now gives a fully working
+  setup with no manual wiring.
+
+  - Dev: a middleware on the Vite dev server handles the endpoint (default
+    `/_server`, joined with `base`) end to end — it maps the incoming function
+    ID back to its module through the compiler manifest, loads it in the SSR
+    environment so the registration exists (even for functions only client
+    code references, before any SSR render has run), scopes the request with
+    `provideRequestEvent`, and dispatches to `handleServerFunctionRequest`,
+    streaming bodies in both directions.
+  - Prod: import `virtual:solid-server-function-handler` in the server entry
+    and mount its `handleServerFunctionRequest(request)` export on the endpoint
+    — one line, router-agnostic. The module eagerly imports every module
+    containing server functions (via the persisted manifest, so tree-shaking
+    can't drop registrations), configures the endpoint, and scopes requests
+    with `provideRequestEvent`. Vite preview has no SSR runtime, so prod always
+    goes through this mount.
+  - New `endpoint` option on `ServerFunctionsOptions`, threaded to the dev
+    middleware, the virtual handler, and — whenever the resolved path differs
+    from the runtime default — `configureServerFunctions{Client,Server}` calls
+    appended to compiled modules, so the client transport and rendered
+    reference `.url`s agree without any manual configure call.
+  - Bring-your-own wiring keeps working: the standalone `serverFunctions()`
+    export (used by meta-frameworks like SolidStart) never installs the dev
+    middleware, compiled output is byte-identical when the endpoint resolves to
+    the default, and the virtual handler only activates if imported.
+
+- 6de699a: Share one plugin instance across environment builds when the plugin comes from a config file. Vite's default builder evaluates the config file again for each environment, so the server build ran a fresh plugin instance that never saw the client build's manifest. It read `dist/client/.vite/manifest.json` from disk or fell back to the dev manifest (no client entry script or CSS on pages built for a provider that moves the output), and left `.vite/manifest.json` and `.vite/solid-server-functions.json` in the published client output. The plugins from `solidPlugin()` and the standalone `serverFunctions()` now set `sharedDuringBuild`, so Vite reuses one instance of them across environment builds, as `sharedPlugins: true` would.
+- dd21761: Pre-bundle `@solidjs/signals` up front under `vite dev` (and Vitest browser
+  mode) when the app can import it by name, i.e. it resolves from the project
+  root. The first optimizer pass otherwise inlines signals into `solid-js`, so a
+  direct `@solidjs/signals` import from a module the scanner never reached (a
+  browser-mode test file, a non-literal dynamic import) was a late discovery:
+  re-optimize and a full page reload ("Vite unexpectedly reloaded a test").
+  Apps that only get signals transitively (pnpm's isolated layout) are
+  unchanged.
+- 5ffcb1e: fix: preserve jsx for rolldown dep scan
+- 4a8eb04: Rename the env modules `virtual:env/server` and `virtual:env/client` to `virtual:solid-env/server` and `virtual:solid-env/client`, matching the plugin's other `virtual:solid-*` modules. Importing an old ID fails with a message naming the new one, and the generated `solid-env.d.ts` declares the new IDs.
+- 995727b: Require solid-js / @solidjs/web 2.0.0-rc.13 (peer floor) and compile with @solidjs/compiler / @solidjs/babel-plugin rc.13 — runtime and compiler move in lockstep. rc.13 is the first published release with the new server-component SSR marker contract (rc.12 was never published): under `serverComponents`, a dynamic `class`/`style` compiles to a whole-attribute `ssrElementAttribute` hole, a spread element's named `ref`/`on*` ride `ssrElement`'s trailing `claims` thunk, and the runtime marks ref/event positions `_s:on:*` / `_s:ref` in place of the `_bnd` behavior-claim marker, which the rc.13 runtime no longer reads. With the old `^2.0.0-rc.10` floor an existing lockfile could keep a ≤ rc.11 compiler while the app's runtime moved to rc.13, so `serverFunctions.components` apps would emit markers the runtime ignores; the floor bump closes that window. Nothing else the plugin couples to changed between rc.11 and rc.13, so this is a range bump only.
+- 5062f90: Require solid-js / @solidjs/web 2.0.0-rc.14 (peer floor) and compile with @solidjs/compiler / @solidjs/babel-plugin rc.14 — runtime and compiler move in lockstep. rc.14 treats a lowercase `on*` name (`onclick`) as a plain attribute everywhere (both compilers, spread/assign, and the server spread walk); only `on` followed by an uppercase letter is an event handler, and a function handed to a lowercase `on*` attribute is escaped rather than bound. Server-component frame markup also moved: refetched content lands at the transition's commit. With the old `^2.0.0-rc.13` floor an existing lockfile could keep an rc.13 compiler while the app's runtime moved to rc.14, so compiled output and the frames runtime would disagree; the floor bump closes that window.
+- ab61dcc: Require solid-js / @solidjs/web 2.0.0-rc.16 (peer floor) and compile with @solidjs/compiler / @solidjs/babel-plugin rc.16. rc.16 adds `reportRequestFailure` to @solidjs/web, and start mode's production handler now reports a contained failure (a middleware throw, a `setup` failure) through it, so the `configureServerErrors` hook hears it as `{ kind: 'request', handling: 'failed', event }` — and not at all when the runtime already reported that error (an uncaught in-process server-function call stays `server-function`/`thrown`), where rc.16's per-kind ledger would otherwise have heard it twice. JSX source locations (`sourceNames.locations`, which rc.16's compilers emit) now point at the authored source on both compiler backends: the JSX transform runs after the primitive-names, `lazy()` and refresh passes have reprinted the module, so its positions are mapped back through those passes' sourcemap.
+- d44cdb5: Solid packages move to `^2.0.0-rc.19` (`solid-js`, `@solidjs/web`, `@solidjs/compiler`, `@solidjs/babel-plugin`).
+- cc8c3bd: `sourceNames` gains a `locations` kind: a `file:line:col` next to every component, binding and primitive label — `createComponent(Home, props, "Home", "src/App.tsx:12:5")`, `createSignal(0, { name: "count", loc: "src/store.ts:3:22" })` — so diagnostics, `whyDidRun` chains and devtools point at the line that declared the node. On in dev; off for `observe` and production builds unless set (`{ locations: true }` or `sourceNames: true`), since those are shipped bundles. The plugin passes the resolved Vite root to both JSX compilers and to the primitives pass as `root`, so paths are root-relative and `http://localhost:5173/<path>` opens the file in the browser's sources panel. Requires the `@solidjs/compiler` release that takes the option; the plugin probes the installed compiler and, on an older one, keeps passing the names without locations (warning once when `locations` was asked for explicitly).
+- e9afe8a: Source names on by default in dev and under `observe`: the compiler option `componentNames` is now `sourceNames` and covers components, compiled binding effects (`span.textContent`, `div.children`), and primitives. Component and binding names are the JSX compiler's `sourceNames` option, passed to whichever backend compiles the JSX. Primitives are named by the native compiler's standalone `transformSourceNames` pass — `createSignal(0)` declared as `count` becomes `createSignal(0, { name: "count" })`, `createCounter.value` inside a composed primitive — which the plugin runs ahead of the JSX transform and alone on plain `.ts`/`.js` modules (outside `node_modules`), for babel apps as well, so attribution chains, diagnostics owner paths, and the Chrome performance tracks read source identifiers instead of `signal` / `computed` / `effect`. Every kind defaults to on whenever the plugin compiles with `dev` (`vite dev`, or `dev: true`) or for `observe` builds, and to off for production builds, whose output is unchanged. `solid.sourceNames: false` opts out of every kind (in dev too — the plugin always passes the resolved value, so the compilers' own dev default does not re-enable it), `true` forces every kind on, and the object form `{ components?, bindings?, primitives? }` sets kinds individually with the rest at the posture default. Requires the `@solidjs/compiler` release carrying `sourceNames` and `transformSourceNames` (2.0.0-rc.10); on an older compiler the primitives pass is skipped with a one-time warning.
+- 7335d3a: Without `ssr: true`, modules loaded on the server now compile to non-hydratable SSR output instead of DOM output. Prerendering a client-rendered app with `ssrLoadModule` no longer throws "Client-only API called on the server side" (#64).
+- ae8a8b0: Under `vite dev` the SSR environment now inlines `seroval` and `seroval-plugins` next to `solid-js` and `@solidjs/web`. Both ship a `dist/dev` build behind the `development` condition, and `@solidjs/web` imports both. Left external, `seroval-plugins` loaded through Node and its own `import "seroval"` resolved to the prod copy, while the inlined `@solidjs/web` got the runner's dev copy. Seroval detects streams with `instanceof Stream`, so the `Stream` that `ReadableStreamPlugin` builds from one copy was rejected by the other copy's serializer. This broke server components (`serverFunctions: { components: true }`) in dev when a component resolved after the shell flush (for example after an `await` in the server function): its `sc:live` ReadableStream failed with "Seroval caught an error during the parsing process … cannot be parsed/serialized", the `<Loading>` boundary contained the error, and the component only rendered on the client. Builds were unaffected because they bundle a single copy. A host that sets `noExternal: true` and Vitest projects are left alone, as before.
+- bd04c66: Packages that consume the Solid runtime without declaring a `solid` export condition are now inlined in dev server environments too, closing the remaining half of the two-instance split. Inlining `solid-js` and `@solidjs/web` fixes every resolution those two perform, and vitefu inlines packages that advertise a `solid` export condition — but a package that does neither is still externalized, and Node resolves its own `import "solid-js"` without the `development` condition, so it loads the production server build while the inlined graph holds the dev one. `@solidjs/meta` is the first-party example: it has no `solid` condition, so under solid-js 2.0.0-rc.7 an app rendering a `<Title>` still died in `useContext` on a second `sharedConfig` even with the core packages inlined. The crawl now also classifies any package declaring `solid-js` or `@solidjs/web` in its `dependencies` or `peerDependencies` as a semi-framework package — `ssr.noExternal` without `optimizeDeps.exclude`, since these hold no raw Solid components — so third-party component libraries and metadata helpers reach the same copy as everything else. Gated on the dev-condition swap (and off under vitest, which manages inlining itself), leaving builds unchanged. Two guards keep the rule narrow: tooling that declares `solid-js` as a peer but never runs inside the SSR module runner — `@solidjs/vite-plugin` itself, `vite`, `vitest`, `eslint-plugin-*`, `vite-plugin-*`, `prettier-plugin-*`, `@types/*` — is skipped entirely (classifying the plugin would also crawl its dependencies and pre-bundle `@babel/core` and `@solidjs/babel-plugin` into the browser's `optimizeDeps`, several megabytes of dead weight per cold start); and the `ssr.external` list vitefu derives from framework packages' non-framework `dependencies` is filtered against the final `noExternal` list, because Vite gives `external` precedence — a framework package listing `@solidjs/web` under `dependencies` (e.g. `@tanstack/solid-router`) would otherwise re-externalize a core the plugin just inlined and split the runtime again.
+- c10fe96: Server builds with `ssr.target: 'webworker'` now resolve the server builds of `solid-js` and `@solidjs/web`. The plugin adds the `worker` export condition to that environment, so `renderToString` and the other server APIs no longer resolve to their browser stubs (#153).
+- ba2002c: Stable 3.0.0 for Solid 2.0: `solid-js`, `@solidjs/web`, `@solidjs/babel-plugin` and `@solidjs/compiler` move to `^2.0.0`, and the package publishes to the npm `latest` tag.
+- fe5be7b: New `start.clientSetup` option: a client module the generated client entry runs before it hydrates or mounts the app. Use it to install a server-function transport wrapper, a `vite:preloadError` listener, or an error reporter before the first render, without writing your own `entry-client` / `entry-server` pair. The module may use top-level `await`, and `hydrate()` / `render()` waits for it. Combining it with an authored `entry-client` is a config error.
+
+  The start options list in the README now also names `instrument`.
+
+- e607db7: Add `start.css.filter` to control which module graphs are traversed while collecting development CSS. `exclude` prunes matching graphs (defaults to `/node_modules/`; providing one replaces the default), and `include` opts matching files in on top of that baseline — e.g. `{ include: /node_modules\/some-ui-lib/ }` server-inlines that dependency's CSS in dev. A file matching both patterns stays excluded.
+- bf76612: Group the explicit entry overrides under `start.entries`: `start.entryServer` becomes `start.entries.server` and `start.entryClient` becomes `start.entries.client`. The old keys fail at config time with a message naming the replacement.
+- 6e2d526: Start-mode typed env (`start.env`): first-party typed, validated environment
+  variables for both start modes. A schema file at the project root —
+  `env.ts`/`env.js`, probed automatically (explicit via `start.env: './path'`,
+  off via `false`) — default-exports `{ server, client }` maps of Standard
+  Schema validators (zod, valibot, arktype, mixable per key; nothing imported
+  from the plugin), and the validated values come back through two typed
+  virtual modules: `virtual:env/server` (every var, server module graphs only
+  — a client-graph import is a hard error naming the importer) and
+  `virtual:env/client` (the `VITE_`-prefixed client side; the prefix — or
+  `envPrefix` — is enforced at config time).
+
+  Validation is node-only and layered, against Vite's `loadEnv` merge of the
+  `.env*` files with `process.env` winning — and the plugin folds the
+  file-loaded vars into `process.env` itself, so templates drop the
+  `process.env = { ...process.env, ...loadEnv(mode, root, '') }` boilerplate.
+  In dev every failure renders the error overlay with a per-key report and
+  `.env*`/schema edits revalidate live (surviving Vite's own
+  restart-on-.env-change). In a build, `client` failures fail the build;
+  `server` failures only warn (a build machine may not have the production
+  secrets) and boot validation enforces them.
+
+  Client values are baked as validated plain JSON — defaults applied,
+  coercions done, zero validator bytes in a client bundle (the
+  runtime-library alternative ships its validator to the browser; t3-env
+  costs ~13 kB gz of zod) — that's what the `VITE_` prefix means. Server
+  values are NOT baked anywhere: `virtual:env/server` reads `process.env` at
+  server boot and validates through the user's own schema, imported into the
+  server bundle only. Platform-injected vars that don't exist at build time
+  work, secrets rotate without a rebuild, and no secret value exists in any
+  dist artifact; an invalid server environment fails boot with the same
+  per-key report. A client-build `generateBundle` scan additionally fails
+  the build when a server var's literal value appears quoted in a client
+  chunk, and a generated `solid-env.d.ts` (written next to the schema) types
+  both virtual modules by inference from the user's own schema via the
+  Standard Schema output type.
+
+  Design credit: the feature's shape — the env.ts convention, the
+  `virtual:env/*` names (kept identical deliberately), baked client values,
+  the leak-scan heuristics — follows @vite-env/core by pyyupsk (MIT,
+  https://github.com/pyyupsk/vite-env); the implementation is fresh on this
+  plugin's machinery (Standard Schema as the only contract, no zod/jiti
+  dependencies, consumer-based environment guarding, Vite's `runnerImport`
+  for schema loading, runtime-read server values). Env is a start-mode feature:
+  without `start` there is no env layer. See `examples/start-env`.
+
+- 13fe6d7: Rename `start.external` to `start.externalServer`, so it no longer reads like Vite's `ssr.external` (dependency externalization): the option hands the whole server side to a host. The old key fails at config time with a message naming the replacement.
+- 256c25d: `start.instrument`: a server-only module the plugin runs to completion before anything else in the server graph loads — the app, the middleware, `@solidjs/web`, every dependency. The seam for instrumentation that must patch the runtime before the modules it patches are loaded (an APM's OpenTelemetry setup, a profiler, a `module.register` hook), honored on every surface: `vite dev`, `vite build`, `vite preview`, and a host consuming the handler entry. Replaces the per-host `node --import instrument.mjs` dance.
+
+  Import order cannot do this in ESM — static imports are hoisted and evaluated in dependency order — so the generated handler entry becomes `await import(instrument); await import(handler)`, with the handler's surface (`handleRequest`, the `fetch` default) re-declared by name. The module may be async and needs no exports; the server build must keep code splitting on (the default).
+
+  Also: the `componentNames` note in the compiler options no longer calls the labels DOM-only — the SSR generate emits them too from the compilers that carry solidjs/solid#3441 (2.0.0-rc.9), and the start-ssr suite gains an `observe` mode that asserts an `observe: true` production build resolves the observe artifacts and carries component labels (the SSR half asserted once the workspace rides an rc that emits them).
+
+- 4e64354: Rename `start.setup` to `start.serverRenderSetup` and `start.instrument` to `start.serverSetup`, so the start lifecycle options say where and how often they run: `serverSetup` once before anything else on the server, `middleware` on every request, `serverRenderSetup` before every page render, `clientSetup` once in the browser. The old keys fail at config time with a message naming the replacement.
+- 84a4cab: docs: "turnkey" is now "start mode" across user-facing language — the JSDoc on `ssr`/`start`/`serverFunctions` and on `StartOptions`/`ServerFunctionsOptions`, the READMEs, and the config-time error/warning strings all say start mode (SSR start mode / client start mode; the server-function dev middleware is "built-in", since it works without `start`). The components-without-start warning also names the right option (`start`, not `app`). Prose citing Solid 2.0 beta versions is reworded version-neutrally now that 2.0 is past beta — published dependency ranges are untouched.
+- 262d48d: Rename `start.node` to `start.nodeServer`: it emits a ready-to-run Node server (`dist/server/node.js`) and does not change the build target, which `node: true` could suggest. The old key fails at config time with a message naming the replacement.
+- 5cfe7f8: Add the `StartRequestEvent` type: the request event in start mode, with the `response` head every start-mode event carries and the optional `nativeEvent`. `StartMiddleware` now receives it, so `event.response.headers.set(...)` type-checks in middleware; `@solidjs/web`'s base `RequestEvent` declares neither field.
+- 1272d95: Start-mode per-request app setup: `start.setup` points at a server-only module default-exporting `(event, App) => Component | void | Promise<Component | void>`, awaited by the generated server entry after the middleware chain dispatches to the page render and immediately before `renderToStream`. The seam routers with async per-request preparation need for SSR (create a router bound to the request, `await router.load()`, then render) — return a component to render in the app's place, or nothing to render `<App />` unchanged. The hook sees the same request event middleware decorated and runs inside the request scope. Zero-config entries are byte-identical without the option; authored server entries own `render()` already, so combining them is a config error.
+- 56e2b85: SSR builds no longer export `$$moduleUrl` from entry chunks, so a Cloudflare Worker whose `main` is a project module starts again in workerd.
+- ebc615f: Start mode dev no longer serves a stale module after an edit to a module a lazy route imports (#537). The dev asset resolver's style walk re-transformed invalidated SSR modules before the module runner imported them, and Vite's `fetchModule` then answered the runner's `cached: true` request with `{ cache: true }`, so the runner kept its old copy until the dev server restarted. This affected runners that rely on that handshake instead of a full reload, such as workerd under `@cloudflare/vite-plugin`. The plugin now wraps the SSR environment's `fetchModule`: it records each module's invalidation timestamp from before the runner received its code, and answers a later cached request with fresh code and `invalidate: true` when the module was invalidated since. The walk calls the unwrapped `fetchModule`, so it no longer changes what the runner sees, and no module is evaluated twice.
+- e8ffe62: Add experimental `.tsrx` compilation with native and Babel backends, scoped CSS sidecars, HMR and SSR asset integration, and function-level server functions.
+- 5f74220: Move the dev CSS crawl filter out of `start` to a top-level `css` option: `start.css.filter` becomes `css.filter`. Plain `ssr: true` setups reading `virtual:solid-manifest` already ran the crawl but had no way to configure it. `start.css` fails at config time with a message naming the replacement.
+- 9f8363c: Move typed env out of `start` to a top-level `env` option, since it also works without start mode. An explicit `env` (`true` or a schema path) now works in any setup, for example a manual `ssr: true` server. Left unset, only start mode probes for the conventional `env.ts` / `env.js`, so projects without `start` that happen to have an unrelated `env.ts` are unaffected. `start.env` fails at config time with a message naming the replacement.
+- ff60d98: Bump solid-refresh to latest version
+- af79dd8: Plain `.ts` and `.js` modules now get lazy callsite module URLs and, on the server, a `$$moduleUrl` export. Non-JSX files used to return before that pipeline, so a `routes.ts` of `lazy(() => import(...))` never told SSR which module to preload.
+- 5828a6e: SSR start mode: the object form of the `ssr` option (even empty: `ssr: {}`)
+  adds a serving layer on top of the SSR transforms so a plain Vite app gets
+  streaming server-side rendering with zero wiring — no entry files, no
+  index.html, no dev server script (requires Vite 6+; `ssr: true` keeps the
+  transform-only behavior unchanged).
+
+  - Dev: a middleware on the Vite dev server streams the rendered app for
+    HTML-accepting GET requests through the SSR environment, scoping each
+    request with `provideRequestEvent` and injecting the Vite client and the
+    dev style patch into `<head>`; SSR errors flow (stack-fixed) to Vite's
+    error page with the overlay. `vite` is the whole dev story.
+  - Build: a plain `vite build` produces both bundles via the
+    environments/builder API — client assets and manifest to `dist/client`,
+    the server bundle to `dist/server/server.js` (`vite build --app` and the
+    classic two-step `vite build` + `vite build --ssr` also work).
+  - Prod: the server bundle's entry is the new `virtual:solid-ssr-handler`,
+    whose `handleRequest(request)` export maps a web-standard `Request` to a
+    streamed `Response` — adapter-agnostic, one line to mount on any server.
+    Hashed client assets are resolved through `virtual:solid-manifest`.
+  - Entries are conventional with escape hatches, resolved in order: explicit
+    `ssr.entryServer` / `ssr.entryClient`; conventional `src/entry-server.*` /
+    `src/entry-client.*` (the server entry exports
+    `render(request?, context?)`; authored `/src/entry-client.tsx` script
+    references are rewritten to the hashed asset in prod); else both entries
+    are generated from a root component (`ssr.app`, default `src/App.*`)
+    wrapped in a document shell (`ssr.document`, default `src/Document.*`,
+    else a built-in one).
+  - With `serverFunctions` enabled the two compose: the dev server-function
+    middleware runs ahead of SSR, and the production `handleRequest` serves
+    the endpoint before rendering.
+  - Server-function registration robustness: the SSR build now merges the
+    client build's persisted manifest at manifest load time as well, so
+    builder-mode (single-invocation) builds keep registrations for functions
+    only client code references.
+
+- 8b36370: Breaking (start-mode config reshape): Start is now a mode of the plugin. The
+  start-mode options move from the object form of `ssr` to a new `start` option
+  (`start: true` is the zero-config spelling, pure sugar for `start: {}` —
+  both mean the identical start mode with defaults), and `ssr` is a boolean
+  again with one meaning everywhere — "is the app server-rendered".
+  `ssr: { ... }` is now a config-time error with a migration message: write
+  `start: { ... }` (or `start: true`) and set `ssr: true`. Options are
+  otherwise unchanged (`start.document`, `start.entryServer`,
+  `start.entryClient`, `start.middleware`, `start.external`, `start.app` for
+  the root component); a bare `ssr: true` without `start` keeps the
+  transform-only behavior, and `serverFunctions` stays orthogonal. The
+  `SsrOptions` type is renamed to `StartOptions`.
+
+  The reason for the split is the new **client start mode**: `start` without
+  `ssr: true` serves the same conventions client-only. Dev streams the
+  rendered document shell (without the app — history-fallback semantics,
+  entry CSS inlined) and the generated client entry `render()`s the app into
+  `document.body`; `vite build` prerenders the shell once through the built
+  handler into `dist/client/index.html` (hashed entry script + entry CSS
+  links) and emits a purely static `dist/client` — `dist/server` is kept only
+  when `serverFunctions` needs it for the endpoint, and pages stay static.
+  Client code compiles exactly like a plain SPA (`generate: 'dom'`,
+  non-hydratable); only the document shell goes through the SSR transforms.
+  Server-only options (`start.entryServer`, `start.external`, conventional
+  `src/entry-server.*` files) are documented no-ops in client mode, so
+  flipping a project between SPA and SSR is toggling the one `ssr` boolean —
+  same App, same Document, same server functions (see `examples/start-client`,
+  whose test flips the same app between the modes).
+
+- 3236eca: Add a "Migrating from vite-plugin-solid" section to the README, and point the rename banner at it.
+- 1df46d6: Expose the `@solidjs/vite-plugin/virtual-solid-manifest` ambient type
+  declarations through a package `exports` subpath so
+  `"types": ["@solidjs/vite-plugin/virtual-solid-manifest"]` resolves under
+  `moduleResolution: "bundler"` / `node16` too (previously only classic `node`
+  resolution found the shipped `.d.ts`).
+- adc3d95: Type `virtual:solid-manifest` as what it exports: `ViteManifest` in an SSR build, the live `DevAssetResolver` in dev (now exported from the plugin). Both still pass straight into `renderToStream`'s `manifest` option; code that reads the module narrows with `if (manifest.resolve)`. Code that treated the dev export as a `ViteManifest` now gets a type error where it used to fail at runtime.
+- 791ae3e: Require Vite 8 or newer and remove the Vite 6 and 7 compatibility paths.
+- 450d0e5: Add Vite 9 forward compatibility by using the per-environment consumer in plugin hooks and accepting Vite 9 as a peer.
+- 3257a97: Vite 8's dependency scan no longer breaks on `.tsx` files (issue #262).
+  The plugin previously set `optimizeDeps.rolldownOptions.transform.jsx:
+'preserve'` to stop Rolldown from injecting `react/jsx-dev-runtime`
+  imports during the scan — but the scanner re-parses the transformed
+  output as plain JS (`import.meta.glob` handling force-tags modules as
+  `js`, and even without glob the oxc-preserved JSX is re-parsed without
+  JSX enabled), so any `.tsx` with JSX was a hard `PARSE_ERROR: Unexpected
+JSX expression` that aborted the whole scan. Every dependency was then
+  missed by pre-bundling and discovered at runtime instead ("new
+  dependencies optimized" mid-session re-optimize/reload — the classic
+  symptom for deps only reachable through `import.meta.glob`). The scan
+  transform now uses the classic JSX runtime, which lowers JSX to bare
+  `React.createElement` calls without injecting any import: the scan
+  output is never executed, it only exists so rolldown can walk the import
+  graph, so the undefined identifier is harmless. With this, the scan
+  completes and glob-only dependencies are pre-bundled up front.
+- ec6c4dc: When the root config declares `test.projects` and leaves `test.sharedViteServer` unset, the plugin now sets it to `false` so every inline project resolves its own Vite config, as under Vitest 4; an explicit value is respected. Vitest 5 defaults the option to `true`, and a shared inline project takes its `test` options from the raw root block captured before any `config` hook runs, so it lost everything the plugin injects (posture, the `@testing-library/jest-dom` setup file, `server.deps`). Refs #369.
+- 06aadc6: Don't default `test.environment` to jsdom for vitest browser-mode projects (`test.browser.enabled`): vitest 4 probes for the environment's package at startup and sets a failing exit code when jsdom isn't installed, even though the suite runs (and passes) in the real browser. Browser-mode projects now fall back to vitest's own node default, which has no package probe — mirroring the existing jest-dom gate. Non-browser projects keep the jsdom default.
+- 5c5fd6f: In the Vitest client posture (jsdom, happy-dom), the plugin now inlines `solid-js`, `@solidjs/web` and the packages that import them without a `solid` export condition, such as `@solidjs/testing-library`. Before, they stayed external, and the host runtime resolved their own imports. Node gets the `browser` condition from Vitest's worker `--conditions`, but Deno does not apply it in worker threads (the `threads` pool) and resolves `deno`/`node`. Under Deno, `@solidjs/testing-library` loaded the server build of `@solidjs/web` and `render` failed with `isServer` true (#369). Inlining sends these imports through Vite's `browser` condition and loads one client-build instance. A `test.server.deps.inline` list is merged with the plugin's, and a `test.server.deps.external` entry for `solid-js` still opts out.
+- 410c95f: Vitest always gets the client posture, regardless of the app's `ssr` flag: test-mode transforms compile non-hydratable (dom codegen under a DOM environment — nothing hydrates in a test), the `browser` export condition applies so solid resolves its client builds, and `test.environment` defaults to `jsdom` for server-rendered apps too. DOM component tests in an `ssr: true` app work without the `ssr: mode !== 'test'` workaround; explicit `test.environment: 'node'` still gets server codegen for `renderToString`-style tests.
+- ad11469: Per-vitest-project server test posture: a project that sets `test.environment: 'node'` (or `'edge-runtime'`) explicitly gets the server posture end to end — server export conditions (`isServer` true), ssr codegen, and the framework inlined so the whole graph (request-event storage included) resolves into one server-build instance despite the workspace worker pool's root-derived native `--conditions`. Server-runtime unit suites (server functions, sessions) need no `deps.inline`/alias workarounds, and DOM (jsdom) and node projects coexist in one workspace.
+- a6cae59: In jsdom and happy-dom tests, Node no longer gets the `browser` condition for packages that Vitest leaves external. Node-only packages such as `msw/node` now load (#125).
+- de42b22: Warn at build time when the server build targets a worker runtime (`ssr.target: 'webworker'`) and the plugin generates server code — SSR or client start mode, or `serverFunctions` on its own. That code imports `@solidjs/web/storage`, the one Solid module that needs `node:async_hooks` (`AsyncLocalStorage` keeps the request event live across `await`s; there is no sync-scope fallback), so on a worker without Node compat the deploy failed with a bare `No such module "node:async_hooks"` (solidjs/solid#3597, Shopify Oxygen — whose Vite plugin sets the webworker target). The warning names the requirement and both fixes: a `compatibility_date` of 2026-08-04 or later (Cloudflare enables `nodejs_compat` by default from that date, and Oxygen accepts the same date), or the `nodejs_compat` flag. It is emitted once per server build, from the `ssr` environment's `buildStart` (the default builder resolves the config once per environment, so a config-time warning would repeat), and never in dev, where the ssr environment runs in Node. No new option; the condition is the resolved `ssr.target`.
+- 629a957: Packages with a `solid` export condition that are declared only in the workspace root's `package.json` are now inlined for projects in that workspace. Before, Vitest loaded them with Node and failed with `Unknown file extension ".jsx"` (#157).
+
 ## 3.0.0-next.57
 
 ### Minor Changes
