@@ -146,7 +146,7 @@ importers:
         version: 1.4.2(typescript@7.0.2)
       zod:
         specifier: ^4.1.0
-        version: 4.4.3
+        version: 4.6.6
     devDependencies:
       '@solidjs/vite-plugin':
         specifier: workspace:*
@@ -1945,8 +1945,8 @@ packages:
   zimmerframe@1.1.5:
     resolution: {integrity: sha512-msJxIvYDYcoNL+PJsu+7qmpDWsYmAxTY+2TNYXXF0hzBzBk0BMecOqDOG/EckUoKCuKwObfbugIl8QpqHDXeFA==}
 
-  zod@4.4.3:
-    resolution: {integrity: sha512-ytENFjIJFl2UwYglde2jchW2Hwm4GJFLDiSXWdTrJQBIN9Fcyp7n4DhxJEiWNAJMV1/BqWfW/kkg71UDcHJyTQ==}
+  zod@4.6.6:
+    resolution: {integrity: sha512-4UmzQUF5fxvfcYHlbjBmejU+w+hbDnWFx4aS8kBx7nPBHcO2SqPbpAG8snbdg+Xse4pRefR98hgjFgIMCI/UhA==}
 
 snapshots:
 
@@ -3489,4 +3489,4 @@ snapshots:
 
   zimmerframe@1.1.5: {}
 
-  zod@4.4.3: {}
+  zod@4.6.6: {}
