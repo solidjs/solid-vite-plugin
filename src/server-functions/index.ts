@@ -550,9 +550,7 @@ export function createServerFunctionsPlugins(
     [runtime.client, CLIENT_RUNTIME_ID],
     [`${runtime.client}/client`, `${CLIENT_RUNTIME_ID}/client`],
   ]);
-  // Both wrappers can share one bundle (#555), so the bare stamp is
-  // installed once, from a module each wrapper imports: a second top-level
-  // install would replace the app hook the first wrapper composed.
+  // One shared install: a second wrapper's install would drop the app hook (#555).
   const stampModuleId = `${CLIENT_RUNTIME_ID}/stamp`;
   const clientRuntimeIds = new Set([...clientRuntimes.values(), stampModuleId]);
   function stampModuleCode(): string {
