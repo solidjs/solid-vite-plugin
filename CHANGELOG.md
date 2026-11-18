@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.11.17
+
+### Patch Changes
+
+- 213e6ee: Inline packages that import `solid-js` in jsdom tests even when they are reached only through another such package (fixes #543). They stayed external, so Node loaded a second `solid-js` for them, and components such as `solid-transition-group`'s `<Transition>` rendered nothing.
+- ee21af4: Ignore `NODE_PATH` when checking whether the project has `@testing-library/jest-dom` (fixes #541). pnpm's bin shims (`pnpm vitest`) point `NODE_PATH` at the hoisted virtual store, so in a workspace where any package depends on jest-dom the setup file was injected into projects without it, and Vitest failed with `Cannot find module '<root>/@testing-library/jest-dom/vitest'`. The check now walks `node_modules` up from the project root, as Vite does when it resolves `setupFiles` (backported from the `next` branch).
+
 ## 2.11.16
 
 ### Patch Changes
