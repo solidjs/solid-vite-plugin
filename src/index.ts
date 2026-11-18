@@ -318,27 +318,35 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin {
       // array changes how Vite merges it with aliases from later plugins:
       // their entries then take priority over the user's. #130
 
-      solidPkgsConfig = await crawlFrameworkPkgs({
-        viteUserConfig: userConfig,
-        root: projectRoot || process.cwd(),
-        isBuild: command === 'build',
-        isFrameworkPkgByJson(pkgJson) {
-          return containsSolidField(pkgJson.exports || {});
-        },
-        // Only records the runtime consumers for the jsdom test posture.
-        // Returning false keeps vitefu's output unchanged.
-        isSemiFrameworkPkgByJson(pkgJson) {
-          if (
-            isTestMode &&
-            !options.ssr &&
-            typeof pkgJson.name === 'string' &&
-            (pkgJson.dependencies?.['solid-js'] || pkgJson.peerDependencies?.['solid-js'])
-          ) {
-            testRuntimeConsumers.add(pkgJson.name);
-          }
-          return false;
-        },
-      });
+      const crawlTestConsumers = isTestMode && !options.ssr;
+      const [mainPkgs, testPkgs] = await Promise.all([
+        crawlFrameworkPkgs({
+          viteUserConfig: userConfig,
+          root: projectRoot || process.cwd(),
+          isBuild: command === 'build',
+          isFrameworkPkgByJson(pkgJson) {
+            return containsSolidField(pkgJson.exports || {});
+          },
+        }),
+        // Claiming consumers is the only way to make vitefu descend into them (#543).
+        crawlTestConsumers
+          ? crawlFrameworkPkgs({
+              root: projectRoot || process.cwd(),
+              isBuild: command === 'build',
+              isFrameworkPkgByJson(pkgJson) {
+                return (
+                  containsSolidField(pkgJson.exports || {}) ||
+                  !!(pkgJson.dependencies?.['solid-js'] || pkgJson.peerDependencies?.['solid-js'])
+                );
+              },
+            })
+          : undefined,
+      ]);
+      solidPkgsConfig = mainPkgs;
+      testRuntimeConsumers.clear();
+      for (const name of testPkgs?.ssr.noExternal ?? []) {
+        if (!solidPkgsConfig.ssr.noExternal.includes(name)) testRuntimeConsumers.add(name);
+      }
 
       const solidDeps = ['solid-js', 'solid-js/web', 'solid-js/store', 'solid-js/html', 'solid-js/h'];
 
