@@ -316,4 +316,61 @@ describe('server function build id in a shared-config app build', () => {
     expect(headers['X-App']).toBe('app-hook');
     expect(headers['X-Server-Function-Build']).toMatch(/^[0-9a-f]{16}$/);
   }, 60_000);
+
+  // #555: a module evaluated after the app's configure call imports the other
+  // runtime path, so its wrapper must not reinstall a bare stamp.
+  it('keeps the app hook when both runtime paths are in the bundle', async () => {
+    await writeFile(
+      path.join(root, 'src/both-setup.ts'),
+      [
+        "import { configureServerFunctionsClient } from '@solidjs/web/server-functions';",
+        'configureServerFunctionsClient({',
+        '  fetch: async (_url: string, init: any) => {',
+        '    (globalThis as any).__bothHeaders = init.headers;',
+        "    throw new Error('captured');",
+        '  },',
+        '  prepareRequest(init: any) {',
+        "    init.headers['X-App'] = 'app-hook';",
+        '    return init;',
+        '  },',
+        '});',
+      ].join('\n'),
+    );
+    await writeFile(
+      path.join(root, 'src/both-late.ts'),
+      [
+        "import { configureServerFunctionsClient } from '@solidjs/web/server-functions/client';",
+        'configureServerFunctionsClient({ responseHandler: undefined });',
+      ].join('\n'),
+    );
+    await writeFile(
+      path.join(root, 'src/both-client.ts'),
+      [
+        "import './both-setup';",
+        "import './both-late';",
+        "import { greet } from './greet';",
+        "(globalThis as any).__bothCall = () => greet('a');",
+      ].join('\n'),
+    );
+    const client = chunkCode(
+      await build({
+        root,
+        configFile: false,
+        cacheDir: path.join(root, '.vite'),
+        logLevel: 'silent',
+        build: {
+          write: false,
+          minify: false,
+          rollupOptions: { input: path.join(root, 'src/both-client.ts') },
+        },
+        plugins: [serverFunctions()],
+      }),
+    );
+    await import('data:text/javascript;base64,' + Buffer.from(client).toString('base64'));
+    await (globalThis as any).__bothCall().catch(() => {});
+    const headers = (globalThis as any).__bothHeaders;
+    expect(headers['X-App']).toBe('app-hook');
+    expect(headers['X-Server-Function-Build']).toMatch(/^[0-9a-f]{16}$/);
+    expect(client.match(/X-Server-Function-Build/g)).toHaveLength(1);
+  }, 60_000);
 });
