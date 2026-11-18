@@ -1,5 +1,6 @@
 import { existsSync } from 'node:fs';
 import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import Module from 'node:module';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type { ConfigEnv, UserConfig } from 'vite';
@@ -8,10 +9,10 @@ import solidPlugin from './index.js';
 
 const roots: string[] = [];
 
-// A project root whose installed vitest has the given version. jest-dom is
-// linked in from this repo, since the plugin only injects it when the project
-// itself can resolve it.
-async function projectWithVitest(version: string) {
+// A project root whose installed vitest has the given version. Unless `jestDom`
+// is false, jest-dom is linked in from this repo, since the plugin only injects
+// it when the project itself can resolve it.
+async function projectWithVitest(version: string, { jestDom = true } = {}) {
   const root = await realpath(await mkdtemp(path.join(tmpdir(), 'solid-jest-dom-')));
   roots.push(root);
   await writeFile(path.join(root, 'package.json'), JSON.stringify({ name: 'app', type: 'module' }));
@@ -20,13 +21,31 @@ async function projectWithVitest(version: string) {
     path.join(root, 'node_modules/vitest/package.json'),
     JSON.stringify({ name: 'vitest', version }),
   );
-  await mkdir(path.join(root, 'node_modules/@testing-library'), { recursive: true });
-  await symlink(
-    await realpath('node_modules/@testing-library/jest-dom'),
-    path.join(root, 'node_modules/@testing-library/jest-dom'),
-    'dir',
-  );
+  if (jestDom) {
+    await mkdir(path.join(root, 'node_modules/@testing-library'), { recursive: true });
+    await symlink(
+      await realpath('node_modules/@testing-library/jest-dom'),
+      path.join(root, 'node_modules/@testing-library/jest-dom'),
+      'dir',
+    );
+  }
   return root;
+}
+
+// Calls `fn` with NODE_PATH set to `nodePath`. Node reads NODE_PATH once at
+// startup, so its global module paths are recomputed before and after.
+async function withNodePath<T>(nodePath: string, fn: () => Promise<T>): Promise<T> {
+  const initPaths = (Module as unknown as { _initPaths(): void })._initPaths;
+  const previous = process.env.NODE_PATH;
+  process.env.NODE_PATH = nodePath;
+  initPaths();
+  try {
+    return await fn();
+  } finally {
+    if (previous === undefined) delete process.env.NODE_PATH;
+    else process.env.NODE_PATH = previous;
+    initPaths();
+  }
 }
 
 async function setupFilesFor(root: string): Promise<string[]> {
@@ -54,5 +73,15 @@ describe('jest-dom setup file', () => {
   it('keeps the bare specifier for vitest 1.0 and later', async () => {
     const setupFiles = await setupFilesFor(await projectWithVitest('1.0.0'));
     expect(setupFiles).toEqual(['@testing-library/jest-dom/vitest']);
+  });
+
+  // #541: pnpm's bin shims (`pnpm vitest`) set NODE_PATH to the hoisted virtual
+  // store, where `require.resolve` also finds a jest-dom that only another
+  // workspace package depends on. Vitest resolves `setupFiles` without NODE_PATH
+  // and failed to load the injected one.
+  it('ignores a jest-dom that only NODE_PATH reaches', async () => {
+    const root = await projectWithVitest('1.0.0', { jestDom: false });
+    const setupFiles = await withNodePath(path.resolve('node_modules'), () => setupFilesFor(root));
+    expect(setupFiles).toBeUndefined();
   });
 });

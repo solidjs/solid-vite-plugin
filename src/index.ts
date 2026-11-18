@@ -1,6 +1,6 @@
 import * as babel from '@babel/core';
 import solid from 'babel-preset-solid';
-import { readFileSync } from 'fs';
+import { existsSync, readFileSync, realpathSync } from 'fs';
 import { mergeAndConcat } from 'merge-anything';
 import { createRequire } from 'module';
 import path from 'path';
@@ -208,6 +208,25 @@ function containsSolidField(fields: Record<string, any>) {
   return false;
 }
 
+/**
+ * Locate a bare package the way Vite (and Node without `NODE_PATH`) does: walk
+ * `<dir>/node_modules/<name>` up from `root`. `require.resolve` can't be used
+ * for this — it also consults `NODE_PATH`, which pnpm's bin shims (`pnpm
+ * vitest`, `pnpm test`) point at the hoisted virtual store
+ * (`node_modules/.pnpm/node_modules`), where every transitive dependency of the
+ * whole tree is reachable.
+ */
+function findPackageDir(name: string, root: string): string | undefined {
+  let dir = root;
+  while (true) {
+    const candidate = path.join(dir, 'node_modules', name);
+    if (existsSync(path.join(candidate, 'package.json'))) return candidate;
+    const parent = path.dirname(dir);
+    if (parent === dir) return undefined;
+    dir = parent;
+  }
+}
+
 function getJestDomExport(setupFiles: string[], root: string) {
   if (setupFiles?.some((file) => /jest-dom/.test(file))) return undefined;
 
@@ -219,12 +238,20 @@ function getJestDomExport(setupFiles: string[], root: string) {
   // The bare specifier (not the resolved path) is injected on purpose: `require.resolve` picks
   // jest-dom's CommonJS entry, which Vitest refuses to load, while Vitest itself resolves the
   // specifier to the ESM entry.
-  const projectRequire = createRequire(path.join(root, 'package.json'));
+  const packageDir = findPackageDir('@testing-library/jest-dom', root);
+  if (!packageDir) return undefined;
+  // Check the subpath against THIS copy: resolving from inside the package
+  // self-references its `exports` map (v6+), or falls back to its own files
+  // for versions without one (v5's `extend-expect`). `NODE_PATH` still
+  // participates in that lookup, so make sure the hit landed in the package
+  // Vite will resolve rather than in some hoisted copy of another version.
+  const realPackageDir = realpathSync(packageDir);
+  const packageRequire = createRequire(path.join(packageDir, 'package.json'));
   return ['@testing-library/jest-dom/vitest', '@testing-library/jest-dom/extend-expect'].find(
     (specifier) => {
       try {
-        projectRequire.resolve(specifier);
-        return true;
+        const resolved = realpathSync(packageRequire.resolve(specifier));
+        return resolved.startsWith(realPackageDir + path.sep);
       } catch (e) {
         return false;
       }
