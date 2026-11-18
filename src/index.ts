@@ -1724,6 +1724,10 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
   // removed from the final bundle, leaving no dynamic-import edge to identify
   // its facade chunk during generateBundle.
   const emittedLazyChunkRefs: string[] = [];
+  // Only modules reachable from an entry get lazy chunks: the server-component
+  // stylesheet walk loads server modules the client never imports (#554).
+  const reachedModules = new Set<string>();
+  const unreachedImports = new Map<string, { imported: string[]; dynamic: string[] }>();
 
   // Whether the current hook invocation belongs to a client (browser) build.
   // Builder-mode builds (e.g. SolidStart's nitro plugin) run the client and
@@ -2524,6 +2528,8 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
       if (isBuild && isClientBuild(this)) {
         emittedLazyChunks.clear();
         emittedLazyChunkRefs.length = 0;
+        reachedModules.clear();
+        unreachedImports.clear();
       }
       // `ssr.target` is a property of the `ssr` environment specifically
       // (Vite reads it as `environment.name === 'ssr'` too), and that is the
@@ -2614,15 +2620,33 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
       // even when chunk grouping would otherwise absorb it. Plain SPA builds
       // have no manifest lookups to protect.
       if (!isBuild || !options.ssr || !isClientBuild(this)) return;
-      for (const depId of info.dynamicallyImportedIds || []) {
-        const cleanId = depId.split('?')[0];
-        if (/node_modules/.test(cleanId) || cleanId.startsWith('\0')) continue;
-        if (!(/\.[mc]?[tj]sx?$/i.test(cleanId) || isLoweredModule(cleanId))) continue;
-        if (emittedLazyChunks.has(depId)) continue;
-        emittedLazyChunks.add(depId);
-        emittedLazyChunkRefs.push(
-          this.emitFile({ type: 'chunk', id: depId, preserveSignature: 'exports-only' }),
-        );
+      unreachedImports.set(info.id, {
+        imported: [...(info.importedIds || [])],
+        dynamic: [...(info.dynamicallyImportedIds || [])],
+      });
+      if (!info.isEntry && !reachedModules.has(info.id)) return;
+      const queue = [info.id];
+      reachedModules.add(info.id);
+      while (queue.length) {
+        const id = queue.pop()!;
+        const imports = unreachedImports.get(id);
+        if (!imports) continue;
+        unreachedImports.delete(id);
+        for (const depId of imports.dynamic) {
+          const cleanId = depId.split('?')[0];
+          if (/node_modules/.test(cleanId) || cleanId.startsWith('\0')) continue;
+          if (!(/\.[mc]?[tj]sx?$/i.test(cleanId) || isLoweredModule(cleanId))) continue;
+          if (emittedLazyChunks.has(depId)) continue;
+          emittedLazyChunks.add(depId);
+          emittedLazyChunkRefs.push(
+            this.emitFile({ type: 'chunk', id: depId, preserveSignature: 'exports-only' }),
+          );
+        }
+        for (const depId of [...imports.imported, ...imports.dynamic]) {
+          if (reachedModules.has(depId)) continue;
+          reachedModules.add(depId);
+          queue.push(depId);
+        }
       }
     },
 

@@ -6,7 +6,7 @@ const VIRTUAL_ID = '\0@solidjs/vite-plugin:boundary-modules';
 
 /**
  * `server-only` and `client-only` marker modules: importing `server-only`
- * from a module bundled for the client fails the build at resolve time with
+ * from a module bundled for the client fails the build (dev: at resolve time) with
  * a descriptive error (and vice versa for `client-only`); in the allowed
  * environment the marker resolves to an empty module.
  *
@@ -21,6 +21,12 @@ const VIRTUAL_ID = '\0@solidjs/vite-plugin:boundary-modules';
  * keeps the behavior deterministic and the errors identifiable as ours.
  */
 export function boundaryModules(): Plugin {
+  const violations = new WeakMap<object, Map<string, string>>();
+  const violationsFor = (environment: object) => {
+    let pending = violations.get(environment);
+    if (!pending) violations.set(environment, (pending = new Map()));
+    return pending;
+  };
   const plugin: Plugin = {
     name: 'solid:boundary-modules',
     enforce: 'pre',
@@ -37,28 +43,56 @@ export function boundaryModules(): Plugin {
       // the flag and stay fully guarded.
       const scan = !!(options as { scan?: boolean } | undefined)?.scan;
       const server = getEnvironmentConsumer(this.environment, options) === 'server';
+      let message: string | undefined;
       if (id === 'server-only') {
         if (!server && !scan)
-          this.error(
+          message =
             `[@solidjs/vite-plugin] Attempt to import 'server-only' in a client module: ${importer}. ` +
-              `Code that uses this module must run only on the server — make sure it is only ` +
-              `imported by server code (e.g. a server entry, a "use server" module, or code ` +
-              `reached exclusively from them).`,
-          );
+            `Code that uses this module must run only on the server — make sure it is only ` +
+            `imported by server code (e.g. a server entry, a "use server" module, or code ` +
+            `reached exclusively from them).`;
       } else if (id === 'client-only') {
         if (server && !scan)
-          this.error(
+          message =
             `[@solidjs/vite-plugin] Attempt to import 'client-only' in a server module: ${importer}. ` +
-              `Code that uses this module must run only in the browser — make sure it is only ` +
-              `imported by client code (e.g. behind a client-only lazy boundary).`,
-          );
+            `Code that uses this module must run only in the browser — make sure it is only ` +
+            `imported by client code (e.g. behind a client-only lazy boundary).`;
       } else {
         return null;
+      }
+      if (message) {
+        // A build can load modules it never bundles (the server-component
+        // stylesheet walk, #554), so it checks reachability once the graph is done.
+        if (this.environment.mode !== 'build' || !importer) this.error(message);
+        violationsFor(this.environment).set(importer, message);
       }
       return VIRTUAL_ID;
     },
     load(id) {
       if (id === VIRTUAL_ID) return 'export {}';
+    },
+    buildStart() {
+      violations.delete(this.environment);
+    },
+    buildEnd(error) {
+      const pending = violations.get(this.environment);
+      violations.delete(this.environment);
+      if (error || !pending?.size) return;
+      const reached = new Set<string>();
+      const queue: string[] = [];
+      for (const id of this.getModuleIds()) {
+        if (this.getModuleInfo(id)?.isEntry) queue.push(id);
+      }
+      while (queue.length) {
+        const id = queue.pop()!;
+        if (reached.has(id)) continue;
+        reached.add(id);
+        const info = this.getModuleInfo(id);
+        if (info) queue.push(...info.importedIds, ...info.dynamicallyImportedIds);
+      }
+      for (const [importer, message] of pending) {
+        if (reached.has(importer)) this.error(message);
+      }
     },
   };
   // Hook filters (src/hook-filters.ts).
