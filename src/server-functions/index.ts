@@ -550,17 +550,27 @@ export function createServerFunctionsPlugins(
     [runtime.client, CLIENT_RUNTIME_ID],
     [`${runtime.client}/client`, `${CLIENT_RUNTIME_ID}/client`],
   ]);
-  const clientRuntimeIds = new Set(clientRuntimes.values());
-  function clientRuntimeCode(specifier: string): string {
-    const source = JSON.stringify(specifier);
+  // Both wrappers can share one bundle (#555), so the bare stamp is
+  // installed once, from a module each wrapper imports: a second top-level
+  // install would replace the app hook the first wrapper composed.
+  const stampModuleId = `${CLIENT_RUNTIME_ID}/stamp`;
+  const clientRuntimeIds = new Set([...clientRuntimes.values(), stampModuleId]);
+  function stampModuleCode(): string {
     return [
-      `import { configureServerFunctionsClient as configure } from ${source};`,
-      `export * from ${source};`,
-      `const stamp = (hook) => (init, context) => {`,
+      `import { configureServerFunctionsClient as configure } from ${JSON.stringify(runtime.client)};`,
+      `export const stamp = (hook) => (init, context) => {`,
       `  if (init.method != 'GET') init.headers[${JSON.stringify(BUILD_HEADER)}] = ${JSON.stringify(buildId)};`,
       `  return hook ? hook(init, context) : init;`,
       `};`,
       `configure({ prepareRequest: stamp() });`,
+    ].join('\n');
+  }
+  function clientRuntimeCode(specifier: string): string {
+    const source = JSON.stringify(specifier);
+    return [
+      `import { configureServerFunctionsClient as configure } from ${source};`,
+      `import { stamp } from ${JSON.stringify(stampModuleId)};`,
+      `export * from ${source};`,
       `export function configureServerFunctionsClient(config) {`,
       `  configure(config && config.prepareRequest ? { ...config, prepareRequest: stamp(config.prepareRequest) } : config);`,
       `}`,
@@ -742,6 +752,7 @@ export function createServerFunctionsPlugins(
     enforce: 'pre',
     apply: 'build',
     resolveId(source, importer, opts) {
+      if (source === stampModuleId) return source;
       const id = clientRuntimes.get(source);
       if (
         stampsBuild &&
@@ -754,6 +765,7 @@ export function createServerFunctionsPlugins(
       return null;
     },
     load(id) {
+      if (id === stampModuleId) return stampModuleCode();
       for (const [specifier, runtimeId] of clientRuntimes) {
         if (id === runtimeId) return clientRuntimeCode(specifier);
       }
@@ -1099,7 +1111,7 @@ export function createServerFunctionsPlugins(
   withFilter(plugins, [
     {
       pluginNamePattern: ['solid:server-functions/client-runtime'],
-      resolveId: { id: exactIds(...clientRuntimes.keys()) },
+      resolveId: { id: exactIds(...clientRuntimes.keys(), stampModuleId) },
       load: { id: exactIds(...clientRuntimeIds) },
     },
     {
