@@ -61,8 +61,7 @@ export function boundaryModules(): Plugin {
         return null;
       }
       if (message) {
-        // A build can load modules it never bundles (the server-component
-        // stylesheet walk, #554), so it checks reachability once the graph is done.
+        // Builds load modules they never bundle (#554): check reachability in buildEnd.
         if (this.environment.mode !== 'build' || !importer) this.error(message);
         violationsFor(this.environment).set(importer, message);
       }

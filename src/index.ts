@@ -1724,10 +1724,12 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
   // removed from the final bundle, leaving no dynamic-import edge to identify
   // its facade chunk during generateBundle.
   const emittedLazyChunkRefs: string[] = [];
-  // Only modules reachable from an entry get lazy chunks: the server-component
-  // stylesheet walk loads server modules the client never imports (#554).
+  // Lazy chunks only for entry-reachable modules; the style walk loads others (#554).
   const reachedModules = new Set<string>();
-  const unreachedImports = new Map<string, { imported: string[]; dynamic: string[] }>();
+  const unreachedImports = new Map<
+    string,
+    { imported: readonly string[]; dynamic: readonly string[] }
+  >();
 
   // Whether the current hook invocation belongs to a client (browser) build.
   // Builder-mode builds (e.g. SolidStart's nitro plugin) run the client and
@@ -2620,18 +2622,18 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
       // even when chunk grouping would otherwise absorb it. Plain SPA builds
       // have no manifest lookups to protect.
       if (!isBuild || !options.ssr || !isClientBuild(this)) return;
-      unreachedImports.set(info.id, {
-        imported: [...(info.importedIds || [])],
-        dynamic: [...(info.dynamicallyImportedIds || [])],
-      });
-      if (!info.isEntry && !reachedModules.has(info.id)) return;
-      const queue = [info.id];
+      const parsed: { imported: readonly string[]; dynamic: readonly string[] } = {
+        imported: info.importedIds || [],
+        dynamic: info.dynamicallyImportedIds || [],
+      };
+      if (!info.isEntry && !reachedModules.has(info.id)) {
+        unreachedImports.set(info.id, parsed);
+        return;
+      }
       reachedModules.add(info.id);
+      const queue = [parsed];
       while (queue.length) {
-        const id = queue.pop()!;
-        const imports = unreachedImports.get(id);
-        if (!imports) continue;
-        unreachedImports.delete(id);
+        const imports = queue.pop()!;
         for (const depId of imports.dynamic) {
           const cleanId = depId.split('?')[0];
           if (/node_modules/.test(cleanId) || cleanId.startsWith('\0')) continue;
@@ -2642,10 +2644,16 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
             this.emitFile({ type: 'chunk', id: depId, preserveSignature: 'exports-only' }),
           );
         }
-        for (const depId of [...imports.imported, ...imports.dynamic]) {
-          if (reachedModules.has(depId)) continue;
-          reachedModules.add(depId);
-          queue.push(depId);
+        for (const list of [imports.imported, imports.dynamic]) {
+          for (const depId of list) {
+            if (reachedModules.has(depId)) continue;
+            reachedModules.add(depId);
+            const pending = unreachedImports.get(depId);
+            if (pending) {
+              unreachedImports.delete(depId);
+              queue.push(pending);
+            }
+          }
         }
       }
     },

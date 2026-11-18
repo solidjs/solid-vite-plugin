@@ -47,7 +47,9 @@ describe('server component stylesheet walk', () => {
     await rm(root, { recursive: true, force: true });
   });
 
-  async function buildClient(input = 'src/client.ts') {
+  // Grouping every source module into one chunk leaves a lazy target its own
+  // chunk only when the plugin emitted a facade for it.
+  async function buildClient(input = 'src/client.ts', groupSources = false) {
     return outputs(
       await build({
         root,
@@ -57,7 +59,12 @@ describe('server component stylesheet walk', () => {
         build: {
           write: false,
           minify: false,
-          rollupOptions: { input: path.join(root, input) },
+          rollupOptions: {
+            input: path.join(root, input),
+            ...(groupSources
+              ? { output: { advancedChunks: { groups: [{ name: 'app', test: /\/src\// }] } } }
+              : {}),
+          },
         },
         plugins: [solid({ ssr: true, serverFunctions: { components: true } })],
       }),
@@ -100,5 +107,25 @@ describe('server component stylesheet walk', () => {
     expect(output.some((file) => file.fileName.endsWith('.css'))).toBe(true);
     const code = output.map((file) => (file.type === 'chunk' ? file.code : '')).join('\n');
     expect(code).not.toContain('SERVER-DRIVER-MARKER');
+  }, 60_000);
+
+  it('still emits a facade chunk for a lazy target below a client module', async () => {
+    await writeFile(
+      path.join(root, 'src/Lazy.ts'),
+      "export default function Lazy() {\n  return 'lazy';\n}\n",
+    );
+    await writeFile(
+      path.join(root, 'src/routes.ts'),
+      "export const load = () => import('./Lazy');\n",
+    );
+    await writeFile(
+      path.join(root, 'src/lazy-client.ts'),
+      "import { load } from './routes';\nload();\n",
+    );
+    const output = await buildClient('src/lazy-client.ts', true);
+    const lazy = output.find(
+      (file) => file.type === 'chunk' && file.facadeModuleId?.endsWith('/src/Lazy.ts'),
+    );
+    expect(lazy).toBeDefined();
   }, 60_000);
 });
