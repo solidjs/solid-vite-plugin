@@ -96,6 +96,18 @@ describe('"use server" outside serverFunctions.filter in a client build', () => 
     ).rejects.toThrow(/server\/secret\.ts contains "use server" but is outside/);
   });
 
+  it('still fails with an empty filter.exclude', async () => {
+    await expect(
+      build({
+        root,
+        configFile: false,
+        logLevel: 'silent',
+        build: { write: false, rollupOptions: { input: path.join(root, 'server/secret.ts') } },
+        plugins: [serverFunctions({ filter: { exclude: [] } })],
+      }),
+    ).rejects.toThrow(/server\/secret\.ts contains "use server" but is outside/);
+  });
+
   it('builds when the file is added to filter.include', async () => {
     await expect(
       build({

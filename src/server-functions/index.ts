@@ -33,6 +33,8 @@ import xxHash32 from './xxhash32.js';
  * Relative patterns (the defaults included) are resolved against the Vite
  * root — not the invocation directory — so running `vite` from outside the
  * project keeps compiling the same files. Absolute patterns are used as-is.
+ * A client module outside these patterns that contains the directive fails
+ * the build (and warns in dev), since its server code would run in the browser.
  *
  * @default include "src/**\/*.{jsx,tsx,tsrx,ts,js,mjs,cjs}", exclude "node_modules/**\/*.{jsx,tsx,tsrx,ts,js,mjs,cjs}"
  */
@@ -462,6 +464,8 @@ export function createServerFunctionsPlugins(
   // from outside the project would otherwise silently skip every module.
   let filter = createFilter(filterInclude, filterExclude);
   let excluded = createFilter(filterExclude, null);
+  const hasExclude = ([] as unknown[]).concat(filterExclude ?? []).length > 0;
+  const isExcluded = (id: string) => hasExclude && excluded(id);
   const directive = options.directive || DEFAULT_DIRECTIVE;
   const runtime = options.runtime || { server: DEFAULT_RUNTIME, client: DEFAULT_RUNTIME };
   const endpoint = normalizeServerFunctionsEndpoint(options.endpoint);
@@ -885,25 +889,25 @@ export function createServerFunctionsPlugins(
   }
 
   // An uncompiled client module would ship its server function bodies to the browser.
-  const reportedUnfiltered = new Set<string>();
+  const checkedUnfiltered = new Map<string, string>();
   async function reportUnfilteredDirective(ctx: any, id: string, code: string) {
     if (id.startsWith('\0') || !path.isAbsolute(id) || !code.includes(directive)) return;
-    if (excluded(id) || reportedUnfiltered.has(id)) return;
+    if (isExcluded(id) || checkedUnfiltered.get(id) === code) return;
+    checkedUnfiltered.set(id, code);
     const result = await compile(id, code, {
       ...clientOptions,
       mode: 'client',
       env,
       root,
       sourceMap: false,
-    }).catch(() => null);
-    if (!result?.valid || !result.functions.length) return;
+    }).catch(() => ({ valid: true, functions: [null] }));
+    if (!result.valid || !result.functions.length) return;
     const relative = path.relative(root, id).split(path.sep).join('/');
     const message =
       `[@solidjs/vite-plugin] ${relative} contains "${directive}" but is outside ` +
-      '`serverFunctions.filter.include`, so it is not compiled and its server code runs in the ' +
-      'browser. Add the file to `serverFunctions.filter.include`, or move it under `src/`.';
+      '`serverFunctions.filter`, so it is not compiled and its server code runs in the ' +
+      'browser. Add the file to `serverFunctions.filter.include`.';
     if (isBuild) ctx.error(message);
-    reportedUnfiltered.add(id);
     ctx.warn(message);
   }
 
