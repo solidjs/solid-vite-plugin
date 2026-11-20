@@ -461,6 +461,7 @@ export function createServerFunctionsPlugins(
   // must resolve against the Vite root, not process.cwd() — running `vite`
   // from outside the project would otherwise silently skip every module.
   let filter = createFilter(filterInclude, filterExclude);
+  let excluded = createFilter(filterExclude, null);
   const directive = options.directive || DEFAULT_DIRECTIVE;
   const runtime = options.runtime || { server: DEFAULT_RUNTIME, client: DEFAULT_RUNTIME };
   const endpoint = normalizeServerFunctionsEndpoint(options.endpoint);
@@ -883,6 +884,29 @@ export function createServerFunctionsPlugins(
     });
   }
 
+  // An uncompiled client module would ship its server function bodies to the browser.
+  const reportedUnfiltered = new Set<string>();
+  async function reportUnfilteredDirective(ctx: any, id: string, code: string) {
+    if (id.startsWith('\0') || !path.isAbsolute(id) || !code.includes(directive)) return;
+    if (excluded(id) || reportedUnfiltered.has(id)) return;
+    const result = await compile(id, code, {
+      ...clientOptions,
+      mode: 'client',
+      env,
+      root,
+      sourceMap: false,
+    }).catch(() => null);
+    if (!result?.valid || !result.functions.length) return;
+    const relative = path.relative(root, id).split(path.sep).join('/');
+    const message =
+      `[@solidjs/vite-plugin] ${relative} contains "${directive}" but is outside ` +
+      '`serverFunctions.filter.include`, so it is not compiled and its server code runs in the ' +
+      'browser. Add the file to `serverFunctions.filter.include`, or move it under `src/`.';
+    if (isBuild) ctx.error(message);
+    reportedUnfiltered.add(id);
+    ctx.warn(message);
+  }
+
   async function transformModule(
     ctx: any,
     code: string,
@@ -892,7 +916,11 @@ export function createServerFunctionsPlugins(
   ) {
     const mode = getEnvironmentConsumer(ctx.environment, opts);
     const [id] = fileId.split('?');
-    if (!id || !filter(id) || isLowered(id) !== tsrx) return null;
+    if (!id || isLowered(id) !== tsrx) return null;
+    if (!filter(id)) {
+      if (mode === 'client') await reportUnfilteredDirective(ctx, id, code);
+      return null;
+    }
 
     // The directive has to appear literally, so anything without the
     // substring can skip the native parse entirely.
@@ -983,6 +1011,7 @@ export function createServerFunctionsPlugins(
         root = config.root;
         base = config.base;
         filter = createFilter(filterInclude, filterExclude, { resolve: root });
+        excluded = createFilter(filterExclude, null, { resolve: root });
         isBuild = config.command === 'build';
         isSsrBuild = !!config.build.ssr;
         outDir = config.build.outDir;
