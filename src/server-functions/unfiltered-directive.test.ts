@@ -21,6 +21,8 @@ async function makeRoot() {
   await writeFile(path.join(root, 'server/secret.ts'), SECRET);
   await writeFile(path.join(root, 'server/note.ts'), COMMENT_ONLY);
   await writeFile(path.join(root, 'src/secret.ts'), SECRET);
+  await writeFile(path.join(root, 'server/theme.css'), '/* use server */\nbody { color: red; }\n');
+  await writeFile(path.join(root, 'server/entry.ts'), 'import "./theme.css";\nexport const x = 1;\n');
   return root;
 }
 
@@ -94,6 +96,31 @@ describe('"use server" outside serverFunctions.filter in a client build', () => 
         plugins: [serverFunctions()],
       }),
     ).rejects.toThrow(/server\/secret\.ts contains "use server" but is outside/);
+  });
+
+  it('fails again when the same plugin instance builds twice', async () => {
+    const plugins = [serverFunctions()];
+    const config = {
+      root,
+      configFile: false as const,
+      logLevel: 'silent' as const,
+      build: { write: false, rollupOptions: { input: path.join(root, 'server/secret.ts') } },
+      plugins,
+    };
+    await expect(build(config)).rejects.toThrow(/contains "use server" but is outside/);
+    await expect(build(config)).rejects.toThrow(/contains "use server" but is outside/);
+  });
+
+  it('ignores stylesheets that mention the directive', async () => {
+    await expect(
+      build({
+        root,
+        configFile: false,
+        logLevel: 'silent',
+        build: { write: false, rollupOptions: { input: path.join(root, 'server/entry.ts') } },
+        plugins: [serverFunctions()],
+      }),
+    ).resolves.toBeDefined();
   });
 
   it('still fails with an empty filter.exclude', async () => {

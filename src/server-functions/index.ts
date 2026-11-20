@@ -889,25 +889,34 @@ export function createServerFunctionsPlugins(
   }
 
   // An uncompiled client module would ship its server function bodies to the browser.
-  const checkedUnfiltered = new Map<string, string>();
+  const unfilteredChecks = new Map<string, { code: string; leaks: boolean }>();
+  const warnedUnfiltered = new Set<string>();
+  const isScript = (id: string) =>
+    /\.(?:[cm]?[jt]sx?|tsrx)$/i.test(id) || frontendExtensions.some((e) => id.toLowerCase().endsWith(e));
   async function reportUnfilteredDirective(ctx: any, id: string, code: string) {
-    if (id.startsWith('\0') || !path.isAbsolute(id) || !code.includes(directive)) return;
-    if (isExcluded(id) || checkedUnfiltered.get(id) === code) return;
-    checkedUnfiltered.set(id, code);
-    const result = await compile(id, code, {
-      ...clientOptions,
-      mode: 'client',
-      env,
-      root,
-      sourceMap: false,
-    }).catch(() => ({ valid: true, functions: [null] }));
-    if (!result.valid || !result.functions.length) return;
+    if (id.startsWith('\0') || !path.isAbsolute(id) || !isScript(id)) return;
+    if (!code.includes(directive) || isExcluded(id)) return;
+    let check = unfilteredChecks.get(id);
+    if (check?.code !== code) {
+      const result = await compile(id, code, {
+        ...clientOptions,
+        mode: 'client',
+        env,
+        root,
+        sourceMap: false,
+      }).catch(() => ({ valid: true, functions: [null] }));
+      check = { code, leaks: result.valid && result.functions.length > 0 };
+      unfilteredChecks.set(id, check);
+    }
+    if (!check.leaks) return;
     const relative = path.relative(root, id).split(path.sep).join('/');
     const message =
       `[@solidjs/vite-plugin] ${relative} contains "${directive}" but is outside ` +
       '`serverFunctions.filter`, so it is not compiled and its server code runs in the ' +
       'browser. Add the file to `serverFunctions.filter.include`.';
     if (isBuild) ctx.error(message);
+    if (warnedUnfiltered.has(id)) return;
+    warnedUnfiltered.add(id);
     ctx.warn(message);
   }
 
