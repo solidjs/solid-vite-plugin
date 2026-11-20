@@ -33,6 +33,8 @@ import xxHash32 from './xxhash32.js';
  * Relative patterns (the defaults included) are resolved against the Vite
  * root — not the invocation directory — so running `vite` from outside the
  * project keeps compiling the same files. Absolute patterns are used as-is.
+ * A client module outside these patterns that contains the directive fails
+ * the build (and warns in dev), since its server code would run in the browser.
  *
  * @default include "src/**\/*.{jsx,tsx,tsrx,ts,js,mjs,cjs}", exclude "node_modules/**\/*.{jsx,tsx,tsrx,ts,js,mjs,cjs}"
  */
@@ -461,6 +463,9 @@ export function createServerFunctionsPlugins(
   // must resolve against the Vite root, not process.cwd() — running `vite`
   // from outside the project would otherwise silently skip every module.
   let filter = createFilter(filterInclude, filterExclude);
+  let excluded = createFilter(filterExclude, null);
+  const hasExclude = ([] as unknown[]).concat(filterExclude ?? []).length > 0;
+  const isExcluded = (id: string) => hasExclude && excluded(id);
   const directive = options.directive || DEFAULT_DIRECTIVE;
   const runtime = options.runtime || { server: DEFAULT_RUNTIME, client: DEFAULT_RUNTIME };
   const endpoint = normalizeServerFunctionsEndpoint(options.endpoint);
@@ -883,6 +888,38 @@ export function createServerFunctionsPlugins(
     });
   }
 
+  // An uncompiled client module would ship its server function bodies to the browser.
+  const unfilteredChecks = new Map<string, { code: string; leaks: boolean }>();
+  const warnedUnfiltered = new Set<string>();
+  const isScript = (id: string) =>
+    /\.(?:[cm]?[jt]sx?|tsrx)$/i.test(id) || frontendExtensions.some((e) => id.toLowerCase().endsWith(e));
+  async function reportUnfilteredDirective(ctx: any, id: string, code: string) {
+    if (id.startsWith('\0') || !path.isAbsolute(id) || !isScript(id)) return;
+    if (!code.includes(directive) || isExcluded(id)) return;
+    let check = unfilteredChecks.get(id);
+    if (check?.code !== code) {
+      const result = await compile(id, code, {
+        ...clientOptions,
+        mode: 'client',
+        env,
+        root,
+        sourceMap: false,
+      }).catch(() => ({ valid: true, functions: [null] }));
+      check = { code, leaks: result.valid && result.functions.length > 0 };
+      unfilteredChecks.set(id, check);
+    }
+    if (!check.leaks) return;
+    const relative = path.relative(root, id).split(path.sep).join('/');
+    const message =
+      `[@solidjs/vite-plugin] ${relative} contains "${directive}" but is outside ` +
+      '`serverFunctions.filter`, so it is not compiled and its server code runs in the ' +
+      'browser. Add the file to `serverFunctions.filter.include`.';
+    if (isBuild) ctx.error(message);
+    if (warnedUnfiltered.has(id)) return;
+    warnedUnfiltered.add(id);
+    ctx.warn(message);
+  }
+
   async function transformModule(
     ctx: any,
     code: string,
@@ -892,7 +929,11 @@ export function createServerFunctionsPlugins(
   ) {
     const mode = getEnvironmentConsumer(ctx.environment, opts);
     const [id] = fileId.split('?');
-    if (!id || !filter(id) || isLowered(id) !== tsrx) return null;
+    if (!id || isLowered(id) !== tsrx) return null;
+    if (!filter(id)) {
+      if (mode === 'client') await reportUnfilteredDirective(ctx, id, code);
+      return null;
+    }
 
     // The directive has to appear literally, so anything without the
     // substring can skip the native parse entirely.
@@ -983,6 +1024,7 @@ export function createServerFunctionsPlugins(
         root = config.root;
         base = config.base;
         filter = createFilter(filterInclude, filterExclude, { resolve: root });
+        excluded = createFilter(filterExclude, null, { resolve: root });
         isBuild = config.command === 'build';
         isSsrBuild = !!config.build.ssr;
         outDir = config.build.outDir;
