@@ -348,7 +348,7 @@ Solid options accepted by `handleRequest`'s second parameter.
   command is:
 
 ```sh
-node dist/server/node.js   # PORT (default 3000), HOST
+node dist/server/node.js   # PORT (default 3000), HOST, TRUST_PROXY
 ```
 
 The entry serves `dist/client` statically — files under
@@ -396,7 +396,21 @@ app.listen(process.env.PORT || 3000);
 mode, the `index.html` history fallback — the framework owns both.
 `createListener({ event: (req) => ({ ... }) })` merges extra fields over
 `{ nativeEvent: req }` into the request event. `serve({ port, host, static,
-event })` takes the same two options on top of the listen address.
+event, trustProxy })` takes the same options on top of the listen address.
+
+Behind a TLS-terminating proxy the entry's socket is plain HTTP, so
+`request.url` starts with `http://`, and application code that compares
+URLs with the public `https://` origin goes wrong. One example is the
+server-function same-origin check for browsers that send no
+`Sec-Fetch-Site`, such as Safari before 16.4. Set `TRUST_PROXY` (or
+`createListener({ trustProxy })`) to take the scheme from the
+`X-Forwarded-Proto` value that the nearest proxy sets: `loopback` trusts a
+proxy on the same host, a comma-separated list trusts those exact peer
+addresses (no CIDR ranges), and `true` trusts any peer. The exported
+`listener` reads `TRUST_PROXY` when `node.js` is imported. Any client can send that header, so
+trust only a proxy you control, and have it set `X-Forwarded-Proto`
+(nginx: `proxy_set_header X-Forwarded-Proto $scheme;`). Only the scheme is
+taken from the proxy; the host is still the `Host` header.
 
 `node.js` is an emitted asset, not a second build input: `server.js` and
 its `handleRequest` / `{ fetch }` contracts are unchanged. With
@@ -1003,6 +1017,14 @@ configureServerFunctionsServer({
 ```
 
 Set `csrf: false` only when another trusted layer protects the endpoint.
+
+The check compares `Origin` with the origin of `request.url`. Behind a
+TLS-terminating proxy that origin is `http://` unless the server takes the
+scheme from the proxy, so browsers that send no `Sec-Fetch-Site` (Safari
+before 16.4) get a `403` on every protected call. With the emitted
+`node.js` entry, set [`TRUST_PROXY`](#optionsstart); with another server,
+build `request.url` from a trusted `X-Forwarded-Proto` (srvx:
+`trustProxy`), or list the public origin in `csrf.origin`.
 
 Custom serialization (extra seroval plugins for class instances such as a
 `Money` or an `ObjectId`) is configured the same way, once per side. Set the

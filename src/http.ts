@@ -24,13 +24,14 @@ export function webRequestFromNode(
   req: IncomingMessage,
   urlPath?: string,
   res?: ServerResponse,
+  trustProxy: TrustProxy = false,
 ): Request {
   // TLS sockets (https and h2) expose `encrypted`; a Request whose url says
   // http: on a TLS connection breaks secure-cookie logic, absolute
   // redirects, and origin checks in application code.
-  const protocol = (req.socket as { encrypted?: boolean } | undefined)?.encrypted
-    ? 'https'
-    : 'http';
+  const protocol =
+    forwardedProto(req, trustProxy) ??
+    ((req.socket as { encrypted?: boolean } | undefined)?.encrypted ? 'https' : 'http');
   // HTTP/2 has no Host header — the authority travels in the `:authority`
   // pseudo-header instead.
   const host = req.headers.host ?? (req.headers[':authority'] as string | undefined) ?? 'localhost';
@@ -84,6 +85,47 @@ export function webRequestFromNode(
     // undici requires half-duplex for streamed request bodies.
     ...(body ? { duplex: 'half' } : {}),
   } as RequestInit);
+}
+
+/**
+ * Which peers may set the request scheme with `X-Forwarded-Proto`: `true`
+ * trusts any peer, `'loopback'` a proxy on the same host, and a list the
+ * exact peer addresses it names (no CIDR ranges).
+ */
+export type TrustProxy = boolean | 'loopback' | string[];
+
+function normalizeAddress(address: string): string {
+  return address.startsWith('::ffff:') ? address.slice(7) : address;
+}
+
+function trustsPeer(trustProxy: TrustProxy, address: string | undefined): boolean {
+  if (trustProxy === true) return true;
+  if (!trustProxy || !address) return false;
+  const peer = normalizeAddress(address);
+  if (trustProxy === 'loopback') return peer === '::1' || peer.startsWith('127.');
+  return trustProxy.some((trusted) => normalizeAddress(trusted) === peer);
+}
+
+function forwardedProto(req: IncomingMessage, trustProxy: TrustProxy): string | undefined {
+  if (!trustsPeer(trustProxy, req.socket?.remoteAddress)) return;
+  const header = req.headers['x-forwarded-proto'];
+  if (typeof header !== 'string') return;
+  // The nearest proxy's value is the last one; earlier ones may come from the client.
+  const proto = header.split(',').pop()!.trim().toLowerCase();
+  return proto === 'https' || proto === 'http' ? proto : undefined;
+}
+
+/** Reads a `TrustProxy` from an env value such as `TRUST_PROXY`. */
+export function parseTrustProxy(value: string | undefined): TrustProxy {
+  const text = value?.trim() ?? '';
+  const keyword = text.toLowerCase();
+  if (keyword === '' || keyword === 'false' || keyword === '0') return false;
+  if (keyword === 'true' || keyword === '1') return true;
+  if (keyword === 'loopback') return 'loopback';
+  return text
+    .split(',')
+    .map((address) => address.trim())
+    .filter(Boolean);
 }
 
 export async function sendWebResponse(res: ServerResponse, response: Response): Promise<void> {

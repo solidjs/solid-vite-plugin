@@ -1,7 +1,7 @@
 // The Node server for a start-mode build (emitted as dist/server/node.js by
 // `start.nodeServer`): serves the client build statically and hands every other
 // request to the built handler in ./server.js. Runtime config is
-// environment-only — PORT (default 3000) and HOST. Listens when run
+// environment-only — PORT (default 3000), HOST and TRUST_PROXY. Listens when run
 // directly; `listener`, `createListener` and `serve` are exported for
 // mounting into an existing http server or framework.
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
@@ -11,7 +11,13 @@ import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { fileURLToPath } from 'node:url';
 import { handleRequest } from './server.js';
-import { parseRequestTarget, sendWebResponse, webRequestFromNode } from '../http.js';
+import {
+  parseRequestTarget,
+  parseTrustProxy,
+  sendWebResponse,
+  webRequestFromNode,
+  type TrustProxy,
+} from '../http.js';
 import { acceptedEncodings, PRECOMPRESSIBLE_EXTENSIONS } from './encoding.js';
 
 // Baked in at build time by the plugin (the generated header above this
@@ -144,6 +150,15 @@ export interface ListenerOptions {
   static?: boolean;
   /** Extra request-event fields, merged over `{ nativeEvent: req }`. */
   event?: (req: IncomingMessage) => Record<string, unknown>;
+  /**
+   * Take the request URL's scheme from `X-Forwarded-Proto` when the peer is
+   * a proxy you trust, so `request.url` is `https:` behind a TLS-terminating
+   * proxy. `true` trusts any peer, `'loopback'` a proxy on the same host, a
+   * list the exact peer addresses it names. Default: the `TRUST_PROXY` env
+   * var when `createListener` runs (`true`, `loopback` or comma-separated
+   * addresses), else false. The exported `listener` reads it at import.
+   */
+  trustProxy?: TrustProxy;
 }
 
 export type Listener = (req: IncomingMessage, res: ServerResponse) => Promise<void>;
@@ -152,6 +167,7 @@ export type Listener = (req: IncomingMessage, res: ServerResponse) => Promise<vo
 export function createListener({
   static: serveStatic = true,
   event,
+  trustProxy = parseTrustProxy(process.env.TRUST_PROXY),
 }: ListenerOptions = {}): Listener {
   return async function listener(req, res) {
     try {
@@ -170,7 +186,7 @@ export function createListener({
       }
       // Pages, the server-function endpoint, middleware — everything else.
       // `nativeEvent` is the raw Node request, readable via getRequestEvent().
-      const response = await handleRequest(webRequestFromNode(req, undefined, res), {
+      const response = await handleRequest(webRequestFromNode(req, undefined, res, trustProxy), {
         event: { nativeEvent: req, ...event?.(req) },
       });
       await sendWebResponse(res, response);
