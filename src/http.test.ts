@@ -85,7 +85,9 @@ describe('trustProxy', () => {
     expect(parseTrustProxy('false')).toBe(false);
     expect(parseTrustProxy('1')).toBe(true);
     expect(parseTrustProxy('true')).toBe(true);
+    expect(parseTrustProxy('TRUE')).toBe(true);
     expect(parseTrustProxy('loopback')).toBe('loopback');
+    expect(parseTrustProxy(' Loopback ')).toBe('loopback');
     expect(parseTrustProxy('10.0.0.2, 10.0.0.3')).toEqual(['10.0.0.2', '10.0.0.3']);
   });
 });

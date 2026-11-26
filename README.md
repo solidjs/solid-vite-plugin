@@ -405,8 +405,9 @@ server-function same-origin check for browsers that send no
 `Sec-Fetch-Site`, such as Safari before 16.4. Set `TRUST_PROXY` (or
 `createListener({ trustProxy })`) to take the scheme from the
 `X-Forwarded-Proto` value that the nearest proxy sets: `loopback` trusts a
-proxy on the same host, a comma-separated list trusts those peer
-addresses, and `true` trusts any peer. Any client can send that header, so
+proxy on the same host, a comma-separated list trusts those exact peer
+addresses (no CIDR ranges), and `true` trusts any peer. The exported
+`listener` reads `TRUST_PROXY` when `node.js` is imported. Any client can send that header, so
 trust only a proxy you control, and have it set `X-Forwarded-Proto`
 (nginx: `proxy_set_header X-Forwarded-Proto $scheme;`). Only the scheme is
 taken from the proxy; the host is still the `Host` header.

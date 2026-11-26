@@ -154,8 +154,9 @@ export interface ListenerOptions {
    * Take the request URL's scheme from `X-Forwarded-Proto` when the peer is
    * a proxy you trust, so `request.url` is `https:` behind a TLS-terminating
    * proxy. `true` trusts any peer, `'loopback'` a proxy on the same host, a
-   * list the peer addresses it names. Default: the `TRUST_PROXY` env var
-   * (`true`, `loopback` or comma-separated addresses), else false.
+   * list the exact peer addresses it names. Default: the `TRUST_PROXY` env
+   * var when `createListener` runs (`true`, `loopback` or comma-separated
+   * addresses), else false. The exported `listener` reads it at import.
    */
   trustProxy?: TrustProxy;
 }

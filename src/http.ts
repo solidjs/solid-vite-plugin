@@ -90,7 +90,7 @@ export function webRequestFromNode(
 /**
  * Which peers may set the request scheme with `X-Forwarded-Proto`: `true`
  * trusts any peer, `'loopback'` a proxy on the same host, and a list the
- * peer addresses it names.
+ * exact peer addresses it names (no CIDR ranges).
  */
 export type TrustProxy = boolean | 'loopback' | string[];
 
@@ -118,9 +118,10 @@ function forwardedProto(req: IncomingMessage, trustProxy: TrustProxy): string | 
 /** Reads a `TrustProxy` from an env value such as `TRUST_PROXY`. */
 export function parseTrustProxy(value: string | undefined): TrustProxy {
   const text = value?.trim() ?? '';
-  if (text === '' || text === 'false' || text === '0') return false;
-  if (text === 'true' || text === '1') return true;
-  if (text === 'loopback') return 'loopback';
+  const keyword = text.toLowerCase();
+  if (keyword === '' || keyword === 'false' || keyword === '0') return false;
+  if (keyword === 'true' || keyword === '1') return true;
+  if (keyword === 'loopback') return 'loopback';
   return text
     .split(',')
     .map((address) => address.trim())
