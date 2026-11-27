@@ -2315,6 +2315,23 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin[] {
         rolldownOptions.plugins = rolldownOptions.plugins
           ? [rolldownOptions.plugins, tsrxDepScanPlugin]
           : [tsrxDepScanPlugin];
+        // Same seed gap for `exclude`: the client gets vitefu's list of
+        // packages with a `solid` export condition from the top-level
+        // `optimizeDeps`, but SSR/other environments do not. With discovery
+        // on, a package whose `solid` entry is a `.js` barrel is taken into
+        // the pre-bundle and its `.jsx` files are compiled with the classic
+        // React runtime above — `React is not defined` at render (#560). A
+        // `.jsx` solid entry escapes by luck (the optimizer only takes
+        // `.js`/`.ts` entries). Mirror the framework-package exclude here
+        // so every environment keeps the README's "has a `solid` key"
+        // guarantee.
+        if (solidPkgsConfig?.optimizeDeps.exclude?.length) {
+          const exclude = new Set(optimizeDeps.exclude ?? []);
+          for (const pkg of solidPkgsConfig.optimizeDeps.exclude) {
+            exclude.add(pkg);
+          }
+          optimizeDeps.exclude = [...exclude];
+        }
       }
 
       // `resolve.conditions` above only governs modules Vite inlines.
